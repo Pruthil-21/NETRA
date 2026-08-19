@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: netra
+      POSTGRES_PASSWORD: netra
+      POSTGRES_DB: netra
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    ports:
+      - "8554:8554"   # RTSP ingest
+      - "8888:8888"   # HLS output
+      - "8889:8889"   # WebRTC output
+    volumes:
+      - ./streaming/mediamtx.yml:/mediamtx.yml
+
+  # backend-registry, backend-watchlist, frontend-map, frontend-dashboard
+  # services added here by their owners once each has a Dockerfile (Day 2+)
+
+volumes:
+  db_data:
