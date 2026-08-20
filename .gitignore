@@ -21,3 +21,8 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+# MediaMTX & Streaming binaries/temp files
+streaming/mediamtx
+streaming/mediamtx.yml
+streaming/videos/
+*.mp4
