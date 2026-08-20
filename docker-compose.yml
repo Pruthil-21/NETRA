@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: netra
       POSTGRES_DB: netra
     ports:
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
 
