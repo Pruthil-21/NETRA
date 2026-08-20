@@ -21,3 +21,7 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+*.pt
+debug_*.jpg
+*.pt
+debug_*.jpg
