@@ -1,0 +1,83 @@
+'use client';
+
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import { Camera } from '@/types/camera';
+import { CameraFilters } from '@/types/filters';
+import { cameraService } from '@/services/cameraService';
+
+interface RegistryContextType {
+  cameras: Camera[];
+  filteredCameras: Camera[];
+  selectedCamera: Camera | null;
+  filters: CameraFilters;
+  isLoading: boolean;
+  error: string | null;
+  setSelectedCamera: (cam: Camera | null) => void;
+  setFilters: React.Dispatch<React.SetStateAction<CameraFilters>>;
+  refreshCameras: () => Promise<void>;
+}
+
+const initialFilters: CameraFilters = {
+  department: 'All Departments',
+  connectivity: 'all',
+  health: 'all',
+  searchQuery: '',
+};
+
+const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
+
+export function CameraRegistryProvider({ children }: { children: React.ReactNode }) {
+  const [cameras, setCameras] = useState<Camera[]>([]);
+  const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
+  const [filters, setFilters] = useState<CameraFilters>(initialFilters);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshCameras = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const data = await cameraService.getAll();
+      setCameras(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCameras();
+  }, [refreshCameras]);
+
+  const filteredCameras = useMemo(() => {
+    return cameras.filter((cam) => {
+      const matchesDept =
+        filters.department === 'All Departments' || cam.dept.toLowerCase() === filters.department.toLowerCase();
+      return matchesDept;
+    });
+  }, [cameras, filters]);
+
+  return (
+    <CameraRegistryContext.Provider
+      value={{
+        cameras,
+        filteredCameras,
+        selectedCamera,
+        filters,
+        isLoading,
+        error,
+        setSelectedCamera,
+        setFilters,
+        refreshCameras,
+      }}
+    >
+      {children}
+    </CameraRegistryContext.Provider>
+  );
+}
+
+export function useCameraRegistry() {
+  const context = useContext(CameraRegistryContext);
+  if (!context) throw new Error('useCameraRegistry must be used within CameraRegistryProvider');
+  return context;
+}
