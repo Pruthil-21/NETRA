@@ -42,10 +42,11 @@ while true; do
 
   echo "Initializing stream for Camera ${CAM_ID}..."
 
-  # Launch resilient FFmpeg pipeline in background
+  # Launch FFmpeg with TLS validation bypass & auto-reconnect
   ffmpeg -re \
     -nostdin \
     -loglevel warning \
+    -tls_verify 0 \
     -reconnect 1 \
     -reconnect_at_eof 1 \
     -reconnect_streamed 1 \
