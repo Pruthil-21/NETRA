@@ -1,25 +1,16 @@
-# NETRA — Streaming Module (P3)
+# NETRA Video Streaming Infrastructure
 
-Multi-protocol video streaming pipeline powered by MediaMTX and FFmpeg.
+This module handles video ingest, simulation, and RTSP relay for the NETRA pipeline (P4 Dashboard & P5 ANPR/ML).
 
-## Quickstart
+## Architecture
 
-1. **Install MediaMTX:**
-   * Download the binary for your OS from [MediaMTX Releases](https://github.com/bluenviron/mediamtx/releases) into this directory.
-   * Run `./mediamtx`
+- **Server**: MediaMTX listening on RTSP port `8554`.
+- **Feed Switcher (`switch_camera.sh`)**: Interactive tool to dynamically route mock video feeds or configured stream URIs to `rtsp://localhost:8554/sentinel_cam`.
+- **Hardware Ingest (`start_live_cam.sh`)**: Direct FaceTime HD Camera relay to `rtsp://localhost:8554/livecam`.
+- **Mock Feed Loops (`start_file_feed.sh`)**: Loops local MP4 video fixtures for deterministic offline testing.
 
-2. **Publish Video Feeds:**
-   * **Simulated CCTV Loop:** `./start_file_feed.sh`
-   * **Live Mac Webcam:** `./start_live_cam.sh`
+## Security & Configuration
 
----
-
-## Endpoint Contract
-
-| Target / Role | Protocol | Endpoint URL |
-| :--- | :--- | :--- |
-| **P4 (Dashboard UI)** | HLS Manifest (Camera 1) | `http://localhost:8888/camera1/index.m3u8` |
-| **P4 (Dashboard UI)** | HLS Manifest (Livecam) | `http://localhost:8888/livecam/index.m3u8` |
-| **P4 (Dashboard UI)** | WebRTC View | `http://localhost:8889/livecam` |
-| **P5 (ANPR Analytics)** | RTSP Feed (Camera 1) | `rtsp://localhost:8554/camera1` |
-| **P5 (ANPR Analytics)** | RTSP Feed (Livecam) | `rtsp://localhost:8554/livecam` |
+- Remote camera endpoints are decoupled from the codebase and configured strictly via environment variables (`.env`).
+- Insecure flags (`-tls_verify 0`) and hardcoded referer headers are stripped in favor of standard, authenticated transport pipelines.
+- Local sample fixtures in `videos/` provide safe offline testing without external dependencies.
