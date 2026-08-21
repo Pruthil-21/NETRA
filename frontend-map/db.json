@@ -1,0 +1,60 @@
+{
+  "cameras": [
+    {
+      "id": "CAM-GJ-001",
+      "name": "Sector 10 CH Road Junction",
+      "dept": "Home / Police",
+      "lat": 23.2156,
+      "long": 72.6369,
+      "camera_type": "ANPR",
+      "ownership": "Gandhinagar Police",
+      "connectivity_status": "online",
+      "storage_type": "Cloud",
+      "retention_days": 30,
+      "health_status": "operational",
+      "rtsp_url": "rtsp://localhost:8554/cam1"
+    },
+    {
+      "id": "CAM-GJ-002",
+      "name": "Gita Mandir Central Bus Port",
+      "dept": "Transport / GSRTC",
+      "lat": 23.0131,
+      "long": 72.5873,
+      "camera_type": "PTZ",
+      "ownership": "GSRTC Ahmedabad",
+      "connectivity_status": "online",
+      "storage_type": "Local",
+      "retention_days": 15,
+      "health_status": "operational",
+      "rtsp_url": "rtsp://localhost:8554/cam2"
+    },
+    {
+      "id": "CAM-GJ-003",
+      "name": "Rajkot Collectorate Gate A",
+      "dept": "Revenue Department",
+      "lat": 22.3039,
+      "long": 70.8022,
+      "camera_type": "Dome",
+      "ownership": "Rajkot District Administration",
+      "connectivity_status": "offline",
+      "storage_type": "Hybrid",
+      "retention_days": 7,
+      "health_status": "fault",
+      "rtsp_url": "rtsp://localhost:8554/cam3"
+    },
+    {
+      "id": "CAM-GJ-004",
+      "name": "Surat Textile Market Circle",
+      "dept": "Home / Police",
+      "lat": 21.1959,
+      "long": 72.8302,
+      "camera_type": "Bullet",
+      "ownership": "Surat Smart City",
+      "connectivity_status": "online",
+      "storage_type": "Cloud",
+      "retention_days": 30,
+      "health_status": "degraded",
+      "rtsp_url": "rtsp://localhost:8554/cam4"
+    }
+  ]
+}
