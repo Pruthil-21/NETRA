@@ -26,3 +26,6 @@ streaming/mediamtx
 streaming/mediamtx.yml
 streaming/videos/
 *.mp4
+docker-compose.override.yml
+*.pt
+debug_*.jpg
