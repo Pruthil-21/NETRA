@@ -4,11 +4,12 @@ Run locally: uvicorn app.main:app --reload --port 8001
 """
 from fastapi import FastAPI
 
-from .routers import watchlist
+from .routers import alerts, watchlist
 
 app = FastAPI(title="NETRA Watchlist & Alerts Service")
 
 app.include_router(watchlist.router)
+app.include_router(alerts.router)
 
 
 @app.get("/health")
