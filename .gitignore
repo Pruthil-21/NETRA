@@ -21,7 +21,6 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
-*.pt
-debug_*.jpg
+docker-compose.override.yml
 *.pt
 debug_*.jpg
