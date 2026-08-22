@@ -8,6 +8,7 @@
     "start": "next start -p 3000",
     "lint": "next lint",
     "mock-api": "json-server --watch db.json --port 5001",
+    "dev:all": "concurrently -n API,WEB -c yellow,cyan \"npm:mock-api\" \"npm:dev\"",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -31,6 +32,7 @@
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
+    "concurrently": "^10.0.5",
     "jsdom": "^24.1.1",
     "json-server": "^0.17.4",
     "postcss": "^8.4.41",
