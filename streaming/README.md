@@ -1,16 +1,17 @@
-# NETRA Video Streaming Infrastructure
+# Streaming
 
-This module handles video ingest, simulation, and RTSP relay for the NETRA pipeline (P4 Dashboard & P5 ANPR/ML).
+Live workflow: `start_live_proxies.sh` fetches `https://live.corp8.cloud/api/cameras`, selects cameras with `width > 0`, pulls each camera's public HLS feed, transcodes video to H.264/AVC with FFmpeg, and publishes it to local MediaMTX as `stream/<camera-id>`.
 
-## Architecture
+Start MediaMTX first, then run:
 
-- **Server**: MediaMTX listening on RTSP port `8554`.
-- **Feed Switcher (`switch_camera.sh`)**: Interactive tool to dynamically route mock video feeds or configured stream URIs to `rtsp://localhost:8554/sentinel_cam`.
-- **Hardware Ingest (`start_live_cam.sh`)**: Direct FaceTime HD Camera relay to `rtsp://localhost:8554/livecam`.
-- **Mock Feed Loops (`start_file_feed.sh`)**: Loops local MP4 video fixtures for deterministic offline testing.
+```bash
+./start_live_proxies.sh
+```
 
-## Security & Configuration
+To run only confirmed active camera IDs, pass them explicitly:
 
-- Remote camera endpoints are decoupled from the codebase and configured strictly via environment variables (`.env`).
-- Insecure flags (`-tls_verify 0`) and hardcoded referer headers are stripped in favor of standard, authenticated transport pipelines.
-- Local sample fixtures in `videos/` provide safe offline testing without external dependencies.
+```bash
+./start_live_proxies.sh 6 13 16
+```
+
+The local HLS playlist is `http://localhost:8888/stream/<camera-id>/index.m3u8`. `start_all_cameras.sh` is retained as an alias for the live workflow. The separate `start_file_feed.sh` remains available only for isolated test-video troubleshooting.
