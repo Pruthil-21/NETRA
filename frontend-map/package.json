@@ -41,6 +41,11 @@
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.9",
     "typescript": "^5.5.4",
-    "vitest": "^2.0.5"
+    "vitest": "^4.1.11"
+  },
+  "lavamoat": {
+    "allowScripts": {
+      "vitest>vite>esbuild#0.28.2": false
+    }
   }
 }
