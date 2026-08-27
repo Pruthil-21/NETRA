@@ -37,7 +37,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install ruff pytest
+          pip install ruff pytest httpx
       - name: Lint
         run: ruff check .
       - name: Apply schema (if any .sql files exist)
@@ -91,7 +91,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          pip install ruff pytest
+          pip install ruff pytest httpx
       - name: Lint
         run: ruff check .
       - name: Apply schema (if any .sql files exist)
