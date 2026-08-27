@@ -1,0 +1,43 @@
+@import "leaflet/dist/leaflet.css";
+@import "leaflet.markercluster/dist/MarkerCluster.css";
+@import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-100;
+  }
+}
+
+/* Custom GIS Dark Popup Styling */
+.dark-gis-popup .leaflet-popup-content-wrapper {
+  background-color: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+}
+
+.dark-gis-popup .leaflet-popup-tip {
+  background-color: #0f172a;
+  border: 1px solid #334155;
+}
+
+/* Leaflet Cluster Counter Customizations */
+.marker-cluster-small,
+.marker-cluster-medium,
+.marker-cluster-large {
+  background-color: rgba(30, 41, 59, 0.6) !important;
+}
+
+.marker-cluster-small div,
+.marker-cluster-medium div,
+.marker-cluster-large div {
+  background-color: #1e293b !important;
+  color: #38bdf8 !important;
+  font-weight: 700;
+  border: 1px solid #0284c7;
+}
