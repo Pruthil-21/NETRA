@@ -4,16 +4,16 @@ export type CameraType = 'PTZ' | 'Dome' | 'Bullet' | 'ANPR';
 export type StorageType = 'Local' | 'Cloud' | 'Hybrid';
 
 export interface Camera {
-  id: string;
+  id: string | number;
   name: string;
   dept: string;
   lat: number;
   long: number;
-  camera_type: CameraType;
-  ownership: string;
-  connectivity_status: ConnectivityStatus;
-  storage_type: StorageType;
-  retention_days: number;
-  health_status: HealthStatus;
-  rtsp_url: string;
+  lng?: number;
+  status?: 'online' | 'offline' | string;
+  connectivity?: 'online' | 'offline' | string;
+  health?: 'operational' | 'degraded' | 'fault' | string;
+  location?: string;
+  rtspUrl?: string;
+  storagePolicy?: string;
 }
