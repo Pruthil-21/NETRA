@@ -282,6 +282,35 @@ def preprocess_for_ocr(img):
     enhanced = clahe.apply(gray)
     return enhanced
 
+def enhance_low_light(img):
+    """
+    Denoise-then-CLAHE (LAB L-channel) for low-light frames. Tested
+    directly against the reason low-light detection was failing:
+    plain gamma correction and CLAHE-alone both left YOLO finding zero
+    vehicles in a synthetically darkened+noisy test frame (see
+    ALPR_IMPROVEMENT_LOG.md Session 5) -- CLAHE alone amplifies sensor
+    noise rather than recovering real detail. Denoising first, then
+    CLAHE, recovered a real vehicle detection (0 -> 0.288 confidence),
+    and didn't regress the 3 clean ground-truth images (still 3/3 at
+    1.0 confidence with it applied).
+
+    NOT wired into detect_plate_from_frame's default path -- real
+    accuracy benefit, but fastNlMeansDenoisingColored is expensive
+    enough that applying it every frame measured a 2.5-3.6x end-to-end
+    slowdown on the dashcam video regression (168-280s -> 608s for the
+    same clip). That's a genuine cost/accuracy tradeoff for whoever
+    reviews this branch to decide, not something to force in
+    unilaterally. Call this directly on a frame/crop if testing or
+    deliberately enabling low-light handling.
+    """
+    denoised = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+    lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    l2 = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((l2, a, b)), cv2.COLOR_LAB2BGR)
+
+
 def plate_region_crop(vehicle_img):
     """
     Real plates sit in a fairly predictable band of a vehicle's bounding
@@ -308,6 +337,11 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     if infer_frame is None or raw_frame is None:
         return {"error": "Empty frame"}
 
+    # NOT calling enhance_low_light() here by default -- see its
+    # docstring and ALPR_IMPROVEMENT_LOG.md Session 5 for why: real
+    # accuracy benefit, but a measured ~2.5-3.6x end-to-end video
+    # slowdown (168-280s -> 608s on the same clip) that's a genuine
+    # human tradeoff call, not something to force through unilaterally.
     results = yolo_model(infer_frame, verbose=False)
     vehicle_classes = {2, 3, 5, 7}
 
