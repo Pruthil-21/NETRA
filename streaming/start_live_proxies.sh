@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Pull every currently usable Corp8 HLS feed, transcode it to AVC, and publish
-# it to MediaMTX at the matching local path: stream/<camera-id>.
+# Pull every Corp8 HLS feed returned by the provider, transcode it to AVC, and
+# publish it to MediaMTX at the matching local path: stream/<camera-id>.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,14 +42,14 @@ require_command jq
 require_command ffmpeg
 
 # An optional list of IDs lets the demo run a subset, while the default is all
-# feeds currently reporting a real frame size in the provider metadata.
+# cameras returned in the provider metadata.
 REQUESTED_IDS=("$@")
 if [[ "${REQUESTED_IDS[0]:-}" == "--help" ]]; then
   cat <<'USAGE'
 Usage: ./start_live_proxies.sh [CAMERA_ID ...]
 
-With no camera IDs, starts every provider camera whose width is greater than
-zero. With IDs, starts only those IDs, provided they are currently usable.
+With no camera IDs, starts every camera returned by the provider metadata.
+With IDs, starts only the requested camera IDs.
 USAGE
   exit 0
 fi
@@ -59,8 +59,8 @@ CAMERAS_JSON="$(curl --fail --silent --show-error --location \
   --retry 3 --retry-all-errors --connect-timeout 10 --max-time 45 "$API_URL")"
 
 # The provider has returned both a bare array and {"cameras": [...]} over
-# time. Normalize either response before applying the usable-feed rule.
-FILTER='(if type == "array" then . else (.cameras // .data // []) end) | map(select(((.width // 0) | tonumber? // 0) > 0))'
+# time. Normalize either response before optional ID filtering.
+FILTER='(if type == "array" then . else (.cameras // .data // []) end)'
 if (( ${#REQUESTED_IDS[@]} > 0 )); then
   requested_json="$(printf '%s\n' "${REQUESTED_IDS[@]}" | jq -R . | jq -s .)"
   FILTER+=" | map(select((.id | tostring) as \$id | \$requested | index(\$id)))"
@@ -73,7 +73,7 @@ else
 fi
 
 if [[ -z "$CAMERA_ROWS" ]]; then
-  echo "No usable live cameras were returned by the provider (width > 0)." >&2
+  echo "No cameras were returned by the provider." >&2
   exit 1
 fi
 
@@ -100,7 +100,7 @@ publish_camera() {
       -i "$source_url" \
       -map 0:v:0 -an \
       -c:v libx264 -pix_fmt yuv420p -preset ultrafast -tune zerolatency \
-      -g 30 -keyint_min 30 -sc_threshold 0 \
+      -force_key_frames "expr:gte(t,n_forced*1)" -sc_threshold 0 \
       -f rtsp -rtsp_transport tcp \
       "${RTSP_BASE_URL%/}/stream/$camera_id" || true
     echo "[camera $camera_id] Source/publish disconnected; retrying in ${RETRY_SECONDS}s..." >&2
@@ -108,7 +108,7 @@ publish_camera() {
   done
 }
 
-echo "Starting AVC proxies for the currently active live cameras:"
+echo "Starting AVC proxies for provider cameras:"
 while IFS=$'\t' read -r camera_id location hls_path; do
   [[ -n "$camera_id" ]] || continue
   printf '  %-4s %s\n' "$camera_id" "$location"

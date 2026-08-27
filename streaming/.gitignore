@@ -7,3 +7,6 @@ auto.key
 cookies.txt
 cameras.json
 valid_cameras.json
+
+logs/
+mediamtx_*.tar.gz
