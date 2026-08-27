@@ -7,11 +7,27 @@ CREATE TABLE watchlist (
     date_added    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Every ANPR plate read, independent of watchlist status — required for
+-- "where has this plate been seen" search regardless of match. Insert-only,
+-- same evidentiary reasoning as alerts.
+CREATE TABLE detections (
+    id            SERIAL PRIMARY KEY,
+    plate_number  TEXT NOT NULL,
+    camera_id     INTEGER NOT NULL,
+    detected_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confidence    REAL
+);
+
+CREATE INDEX idx_detections_plate ON detections (plate_number);
+CREATE INDEX idx_detections_camera ON detections (camera_id);
+CREATE INDEX idx_detections_detected_at ON detections (detected_at);
+
 CREATE TABLE alerts (
     id            SERIAL PRIMARY KEY,
     camera_id     INTEGER NOT NULL,
     plate_number  TEXT NOT NULL,
     watchlist_id  INTEGER REFERENCES watchlist(id),
+    detection_id  INTEGER REFERENCES detections(id),
     matched_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     status        TEXT NOT NULL DEFAULT 'NEW'
 );

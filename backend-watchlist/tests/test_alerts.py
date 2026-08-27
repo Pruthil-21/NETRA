@@ -21,12 +21,14 @@ def _seed_watchlist_and_detection(client, internal_headers):
         watchlist_id = cur.fetchone()["id"]
 
     detect_resp = client.post(
-        "/alerts",
+        "/detections",
         json={"camera_id": 1, "plate_number": plate},
         headers=internal_headers,
     )
     assert detect_resp.status_code == 201
-    return detect_resp.json(), watchlist_id
+    result = detect_resp.json()
+    assert result["alert"] is not None
+    return result["alert"], watchlist_id
 
 
 def test_status_update_is_append_only_not_a_mutation(client, officer_headers, internal_headers):
