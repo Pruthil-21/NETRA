@@ -16,3 +16,18 @@ CREATE TABLE cameras (
 );
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
+
+-- Shared across backend-registry and backend-watchlist (same Postgres instance).
+-- Declared identically, behind IF NOT EXISTS, in both services' schema.sql so
+-- either one can run first with zero cross-folder migration coordination.
+-- Insert/select only — never updated or deleted.
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id            SERIAL PRIMARY KEY,
+    user_id       TEXT,
+    action        TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id   INTEGER,
+    timestamp     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs (resource_type, resource_id);
