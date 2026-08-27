@@ -18,7 +18,7 @@ class RTSPStreamReader:
         reconnect_interval_sec: float = 2.0,
     ):
         """
-        :param rtsp_url: RTSP stream URI (e.g., rtsp://localhost:8554/livecam)
+        :param rtsp_url: RTSP stream URI (e.g., rtsp://localhost:8554/stream/16)
         :param inference_dim: (width, height) target for downstream YOLO detection
         :param reconnect_interval_sec: Backoff interval for auto-reconnect
         """
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--url",
         type=str,
-        default="rtsp://localhost:8554/livecam",
+        default="rtsp://localhost:8554/stream/16",
         help="Target RTSP URL",
     )
     args = parser.parse_args()
