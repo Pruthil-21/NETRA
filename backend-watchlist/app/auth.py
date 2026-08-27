@@ -2,7 +2,6 @@
 
 Duplicated (not shared) in backend-registry and backend-watchlist by design —
 keeps each service independently owned with zero cross-folder edits.
-See CLAUDE.md, "SECURITY/PRODUCTION DECISIONS".
 """
 import jwt
 from fastapi import Depends, Header, HTTPException
