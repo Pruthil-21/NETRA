@@ -437,3 +437,124 @@ improved — flagged clearly for whoever reviews this branch.
    from Session 2, still the top gap, now three sessions running.
 4. Dedicated plate-region detector — unchanged from Session 2, still
    blocked on a Roboflow API key this environment doesn't have.
+
+---
+
+# Session 4 — degraded-condition robustness (synthetic proxy, real dataset blocked)
+
+Continuation of the same branch/protections. Directly addresses "Next
+improvement #3" above, which has now been deferred for 3 straight
+sessions with zero evidence gathered on it.
+
+## Real-dataset search: blocked, not skipped
+
+Before falling back to anything synthetic, searched for actual free
+Indian-plate / night-CCTV datasets:
+
+- **Kaggle** ("Indian License Plates with Labels", "Indian Number
+  Plates Dataset") — requires a Kaggle account + API credentials, not
+  configured in this environment (no `~/.kaggle/`, no `kaggle` CLI).
+  Didn't set up new external account credentials on the repo owner's
+  behalf without asking — out of scope for an autonomous session.
+- **"Indian Licence Plate Dataset in the wild"** (arXiv 2111.06054,
+  16,192 images, 10 states, dashcam + static CCTV — exactly the right
+  shape of data) — checked the linked GitHub repo
+  (`sanchit2843/Indian_LPR`) directly. It explicitly does **not**
+  publish the dataset: *"We can't make dataset public because of
+  legalities involved in making Indian Road data public."* Only
+  pre-trained weights and demo images are public.
+- **LPBlur** (real low-light + rain license-plate pairs, not Indian
+  plates but real optical degradation) — hosted on Google Drive /
+  Baidu Netdisk only, no direct scriptable download, no account
+  configured for either.
+
+All three are real, legitimate leads — genuinely blocked by
+authentication/hosting, not abandoned after a token search.
+
+## Experiment 5: synthetic degraded-condition benchmark
+
+**Caveat stated up front, not buried:** this is a synthetic proxy, not
+real footage. Real night CCTV has sensor noise, real headlight optics,
+and real low-light color response that synthetic brightness/blur/
+overlay adjustments don't reproduce. This experiment answers "how does
+the current pipeline respond to these specific synthetic
+perturbations," not "how does it perform on real night CCTV" — treat
+results as a lower bound on real-world difficulty, not a substitute
+for real data.
+
+- **Dataset:** the same 3 ground-truth images, each degraded 4 ways
+  with plain OpenCV/numpy (no new dependency): low-light (25%
+  brightness + Gaussian sensor noise), motion blur (15px horizontal
+  box-kernel blur), glare (a bright overlaid circle near the plate
+  region), fog (50% blend with a flat gray layer). Saved to
+  `ml-anpr/test_images_degraded/` (12 images, ~1MB total) so future
+  sessions can re-run this exact benchmark without regenerating it.
+- **Conditions tested:** low-light, motion blur, glare, fog/haze — 4 of
+  the 6 adverse conditions named in the system requirements (rain and
+  night specifically weren't separately simulated; low-light and fog
+  are reasonable proxies for parts of both).
+- **Complete plate accuracy by condition** (full pipeline,
+  `detect_plate()`, current PaddleOCR-based code from Session 3):
+
+  | condition | exact matches | notes |
+  |---|---|---|
+  | glare | 3/3 | no measurable impact |
+  | fog | 3/3 | no measurable impact |
+  | low-light | 2/3 | car1: YOLO itself failed to find a vehicle in the darkened image (`"No vehicle detected"`) — a detection-stage failure, not an OCR failure |
+  | **motion blur** | **0/3** | all 3 failed; the one that returned any OCR text at all read `HR20AG3739` as `'12200379'` (0.69 conf) — letters dropped entirely, not just confused |
+
+  **Motion blur is the clear, dominant failure mode** — far worse than
+  the other 3 conditions combined, and the only one that fails
+  completely rather than partially.
+- **Attempted fix: unsharp-mask sharpening before OCR** (free, no new
+  dependency, the cheapest plausible deblur technique — item #10 on
+  the research list). Tested on all 3 blurred crops, compared raw OCR
+  output before/after:
+
+  | image | raw blurred OCR | after unsharp mask |
+  |---|---|---|
+  | car1 | `'BR'` (0.71) | `'营'` — a stray CJK character (0.39) |
+  | car2 | `'12200379'` (0.69) | *(nothing detected)* |
+  | car3 | *(nothing detected)* | *(nothing detected)* |
+
+  **Made things strictly worse on every image tested** — lower
+  confidence, less text recovered, one case (car1) produced outright
+  garbage. This matches the well-known limitation of naive sharpening
+  on heavily blurred images: it amplifies blur-induced artifacts rather
+  than recovering genuinely lost detail. **Rejected**, with real
+  evidence, not a guess.
+- **Night performance:** not directly tested (no real night data — see
+  above); low-light proxy result (2/3, one full detection failure) is
+  the closest available signal.
+- **Detection accuracy:** the one clear detection-stage (not
+  OCR-stage) failure was low-light car1 — YOLO found no vehicle at all
+  in the darkened frame. Worth separate follow-up: is this a YOLO
+  confidence-threshold issue (a lower threshold might still find the
+  vehicle) or a genuine detection failure needing better low-light
+  preprocessing before the detection stage, not just the OCR stage?
+  Not investigated further this session.
+
+### Verdict: **no code change kept this session** — this was a
+diagnostic experiment, not an implementation one, and its one concrete
+attempted fix (unsharp masking) was tested and rejected with evidence.
+
+## Next improvement to investigate
+
+1. **Motion blur is now the clearly evidenced #1 weakness** — worth a
+   real learned deblurring model next (e.g. LPDGAN, found during this
+   session's research, purpose-built for license plates and reports
+   handling low-light + rain too) rather than another cheap classical
+   technique, given unsharp masking's clear failure. This is a bigger
+   lift (new model, new dependency, needs its own careful integration
+   pass like Session 3's PaddleOCR work) — flagging for a dedicated
+   session, not attempting rushed here.
+2. Investigate the low-light **detection**-stage failure (YOLO finding
+   no vehicle at all) separately from the OCR-stage question — might
+   be a simple confidence-threshold tune, might need real preprocessing
+   before detection too.
+3. Dig into `OL52OO0882`/`DL52...` non-convergence — unchanged from
+   Session 3.
+4. Re-tune confidence floors — unchanged from Session 3, still no good
+   calibration signal.
+5. Dedicated plate-region detector — unchanged, still blocked on a
+   Roboflow API key.
