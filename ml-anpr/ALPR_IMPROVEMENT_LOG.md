@@ -558,3 +558,103 @@ attempted fix (unsharp masking) was tested and rejected with evidence.
    calibration signal.
 5. Dedicated plate-region detector — unchanged, still blocked on a
    Roboflow API key.
+
+---
+
+# Session 5 — low-light detection fix, and why it isn't turned on by default
+
+Continuation of the same branch/protections. Addresses Session 4's
+"Next improvement #2": the low-light detection-stage failure (YOLO
+finding zero vehicles at all in `car1_lowlight.jpg`).
+
+## Experiment 6: low-light preprocessing (denoise + CLAHE)
+
+- **Diagnosis:** at `conf=0.05` (far below YOLO's normal ~0.25
+  threshold), YOLO found *zero* vehicle-class boxes on the darkened
+  frame — only wrong-class noise (cell phone, laptop, remote, all
+  <0.15 conf). Not a threshold-tuning issue; a genuine recognition
+  failure.
+- **Tested 3 preprocessing techniques on the actual failing frame,
+  each checked for a real vehicle-class detection:**
+
+  | technique | vehicle detected? |
+  |---|---|
+  | gamma correction (γ=2.5) | no — image looks readable to a human, still nothing to YOLO |
+  | CLAHE alone (LAB L-channel) | barely — conf 0.014, still below threshold |
+  | **denoise (`fastNlMeansDenoisingColored`) then CLAHE** | **yes — conf 0.288, clears the default threshold** |
+
+  CLAHE alone actually amplifies the synthetic sensor noise rather than
+  helping — denoising first is what unlocks it. This matches the
+  well-understood order-of-operations for this class of preprocessing,
+  now confirmed on our own failing case rather than assumed.
+- **End-to-end result on the low-light degraded set:** still 2/3 exact
+  matches (unchanged count) — but the *reason* car1 fails changed from
+  "no vehicle detected" to a real, different, more specific problem:
+  the recovered vehicle box is real but too tight, cutting off the
+  bumper/plate area entirely (visually confirmed — the crop shows only
+  windshield and badge, no bumper). So this fix is real progress on
+  the specific bug it targeted, even though it didn't fully solve car1
+  end-to-end. Flagging the box-tightness issue as a distinct, separate
+  problem rather than claiming this fix "didn't work."
+- **Regression check (clean images):** no impact — all 3 clean
+  ground-truth images still 3/3 exact, still 1.0 confidence, with the
+  preprocessing applied.
+- **Regression check (video, the important one):** wired the fix into
+  `detect_plate_from_frame`'s default path (applied to `infer_frame`
+  before YOLO and to the vehicle crop before OCR) and re-ran the full
+  `dashcam_trimmed.mp4` regression. Two real findings, one good, one
+  bad:
+  - **Good:** `HR26EO6477` (a real plate, previously confirmed as the
+    noisy 11-character `THR26E06477` in Session 3's run, with a stray
+    prefix character) now confirms *cleanly* in the pattern-match
+    tier, no stray character. Unplanned, real, positive side effect.
+  - **Bad — this is the important finding:** total wall-clock time for
+    the same clip jumped from 168-280s (prior sessions) to **10
+    minutes 8 seconds** — roughly a **2.5-3.6x slowdown**. Confirmed
+    via `time`, not estimated: `618.17s user 9.17s system ... 10:08.67
+    total`. `fastNlMeansDenoisingColored` is expensive, and this session
+    applied it *twice* per processed frame (once for detection, once
+    for OCR).
+- **Decision: reverted the automatic wiring.** The function
+  (`enhance_low_light()`) is defined, documented, and tested — but
+  **not called by default** in `detect_plate_from_frame` anymore. A
+  2.5-3.6x throughput cost for a partial fix (real progress on one
+  failure mode, didn't fully solve it, plus one good but anecdotal
+  side effect on real video) is a genuine tradeoff call, not a clear
+  win to force through unilaterally, especially days before a
+  hackathon demo where live-feed responsiveness matters. This is
+  exactly the kind of decision the safety note asks to leave for human
+  review rather than deciding alone.
+- **What's actually kept from this session:** the diagnosis (denoise
+  order matters, gamma/CLAHE-alone don't work), the tested function
+  itself (available to call explicitly), and the clear evidence for
+  the cost/benefit tradeoff — not an automatic behavior change.
+
+### Verdict: **investigated and coded, but not enabled by default —
+left as a human decision**
+
+## Next improvement to investigate
+
+1. **Human decision needed:** is a 2.5-3.6x slowdown acceptable to
+   enable `enhance_low_light()` by default for better low-light
+   handling? If yes, it's already written, tested, and just needs its
+   2 call sites restored (`detect_plate_from_frame`, both the
+   `infer_frame` YOLO call and the `vehicle_img` crop). If a middle
+   ground is wanted, consider applying it conditionally (e.g. a cheap
+   brightness check on the frame, only denoise+CLAHE when actually
+   dark) rather than unconditionally — not implemented or tested this
+   session, flagged as an option.
+2. If enabling it: still need to separately fix the box-tightness
+   issue found on car1 (real vehicle detected, box too tight to
+   include the plate) — a different bug from the one this session
+   fixed.
+3. Motion blur — unchanged from Session 4, still the single biggest
+   evidenced gap, still needs a real deblurring model (LPDGAN) as a
+   dedicated future session's work.
+4. `OL52OO0882`/`DL52...` non-convergence — unchanged from Session 3,
+   still unresolved (now reads as `UL52OO0862` under this session's
+   since-reverted preprocessing — yet another variant, reinforcing that
+   this specific plate/frame-range is a hard case regardless of
+   preprocessing).
+5. Confidence floor re-tuning, dedicated plate-region detector —
+   unchanged from prior sessions.
