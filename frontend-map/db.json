@@ -1,7 +1,7 @@
 {
   "cameras": [
     {
-      "id": "CAM-GJ-001",
+      "id": 1,
       "name": "Sector 10 CH Road Junction",
       "dept": "Home / Police",
       "lat": 23.2156,
@@ -12,10 +12,11 @@
       "storage_type": "Cloud",
       "retention_days": 30,
       "health_status": "operational",
-      "rtsp_url": "rtsp://localhost:8554/stream/1"
+      "rtsp_url": "rtsp://localhost:8554/stream/23",
+      "stream_id": 23
     },
     {
-      "id": "CAM-GJ-002",
+      "id": 2,
       "name": "Gita Mandir Central Bus Port",
       "dept": "Transport / GSRTC",
       "lat": 23.0131,
@@ -26,10 +27,11 @@
       "storage_type": "Local",
       "retention_days": 15,
       "health_status": "operational",
-      "rtsp_url": "rtsp://localhost:8554/stream/16"
+      "rtsp_url": "rtsp://localhost:8554/stream/27",
+      "stream_id": 27
     },
     {
-      "id": "CAM-GJ-003",
+      "id": 3,
       "name": "Rajkot Collectorate Gate A",
       "dept": "Revenue Department",
       "lat": 22.3039,
@@ -40,10 +42,11 @@
       "storage_type": "Hybrid",
       "retention_days": 7,
       "health_status": "fault",
-      "rtsp_url": "rtsp://localhost:8554/cam3"
+      "rtsp_url": "rtsp://localhost:8554/cam3",
+      "stream_id": null
     },
     {
-      "id": "CAM-GJ-004",
+      "id": 4,
       "name": "Surat Textile Market Circle",
       "dept": "Home / Police",
       "lat": 21.1959,
@@ -54,7 +57,8 @@
       "storage_type": "Cloud",
       "retention_days": 30,
       "health_status": "degraded",
-      "rtsp_url": "rtsp://localhost:8554/cam4"
+      "rtsp_url": "rtsp://localhost:8554/stream/22",
+      "stream_id": 22
     }
   ]
 }

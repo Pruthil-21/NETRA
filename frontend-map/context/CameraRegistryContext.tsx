@@ -38,8 +38,9 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     try {
       const data = await cameraService.getAll();
       setCameras(data);
+      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error');
+      setError(err instanceof Error ? err.message : 'Failed to load camera registry');
     } finally {
       setIsLoading(false);
     }

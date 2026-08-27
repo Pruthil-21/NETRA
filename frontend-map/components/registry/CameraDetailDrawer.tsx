@@ -8,12 +8,15 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
     return <div className="p-4 text-xs text-slate-500">No camera selected.</div>;
   }
 
-  const feedSrc = camera.connectivity_status === 'online' ? getHlsStreamUrl(camera.rtsp_url) : null;
+  const stream =
+    camera.connectivity_status === 'online'
+      ? getHlsStreamUrl(camera.stream_id)
+      : ({ url: null, reason: 'no-stream' } as const);
 
   return (
     <div className="flex flex-col sm:flex-row bg-slate-900 border-t border-slate-800">
       <div className="w-full sm:w-64 h-36 shrink-0 border-b sm:border-b-0 sm:border-r border-slate-800">
-        <LiveFeedPlayer src={feedSrc} />
+        <LiveFeedPlayer src={stream.url} unavailableReason={stream.reason} />
       </div>
       <div className="flex-1 p-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
         <div>
