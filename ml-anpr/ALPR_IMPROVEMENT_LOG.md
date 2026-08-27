@@ -658,3 +658,90 @@ left as a human decision**
    preprocessing).
 5. Confidence floor re-tuning, dedicated plate-region detector —
    unchanged from prior sessions.
+
+---
+
+# Session 6 — the middle-ground option: gate low-light enhancement behind a brightness check
+
+Continuation of the same branch/protections. Implements the exact
+"middle ground" option Session 5 flagged but didn't build: apply
+`enhance_low_light()` only to frames that are actually dark, instead
+of either "always" (accurate but 2.5-3.6x slower) or "never" (fast but
+gives up the low-light detection fix entirely).
+
+## Experiment 7: brightness-gated low-light enhancement
+
+- **Threshold calibrated from real data, not guessed:** measured mean
+  grayscale brightness across everything already in the test corpus —
+  the 3 clean ground-truth images: 97-119. Their synthetically
+  darkened counterparts: 25-29. The fog/glare degraded variants: 131-
+  159 (brighter than clean, confirming they shouldn't and don't trigger
+  the gate). A wide, cleanly-separated gap; picked 50 as the midpoint.
+  Also checked the dashcam video itself at 4 points across the clip:
+  117-124 throughout — consistently well above the threshold, so the
+  gate should skip enhancement on it entirely.
+- **Implementation:** added `is_low_light(img)` (one grayscale mean
+  comparison, negligible cost) and `LOW_LIGHT_BRIGHTNESS_THRESHOLD =
+  50`. `detect_plate_from_frame` checks this once per frame (on
+  `infer_frame`) and reuses the same yes/no decision for both the
+  detection-stage call (`infer_frame`) and the OCR-stage crop
+  (`vehicle_img`) — one brightness check per frame, not two.
+- **Static image re-verification:** identical results to Session 5's
+  unconditional version — clean images still 3/3 at baseline speed
+  (5.72s for 3 images), degraded low-light still 2/3 (car1's specific
+  box-tightness issue is unchanged, unrelated to this session), glare/
+  fog/motion-blur unaffected, exactly as expected since those don't
+  cross the darkness threshold (glare/fog) or aren't addressed by this
+  fix at all (motion blur).
+- **The result that actually matters — dashcam video, measured, not
+  assumed:**
+
+  | version | total wall time | confirmed plates |
+  |---|---|---|
+  | baseline (Session 3-4, no low-light handling) | 168-280s | `HR98E4959`, `FRJ45CK2913`, `OL52OO0882`, `THR26E06477` |
+  | Session 5 (unconditional) | **608s** (2.5-3.6x slower) | `HR98E4959`, `UL52OO0862` (variant), `HR26EO6477` (cleaner) |
+  | **Session 6 (brightness-gated)** | **227s** — back in the baseline range | `HR98E4959`, `FRJ45CK2913`, `OL52OO0882`, `THR26E06477` — **identical set to baseline** |
+
+  Confirms the gate works exactly as designed: this well-lit clip
+  never crosses the darkness threshold, so behavior and speed are
+  byte-for-byte equivalent to having no low-light handling at all —
+  zero cost imposed on footage that doesn't need it. The genuine
+  accuracy benefit (recovering vehicle detection on dark frames, per
+  Session 5's diagnosis) is preserved for frames that actually are
+  dark, which this particular video simply doesn't contain any of.
+- **What this doesn't prove:** this video has no real low-light
+  segments to confirm the gate correctly *triggers* and *helps* on
+  real (not synthetic) dark footage — that's still only demonstrated
+  on the synthetic `car1/2/3_lowlight.jpg` set. The gate's trigger
+  logic itself is simple and directly threshold-tested (real measured
+  brightness values, clean separation), so confidence is reasonably
+  high, but "zero cost on footage that doesn't need it" and "helps
+  footage that does" are two different claims — this session provides
+  strong evidence for the first, and only synthetic evidence for the
+  second (unchanged from Session 5).
+
+### Verdict: **kept**
+
+Resolves Session 5's cost objection with real measurement, not just
+reasoning: same accuracy profile on every condition tested, and video
+throughput restored to the pre-Session-5 baseline range. This is now
+the default, unconditional behavior of `detect_plate_from_frame` — no
+longer flagged as a pending human decision, since the tradeoff that
+required that decision no longer exists on the evidence gathered.
+
+## Next improvement to investigate
+
+1. Fix the low-light **box-tightness** issue (car1: real vehicle
+   detected, box too tight to include the plate) — unchanged from
+   Session 5, still open.
+2. Motion blur — unchanged, still the single biggest evidenced gap,
+   still needs a real deblurring model (LPDGAN) as a dedicated future
+   session's work.
+3. `OL52OO0882`/`DL52...` non-convergence — unchanged from Session 3,
+   still unresolved. Notably, this session's run reproduced the exact
+   same `OL52OO0882` reading as the original Session 3-4 baseline
+   (since the gate never triggered on this clip) — reinforcing this is
+   a stable, repeatable hard case for this specific plate/frame range,
+   not noise from any preprocessing change.
+4. Confidence floor re-tuning, dedicated plate-region detector —
+   unchanged from prior sessions.
