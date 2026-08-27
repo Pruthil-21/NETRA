@@ -282,6 +282,24 @@ def preprocess_for_ocr(img):
     enhanced = clahe.apply(gray)
     return enhanced
 
+LOW_LIGHT_BRIGHTNESS_THRESHOLD = 50
+
+
+def is_low_light(img):
+    """
+    Cheap (grayscale mean, no denoising) brightness check, so the
+    expensive enhance_low_light() below only runs on frames that
+    actually need it. Threshold calibrated directly against our own
+    data, not guessed: the 3 clean ground-truth images measure
+    97-119 mean brightness; their synthetically darkened counterparts
+    measure 25-29; fog/glare variants measure 131-159 (brighter than
+    clean, not darker). 50 sits in the middle of a wide, cleanly
+    separated gap between the darkest normal frame and the brightest
+    dark one in every case tested so far.
+    """
+    return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).mean() < LOW_LIGHT_BRIGHTNESS_THRESHOLD
+
+
 def enhance_low_light(img):
     """
     Denoise-then-CLAHE (LAB L-channel) for low-light frames. Tested
@@ -294,14 +312,16 @@ def enhance_low_light(img):
     and didn't regress the 3 clean ground-truth images (still 3/3 at
     1.0 confidence with it applied).
 
-    NOT wired into detect_plate_from_frame's default path -- real
-    accuracy benefit, but fastNlMeansDenoisingColored is expensive
-    enough that applying it every frame measured a 2.5-3.6x end-to-end
-    slowdown on the dashcam video regression (168-280s -> 608s for the
-    same clip). That's a genuine cost/accuracy tradeoff for whoever
-    reviews this branch to decide, not something to force in
-    unilaterally. Call this directly on a frame/crop if testing or
-    deliberately enabling low-light handling.
+    Gated behind is_low_light() in detect_plate_from_frame, not called
+    unconditionally -- fastNlMeansDenoisingColored is expensive enough
+    that applying it to every frame (including well-lit ones that don't
+    need it) measured a 2.5-3.6x end-to-end slowdown on the dashcam
+    video regression (168-280s -> 608s for the same clip, Session 5).
+    Gating it behind a cheap brightness check (Session 6) should
+    recover the accuracy benefit on genuinely dark frames without
+    paying that cost on the (presumably far more common) well-lit ones
+    -- see ALPR_IMPROVEMENT_LOG.md Session 6 for the actual measured
+    result on real video, not just the reasoning.
     """
     denoised = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
     lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
@@ -337,12 +357,15 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     if infer_frame is None or raw_frame is None:
         return {"error": "Empty frame"}
 
-    # NOT calling enhance_low_light() here by default -- see its
-    # docstring and ALPR_IMPROVEMENT_LOG.md Session 5 for why: real
-    # accuracy benefit, but a measured ~2.5-3.6x end-to-end video
-    # slowdown (168-280s -> 608s on the same clip) that's a genuine
-    # human tradeoff call, not something to force through unilaterally.
-    results = yolo_model(infer_frame, verbose=False)
+    # Session 5 measured enhance_low_light() applied unconditionally
+    # costing 2.5-3.6x end-to-end video throughput for a partial
+    # accuracy gain -- too costly to force in for every frame. Session
+    # 6 gates it behind a cheap brightness check instead, so it only
+    # runs on frames that are actually dark. See is_low_light()'s
+    # docstring for the threshold, and ALPR_IMPROVEMENT_LOG.md Session
+    # 6 for the measured cost of this gated version specifically.
+    frame_is_dark = is_low_light(infer_frame)
+    results = yolo_model(enhance_low_light(infer_frame) if frame_is_dark else infer_frame, verbose=False)
     vehicle_classes = {2, 3, 5, 7}
 
     best_crop = None
@@ -386,6 +409,8 @@ def detect_plate_from_frame(infer_frame, raw_frame):
         return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band"}
 
     vehicle_img = raw_frame[y1:y2, x1:x2]
+    if frame_is_dark:
+        vehicle_img = enhance_low_light(vehicle_img)
 
     ocr_results = _ocr_readtext(vehicle_img)
 
