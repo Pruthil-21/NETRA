@@ -1,16 +1,16 @@
-const HLS_BASE_URL = (process.env.NEXT_PUBLIC_MEDIAMTX_HLS_URL || 'http://localhost:8888').replace(/\/+$/, '');
+export type StreamUnavailableReason = 'not-configured' | 'no-stream';
+export type StreamUrlResult = { url: string; reason?: undefined } | { url: null; reason: StreamUnavailableReason };
 
 /**
- * Derives the MediaMTX HLS playback URL for a camera from its RTSP publish URL.
- * MediaMTX remuxes any published RTSP path to HLS at `${HLS_BASE_URL}/<path>/index.m3u8`
- * automatically, so the two only need to agree on the path segment.
+ * Builds the MediaMTX HLS playlist URL for a camera's numeric `stream_id`.
+ * Never falls back to a hardcoded host: a missing `NEXT_PUBLIC_MEDIAMTX_HLS_URL`
+ * is a configuration error the UI should surface, not silently mask.
  */
-export function getHlsStreamUrl(rtspUrl: string): string | null {
-  try {
-    const path = new URL(rtspUrl).pathname.replace(/^\/+|\/+$/g, '');
-    if (!path) return null;
-    return `${HLS_BASE_URL}/${path}/index.m3u8`;
-  } catch {
-    return null;
-  }
+export function getHlsStreamUrl(streamId: number | null | undefined): StreamUrlResult {
+  const base = process.env.NEXT_PUBLIC_MEDIAMTX_HLS_URL;
+  if (!base) return { url: null, reason: 'not-configured' };
+  if (streamId === null || streamId === undefined) return { url: null, reason: 'no-stream' };
+
+  const trimmedBase = base.replace(/\/+$/, '');
+  return { url: `${trimmedBase}/stream/${streamId}/index.m3u8` };
 }

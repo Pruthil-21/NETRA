@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { Camera } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
-import { cameraService } from '@/services/cameraService';
+import { organizerCameraService } from '@/services/organizerCameraService';
 
 interface RegistryContextType {
   cameras: Camera[];
@@ -36,10 +36,11 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   const refreshCameras = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await cameraService.getAll();
+      const data = await organizerCameraService.getAll();
       setCameras(data);
+      setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error');
+      setError(err instanceof Error ? err.message : 'Failed to load camera registry');
     } finally {
       setIsLoading(false);
     }
@@ -61,20 +62,20 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
       const matchesConnectivity =
         !filters.connectivity ||
         filters.connectivity === 'all' ||
-        cam.status?.toLowerCase() === filters.connectivity.toLowerCase();
+        cam.connectivity_status?.toLowerCase() === filters.connectivity.toLowerCase();
 
       // 3. Health filter (operational / degraded / fault / all)
       const matchesHealth =
         !filters.health ||
         filters.health === 'all' ||
-        (cam.health && cam.health.toLowerCase() === filters.health.toLowerCase());
+        (cam.health_status && cam.health_status.toLowerCase() === filters.health.toLowerCase());
 
       // 4. Search query filter (matches name, location, or camera ID)
       const query = filters.searchQuery?.trim().toLowerCase() || '';
       const matchesSearch =
         !query ||
         cam.name?.toLowerCase().includes(query) ||
-        cam.location?.toLowerCase().includes(query) ||
+        cam.dept?.toLowerCase().includes(query) ||
         String(cam.id).toLowerCase().includes(query);
 
       return matchesDept && matchesConnectivity && matchesHealth && matchesSearch;
