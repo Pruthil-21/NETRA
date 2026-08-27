@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { CameraRegistryProvider, useCameraRegistry } from '../context/CameraRegistryContext';
-import { cameraService } from '@/services/cameraService';
+import { organizerCameraService } from '@/services/organizerCameraService';
 import CameraCard from '@/components/registry/CameraCard';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import Badge from '@/components/common/Badge';
@@ -11,7 +11,7 @@ import { CameraFilters } from '@/types/filters';
 
 const MOCK_CAMERAS: Camera[] = [
   {
-    id: 'CAM-GJ-001',
+    id: 1,
     name: 'Sector 10 CH Road Junction',
     dept: 'Home / Police',
     lat: 23.2156,
@@ -25,7 +25,7 @@ const MOCK_CAMERAS: Camera[] = [
     rtsp_url: 'rtsp://localhost:8554/cam1',
   },
   {
-    id: 'CAM-GJ-002',
+    id: 2,
     name: 'Gita Mandir Bus Port',
     dept: 'Transport / GSRTC',
     lat: 23.0131,
@@ -62,7 +62,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
     );
 
     expect(screen.getByText('Sector 10 CH Road Junction')).toBeInTheDocument();
-    expect(screen.getByText('CAM-GJ-001')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Sector 10 CH Road Junction'));
     expect(handleSelect).toHaveBeenCalledTimes(1);
@@ -77,7 +77,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
     render(<CameraDetailDrawer camera={MOCK_CAMERAS[0]} />);
 
     expect(screen.getByText('Sector 10 CH Road Junction')).toBeInTheDocument();
-    expect(screen.getByText('CAM-GJ-001')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
     expect(screen.getByText('Gandhinagar Police')).toBeInTheDocument();
     expect(screen.getByText('Cloud Architecture')).toBeInTheDocument();
     expect(screen.getByText('30 Days Archival Policy')).toBeInTheDocument();
@@ -85,7 +85,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
   });
 
   it('Feature 4: CameraRegistryContext filters data accurately by Department', async () => {
-    vi.spyOn(cameraService, 'getAll').mockResolvedValue(MOCK_CAMERAS);
+    vi.spyOn(organizerCameraService, 'getAll').mockResolvedValue(MOCK_CAMERAS);
 
     function TestConsumer() {
       const { filteredCameras, setFilters } = useCameraRegistry();

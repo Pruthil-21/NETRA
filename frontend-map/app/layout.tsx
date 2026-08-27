@@ -1,18 +1,23 @@
 import type { Metadata } from 'next';
-// Next.js handles this global stylesheet at build time.
-// @ts-expect-error No TypeScript declaration is needed for CSS side-effect imports.
+import { CameraRegistryProvider } from '@/context/CameraRegistryContext';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'NETRA — GIS Camera Registry',
-  description: 'Gujarat Govt Unified CCTV Integration System',
+  title: 'NETRA - Camera Registry & GIS Map',
+  description: 'Real-time CCTV Monitoring & GIS Map',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="en">
-      <body className="antialiased min-h-screen bg-slate-950 text-slate-100">
-        {children}
+      <body className="bg-slate-950 text-slate-100 antialiased">
+        <CameraRegistryProvider>
+          {children}
+        </CameraRegistryProvider>
       </body>
     </html>
   );
