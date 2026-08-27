@@ -2,7 +2,6 @@ import uuid
 
 import psycopg2
 import psycopg2.extras
-
 from app.config import settings
 
 
