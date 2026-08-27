@@ -3,9 +3,9 @@
 Duplicated (not shared) in backend-registry and backend-watchlist by design —
 keeps each service independently owned with zero cross-folder edits.
 """
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
 
