@@ -21,6 +21,18 @@ const CONFIG_ERROR_MESSAGES: Record<StreamUnavailableReason | 'unknown', string>
 const MAX_AUTO_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 1000;
 
+// MediaMTX's cookieCheck redirect can hang indefinitely on a dead stream
+// (the request never resolves, so hls.js never sees a fatal error to react
+// to). This watchdog guarantees we still reach a terminal state instead of
+// sitting on "Connecting…" forever.
+const CONNECT_WATCHDOG_MS = 12000;
+
+// hls.js firing MANIFEST_PARSED only means the playlist was readable — on a
+// flaky LL-HLS source (part requests 503ing) no actual frame data may ever
+// arrive, leaving the video element stuck at readyState 0 while we claim
+// "Live". If no real frame shows up shortly after, treat it as a failure.
+const PLAYBACK_STALL_MS = 8000;
+
 export default function LiveFeedPlayer({
   src,
   unavailableReason,
@@ -67,6 +79,8 @@ export default function LiveFeedPlayer({
     let onReady: (() => void) | null = null;
     let onNativeError: (() => void) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
     setStatus('checking');
 
@@ -77,12 +91,33 @@ export default function LiveFeedPlayer({
       }
     };
 
+    const clearWatchdog = () => {
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+    };
+
+    const clearStallTimer = () => {
+      if (stallTimer) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+
     const giveUp = () => {
       clearRetryTimer();
+      clearWatchdog();
+      clearStallTimer();
       setStatus(terminalStatus);
     };
 
+    watchdogTimer = setTimeout(() => {
+      if (!cancelled) giveUp();
+    }, CONNECT_WATCHDOG_MS);
+
     const scheduleRetry = (recover: () => void) => {
+      clearStallTimer();
       if (attempt >= MAX_AUTO_RETRIES) {
         giveUp();
         return;
@@ -95,6 +130,17 @@ export default function LiveFeedPlayer({
         if (!cancelled) recover();
       }, delay);
     };
+
+    const armStallWatch = (recover: () => void) => {
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        if (cancelled) return;
+        if (video.readyState < 2) scheduleRetry(recover);
+      }, PLAYBACK_STALL_MS);
+    };
+
+    const onFirstFrame = () => clearStallTimer();
+    video.addEventListener('loadeddata', onFirstFrame);
 
     setStatus('connecting');
 
@@ -110,8 +156,10 @@ export default function LiveFeedPlayer({
           if (cancelled) return;
           attempt = 0;
           clearRetryTimer();
+          clearWatchdog();
           setStatus('live');
           video.play().catch(() => {});
+          armStallWatch(() => hls.startLoad());
         });
         hls.on(HlsLib.Events.ERROR, (_event, data) => {
           if (cancelled || !data.fatal) return;
@@ -134,8 +182,12 @@ export default function LiveFeedPlayer({
           if (!cancelled) {
             attempt = 0;
             clearRetryTimer();
+            clearWatchdog();
             setStatus('live');
             video.play().catch(() => {});
+            armStallWatch(() => {
+              video.src = src;
+            });
           }
         };
         onNativeError = () => {
@@ -156,9 +208,12 @@ export default function LiveFeedPlayer({
     return () => {
       cancelled = true;
       clearRetryTimer();
+      clearWatchdog();
+      clearStallTimer();
       hlsRef.current?.destroy();
       hlsRef.current = null;
       if (video) {
+        video.removeEventListener('loadeddata', onFirstFrame);
         if (onReady) video.removeEventListener('loadedmetadata', onReady);
         if (onNativeError) video.removeEventListener('error', onNativeError);
         video.removeAttribute('src');
