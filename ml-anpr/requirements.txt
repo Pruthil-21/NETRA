@@ -1,0 +1,27 @@
+# Pinned to the exact versions tested and verified working across
+# ALPR_IMPROVEMENT_LOG.md Sessions 1-6 (branch experiment/anpr-accuracy-improvements).
+#
+# INSTALL ORDER MATTERS -- installing paddleocr/paddlepaddle pulls in
+# opencv-contrib-python as a transitive dependency, which silently
+# shadows opencv-python and changes cv2.__version__ (5.0.0 -> 4.10.0
+# observed), which in turn changes cv2's image resize/decode behavior
+# enough to measurably regress OCR accuracy (3/3 -> 2/3 exact matches
+# on our ground-truth benchmark, confirmed directly). Sessions 2 and 3
+# both hit this on a fresh `pip install paddleocr`. Fix: install in
+# this order, then re-pin opencv-python last.
+#
+#   pip install -r requirements.txt
+#   pip install --force-reinstall opencv-python==5.0.0.93
+#
+# After installing, verify with:
+#   python -c "import cv2; print(cv2.__version__)"   # must print 5.0.0
+#
+# See ALPR_IMPROVEMENT_LOG.md Session 3 ("Setup problem, fixed properly
+# this time") for the full diagnosis.
+
+opencv-python==5.0.0.93
+torch==2.8.0
+ultralytics==8.4.123
+requests==2.32.5
+paddleocr==3.7.0
+paddlepaddle==3.3.1
