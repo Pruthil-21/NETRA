@@ -7,7 +7,7 @@ from psycopg2.extras import RealDictCursor
 from ..auth import require_internal_key, require_role
 from ..database import get_db
 from ..schemas import AlertOut, AlertStatusUpdate, DetectionIn
-from ..services import alerts_service
+from ..services import alerts_service, audit_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -32,6 +32,7 @@ def receive_detection(
     if alert is None:
         response.status_code = 204
         return None
+    audit_service.log(db, "ml-anpr", "create", "alert", alert["id"])
     return alert
 
 
@@ -42,7 +43,8 @@ def update_alert_status(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    alert = alerts_service.update_status(db, alert_id, body.status)
+    alert = alerts_service.update_status(db, alert_id, body.status, user.get("sub"))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
+    audit_service.log(db, user.get("sub"), "status_change", "alert", alert_id)
     return alert
