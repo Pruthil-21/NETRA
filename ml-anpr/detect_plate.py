@@ -6,10 +6,10 @@ import uuid
 from datetime import datetime, timezone
 
 import cv2
-import torch
-import requests
-from ultralytics import YOLO
 import easyocr
+import requests
+import torch
+from ultralytics import YOLO
 
 # Allow importing streaming/rtsp_reader.py even when running from inside
 # ml-anpr/ — adds the repo root to the path so `streaming` is importable.
@@ -48,14 +48,43 @@ ocr_reader = easyocr.Reader(['en'], gpu=False)
 INDIAN_PLATE_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
 
 
-def _plate_similarity(a, b):
-    """Fraction of matching characters at the same position. Only meaningful
-    for equal-length strings, since motion blur/distance mostly causes
-    per-character substitution errors (e.g. 8 <-> B), not length changes."""
-    if len(a) != len(b):
+def _edit_similarity(a, b):
+    """Normalized edit-distance similarity (1.0 = identical). Tolerant of
+    both character substitution (motion blur misreading one character as
+    another) AND length differences (OCR dropping/inserting a character
+    on a harder read of the same real plate) — same-length-only matching
+    missed real repeat plates that read as slightly different lengths."""
+    if a == b:
+        return 1.0
+    la, lb = len(a), len(b)
+    dp = list(range(lb + 1))
+    for i in range(1, la + 1):
+        prev, dp[0] = dp[0], i
+        for j in range(1, lb + 1):
+            prev, dp[j] = dp[j], min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] != b[j - 1]))
+    return 1 - dp[lb] / max(la, lb)
+
+
+def _containment_similarity(short, long_):
+    """Best contiguous-window character match of `short` inside `long_`,
+    normalized by the short string's own length. Catches truncated reads
+    (a plate partially cut off at the edge of a crop, or OCR just not
+    extending across the full width) — a 7-character prefix of an
+    11-character plate is a perfect read as far as it goes, but plain
+    edit-distance similarity is capped by the length gap alone and can
+    never clear a reasonable clustering threshold."""
+    ls, ll = len(short), len(long_)
+    if ls == 0 or ls > ll:
         return 0.0
-    matches = sum(1 for x, y in zip(a, b) if x == y)
-    return matches / len(a)
+    return max(
+        sum(1 for x, y in zip(short, long_[start:start + ls]) if x == y) / ls
+        for start in range(ll - ls + 1)
+    )
+
+
+def _plate_similarity(a, b):
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    return max(_edit_similarity(a, b), _containment_similarity(shorter, longer))
 
 
 class PlateConfirmationTracker:
@@ -101,11 +130,25 @@ class PlateConfirmationTracker:
 
     @classmethod
     def _reconstruct(cls, readings):
-        length = len(readings[0][0])
+        """Per-character voting requires aligned positions, which only
+        makes sense within one length. A cluster can hold readings of
+        several lengths (edit-distance clustering tolerates dropped/
+        inserted characters), so vote on the dominant length first, then
+        vote characters only among readings of that length — the other
+        lengths still count toward cluster membership, just not toward
+        the reconstructed string."""
+        length_weights = {}
+        for plate, conf, note in readings:
+            weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
+            length_weights[len(plate)] = length_weights.get(len(plate), 0.0) + weight
+        dominant_length = max(length_weights, key=length_weights.get)
+
         chars = []
-        for i in range(length):
+        for i in range(dominant_length):
             votes = {}
             for plate, conf, note in readings:
+                if len(plate) != dominant_length:
+                    continue
                 weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
                 votes[plate[i]] = votes.get(plate[i], 0.0) + weight
             chars.append(max(votes, key=votes.get))
@@ -126,7 +169,16 @@ class PlateConfirmationTracker:
         cluster["readings"] = cluster["readings"][-self.window_size:]
         cluster["representative"] = self._reconstruct(cluster["readings"])
 
-        if len(cluster["readings"]) < self.confirm_threshold or cluster["representative"] in self.confirmed:
+        if len(cluster["readings"]) < self.confirm_threshold:
+            return None
+
+        # A single real, hard-to-read plate can still split across two
+        # incompatible-length clusters that never merge (e.g. flip-flopping
+        # on whether an ambiguous character is even present) — each can
+        # independently cross confirm_threshold. Rather than solve general
+        # cluster merging, just refuse to fire a second alert for something
+        # already close to an already-confirmed plate.
+        if any(_plate_similarity(cluster["representative"], c) >= self.SIMILARITY_THRESHOLD for c in self.confirmed):
             return None
 
         best_conf = max(c for _, c, _ in cluster["readings"])
@@ -159,6 +211,24 @@ def preprocess_for_ocr(img):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     return enhanced
+
+def plate_region_crop(vehicle_img):
+    """
+    Real plates sit in a fairly predictable band of a vehicle's bounding
+    box: lower-middle, not the very bottom (bumper/road) or top
+    (windshield/hood/grille badge). For a distant or angled vehicle, the
+    plate is a tiny fraction of the full vehicle crop, so EasyOCR ends up
+    searching mostly irrelevant pixels (badges, mirrors, grille) at low
+    effective resolution. Narrowing to this band before OCR raises the
+    fraction of real plate pixels in what gets upscaled and read.
+    """
+    h, w = vehicle_img.shape[:2]
+    y1, y2 = int(0.55 * h), int(0.92 * h)
+    x1, x2 = int(0.12 * w), int(0.90 * w)
+    if y2 - y1 < 10 or x2 - x1 < 20:
+        return None
+    return vehicle_img[y1:y2, x1:x2]
+
 
 def detect_plate_from_frame(infer_frame, raw_frame):
     """
@@ -198,8 +268,16 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     x1, y1, x2, y2 = best_crop
     vehicle_img = raw_frame[y1:y2, x1:x2]
 
-    processed = preprocess_for_ocr(vehicle_img)
-    ocr_results = ocr_reader.readtext(processed)
+    ocr_results = list(ocr_reader.readtext(preprocess_for_ocr(vehicle_img)))
+
+    # Second pass on the plate's likely band within the vehicle box — a
+    # much higher plate-pixel-density crop than the whole vehicle, so it
+    # catches plates the whole-crop pass is too low-signal to read. Kept
+    # additive (not a replacement) so a mislocalized crop can't cost us
+    # a detection the whole-crop pass would still have found.
+    region = plate_region_crop(vehicle_img)
+    if region is not None and region.size > 0:
+        ocr_results += ocr_reader.readtext(preprocess_for_ocr(region))
 
     if not ocr_results:
         return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read"}
