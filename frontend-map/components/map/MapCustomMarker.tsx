@@ -2,7 +2,7 @@ import L from 'leaflet';
 import { Camera } from '../../types/camera';
 
 export const createCustomMarkerIcon = (camera: Camera, isSelected: boolean) => {
-  const status = ((camera as any).status || (camera as any).connectivity || 'offline').toLowerCase();
+  const status = (camera.connectivity_status || 'offline').toLowerCase();
   const isOnline = status === 'online';
   const color = isOnline ? '#10B981' : '#EF4444';
   const pulseClass = isSelected ? 'animate-pulse' : '';

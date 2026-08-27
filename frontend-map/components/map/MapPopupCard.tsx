@@ -7,9 +7,9 @@ interface MapPopupCardProps {
 }
 
 export const MapPopupCard: React.FC<MapPopupCardProps> = ({ camera, onInspect }) => {
-  const status = camera.status || camera.connectivity || 'offline';
+  const status = camera.connectivity_status || 'offline';
   const isOnline = status.toLowerCase() === 'online';
-  const displayLocation = camera.location || camera.dept || 'Gujarat';
+  const displayLocation = camera.dept || 'Gujarat';
 
   return (
     <div className="p-2 min-w-[180px] text-slate-100">

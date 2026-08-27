@@ -6,6 +6,7 @@ import { Camera } from '../../types/camera';
 import { createCustomMarkerIcon } from './MapCustomMarker';
 import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
+import { CARTO_DARK_TILES, CARTO_ATTRIBUTION } from '@/lib/constants/mapConfig';
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -15,7 +16,7 @@ const MapController: React.FC<MapControllerProps> = ({ selectedCamera }) => {
   const map = useMap();
 
   useEffect(() => {
-    const longitude = selectedCamera?.long ?? selectedCamera?.lng;
+    const longitude = selectedCamera?.long;
     if (selectedCamera?.lat && longitude) {
       map.flyTo([selectedCamera.lat, longitude], Math.max(map.getZoom(), 14), {
         duration: 1.2,
@@ -43,16 +44,13 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       zoom={7}
       className="w-full h-full bg-slate-950"
     >
-      <TileLayer
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      />
+      <TileLayer attribution={CARTO_ATTRIBUTION} url={CARTO_DARK_TILES} />
 
       <MapController selectedCamera={selectedCamera} />
 
       <MarkerClusterGroup>
         {cameras.map((cam: Camera) => {
-          const longitude = cam.long ?? cam.lng ?? 0;
+          const longitude = cam.long ?? 0;
           const isSelected = selectedCamera?.id === cam.id;
           return (
             <Marker
