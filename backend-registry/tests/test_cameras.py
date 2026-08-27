@@ -1,0 +1,71 @@
+import pytest
+
+NEW_CAMERA = {
+    "name": "Test Camera",
+    "dept": "Traffic Police",
+    "lat": 23.0225,
+    "long": 72.5714,
+    "camera_type": "ip",
+    "ownership": "traffic-police",
+    "connectivity_status": "online",
+    "storage_type": "nvr",
+    "retention_days": 15,
+    "health_status": "healthy",
+    "rtsp_url": "rtsp://demo/test",
+}
+
+
+def test_list_cameras_requires_auth(client):
+    resp = client.get("/cameras")
+    assert resp.status_code == 401
+
+
+def test_list_cameras_with_auth(client, viewer_headers):
+    resp = client.get("/cameras", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+    assert len(resp.json()) > 0
+
+
+def test_create_camera_requires_officer(client, viewer_headers):
+    resp = client.post("/cameras", json=NEW_CAMERA, headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+def test_camera_crud_lifecycle(client, officer_headers, viewer_headers):
+    create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    assert create_resp.status_code == 201
+    created = create_resp.json()
+    camera_id = created["id"]
+    assert created["name"] == NEW_CAMERA["name"]
+    assert created["lat"] == pytest.approx(NEW_CAMERA["lat"], abs=1e-4)
+    assert created["long"] == pytest.approx(NEW_CAMERA["long"], abs=1e-4)
+
+    get_resp = client.get(f"/cameras/{camera_id}", headers=viewer_headers)
+    assert get_resp.status_code == 200
+    assert get_resp.json()["name"] == NEW_CAMERA["name"]
+
+    update_resp = client.put(
+        f"/cameras/{camera_id}",
+        json={"health_status": "degraded"},
+        headers=officer_headers,
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["health_status"] == "degraded"
+    assert update_resp.json()["name"] == NEW_CAMERA["name"]
+
+    delete_resp = client.delete(f"/cameras/{camera_id}", headers=officer_headers)
+    assert delete_resp.status_code == 204
+
+    missing_resp = client.get(f"/cameras/{camera_id}", headers=viewer_headers)
+    assert missing_resp.status_code == 404
+
+
+def test_get_missing_camera_404(client, viewer_headers):
+    resp = client.get("/cameras/999999", headers=viewer_headers)
+    assert resp.status_code == 404
+
+
+def test_delete_missing_camera_404(client, officer_headers):
+    resp = client.delete("/cameras/999999", headers=officer_headers)
+    assert resp.status_code == 404
