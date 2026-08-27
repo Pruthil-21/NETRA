@@ -51,9 +51,33 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
 
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
+      // 1. Department filter (handles case-insensitive match & 'All Departments')
       const matchesDept =
-        filters.department === 'All Departments' || cam.dept.toLowerCase() === filters.department.toLowerCase();
-      return matchesDept;
+        !filters.department ||
+        filters.department === 'All Departments' ||
+        cam.dept?.toLowerCase() === filters.department.toLowerCase();
+
+      // 2. Connectivity filter (online / offline / all)
+      const matchesConnectivity =
+        !filters.connectivity ||
+        filters.connectivity === 'all' ||
+        cam.status?.toLowerCase() === filters.connectivity.toLowerCase();
+
+      // 3. Health filter (operational / degraded / fault / all)
+      const matchesHealth =
+        !filters.health ||
+        filters.health === 'all' ||
+        (cam.health && cam.health.toLowerCase() === filters.health.toLowerCase());
+
+      // 4. Search query filter (matches name, location, or camera ID)
+      const query = filters.searchQuery?.trim().toLowerCase() || '';
+      const matchesSearch =
+        !query ||
+        cam.name?.toLowerCase().includes(query) ||
+        cam.location?.toLowerCase().includes(query) ||
+        String(cam.id).toLowerCase().includes(query);
+
+      return matchesDept && matchesConnectivity && matchesHealth && matchesSearch;
     });
   }, [cameras, filters]);
 
