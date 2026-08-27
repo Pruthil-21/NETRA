@@ -1,9 +1,12 @@
 import React from 'react';
 import { Camera } from '@/types/camera';
 import { getHlsStreamUrl } from '@/lib/stream';
+import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import LiveFeedPlayer from './LiveFeedPlayer';
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
+  const { updateCameraConnectivity } = useCameraRegistry();
+
   if (!camera) {
     return <div className="p-4 text-xs text-slate-500">No camera selected.</div>;
   }
@@ -20,6 +23,7 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           src={stream.url}
           unavailableReason={stream.reason}
           preliminaryStatus={camera.connectivity_status}
+          onStatusChange={(status) => updateCameraConnectivity(camera.id, status)}
         />
       </div>
       <div className="flex-1 p-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">

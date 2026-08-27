@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
-import { Camera } from '@/types/camera';
+import { Camera, ConnectivityStatus } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { organizerCameraService } from '@/services/organizerCameraService';
 
@@ -15,6 +15,7 @@ interface RegistryContextType {
   setSelectedCamera: (cam: Camera | null) => void;
   setFilters: React.Dispatch<React.SetStateAction<CameraFilters>>;
   refreshCameras: () => Promise<void>;
+  updateCameraConnectivity: (id: number, status: ConnectivityStatus) => void;
 }
 
 const initialFilters: CameraFilters = {
@@ -82,6 +83,19 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     });
   }, [cameras, filters]);
 
+  // The organizer's width>0 flag is only a preliminary signal (see
+  // lib/organizerCameras.ts). Once a camera's live feed actually connects or
+  // fails, LiveFeedPlayer reports the real outcome here so the map pin
+  // reflects reality instead of staying stuck on the preliminary guess.
+  const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
+    setCameras((prev) =>
+      prev.map((c) => (c.id === id && c.connectivity_status !== status ? { ...c, connectivity_status: status } : c))
+    );
+    setSelectedCamera((prev) =>
+      prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
+    );
+  }, []);
+
   return (
     <CameraRegistryContext.Provider
       value={{
@@ -94,6 +108,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         setSelectedCamera,
         setFilters,
         refreshCameras,
+        updateCameraConnectivity,
       }}
     >
       {children}

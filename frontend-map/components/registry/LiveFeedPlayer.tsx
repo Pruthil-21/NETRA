@@ -33,14 +33,22 @@ const CONNECT_WATCHDOG_MS = 12000;
 // "Live". If no real frame shows up shortly after, treat it as a failure.
 const PLAYBACK_STALL_MS = 8000;
 
+// The organizer's upstream cameras are highly dynamic — a publisher can drop
+// and come back within 10-30s. Once a camera settles into a terminal offline
+// state, keep quietly re-checking in the background so a recovered feed
+// starts playing on its own instead of requiring a manual Retry click.
+const AUTO_RETRY_INTERVAL_MS = 15000;
+
 export default function LiveFeedPlayer({
   src,
   unavailableReason,
   preliminaryStatus,
+  onStatusChange,
 }: {
   src: string | null;
   unavailableReason?: StreamUnavailableReason;
   preliminaryStatus?: ConnectivityStatus;
+  onStatusChange?: (status: ConnectivityStatus) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -48,6 +56,14 @@ export default function LiveFeedPlayer({
   const [status, setStatus] = useState<FeedStatus>('checking');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
+
+  // Kept in a ref so the connection effect below doesn't need this in its
+  // dependency array — an inline arrow function from the parent would
+  // otherwise re-run the whole connection attempt on every parent render.
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
 
   const terminalStatus: FeedStatus = preliminaryStatus === 'online' ? 'unavailable' : 'offline';
   const terminalMessage =
@@ -58,6 +74,12 @@ export default function LiveFeedPlayer({
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
+
+  useEffect(() => {
+    if (!src || (status !== 'offline' && status !== 'unavailable')) return;
+    const timer = setTimeout(() => setRetryNonce((n) => n + 1), AUTO_RETRY_INTERVAL_MS);
+    return () => clearTimeout(timer);
+  }, [src, status]);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
@@ -110,6 +132,7 @@ export default function LiveFeedPlayer({
       clearWatchdog();
       clearStallTimer();
       setStatus(terminalStatus);
+      onStatusChangeRef.current?.('offline');
     };
 
     watchdogTimer = setTimeout(() => {
@@ -139,7 +162,14 @@ export default function LiveFeedPlayer({
       }, PLAYBACK_STALL_MS);
     };
 
-    const onFirstFrame = () => clearStallTimer();
+    // loadeddata is the actual proof of a decoded frame — more reliable than
+    // MANIFEST_PARSED (which can fire on a flaky source that never delivers
+    // real media, see PLAYBACK_STALL_MS above), so this is what we report
+    // upstream as the camera's real connectivity for the map pin.
+    const onFirstFrame = () => {
+      clearStallTimer();
+      onStatusChangeRef.current?.('online');
+    };
     video.addEventListener('loadeddata', onFirstFrame);
 
     setStatus('connecting');
