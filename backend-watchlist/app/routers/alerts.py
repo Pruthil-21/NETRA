@@ -1,12 +1,16 @@
-"""Alerts — GET is officer-only; POST is called internally by ml-anpr on every detection."""
-from typing import Optional
+"""Alerts — GET and PATCH are officer-only.
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from psycopg2.extras import RealDictCursor
+Alerts are created internally as a side effect of POST /detections (see
+routers/detections.py), never posted here directly — a watchlist match is
+detected and the alert row created in the same request that records the
+underlying detection, so ml-anpr only ever calls one endpoint.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from psycopg2.extras import RealDictCursor  # type: ignore
 
-from ..auth import require_internal_key, require_role
+from ..auth import require_role
 from ..database import get_db
-from ..schemas import AlertOut, AlertStatusUpdate, DetectionIn
+from ..schemas import AlertOut, AlertStatusUpdate
 from ..services import alerts_service, audit_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
@@ -18,22 +22,6 @@ def get_alerts(
     user=Depends(require_role("officer")),
 ):
     return alerts_service.list_alerts(db)
-
-
-@router.post("", response_model=Optional[AlertOut], status_code=201)
-def receive_detection(
-    detection: DetectionIn,
-    response: Response,
-    db: RealDictCursor = Depends(get_db),
-    _=Depends(require_internal_key),
-):
-    """ml-anpr posts every plate read here; only watchlist matches create an alert."""
-    alert = alerts_service.process_detection(db, detection)
-    if alert is None:
-        response.status_code = 204
-        return None
-    audit_service.log(db, "ml-anpr", "create", "alert", alert["id"])
-    return alert
 
 
 @router.patch("/{alert_id}", response_model=AlertOut)
