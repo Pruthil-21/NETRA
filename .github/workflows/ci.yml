@@ -28,6 +28,7 @@ jobs:
         working-directory: backend-registry
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/netra_test
+      JWT_SECRET: ci-test-secret-not-for-production
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -79,6 +80,8 @@ jobs:
         working-directory: backend-watchlist
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/netra_test
+      JWT_SECRET: ci-test-secret-not-for-production
+      INTERNAL_SERVICE_KEY: dev-internal-key
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
