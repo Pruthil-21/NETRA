@@ -6,6 +6,7 @@ import { Camera } from '../../types/camera';
 import { createCustomMarkerIcon } from './MapCustomMarker';
 import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
+import { CARTO_DARK_TILES, CARTO_ATTRIBUTION } from '@/lib/constants/mapConfig';
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -43,10 +44,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       zoom={7}
       className="w-full h-full bg-slate-950"
     >
-      <TileLayer
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      />
+      <TileLayer attribution={CARTO_ATTRIBUTION} url={CARTO_DARK_TILES} />
 
       <MapController selectedCamera={selectedCamera} />
 

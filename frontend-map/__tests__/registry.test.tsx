@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { CameraRegistryProvider, useCameraRegistry } from '../context/CameraRegistryContext';
-import { cameraService } from '@/services/cameraService';
+import { organizerCameraService } from '@/services/organizerCameraService';
 import CameraCard from '@/components/registry/CameraCard';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import Badge from '@/components/common/Badge';
@@ -85,7 +85,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
   });
 
   it('Feature 4: CameraRegistryContext filters data accurately by Department', async () => {
-    vi.spyOn(cameraService, 'getAll').mockResolvedValue(MOCK_CAMERAS);
+    vi.spyOn(organizerCameraService, 'getAll').mockResolvedValue(MOCK_CAMERAS);
 
     function TestConsumer() {
       const { filteredCameras, setFilters } = useCameraRegistry();

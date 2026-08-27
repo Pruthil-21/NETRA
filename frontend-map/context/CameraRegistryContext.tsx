@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { Camera } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
-import { cameraService } from '@/services/cameraService';
+import { organizerCameraService } from '@/services/organizerCameraService';
 
 interface RegistryContextType {
   cameras: Camera[];
@@ -36,7 +36,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   const refreshCameras = useCallback(async () => {
     setIsLoading(true);
     try {
-      const data = await cameraService.getAll();
+      const data = await organizerCameraService.getAll();
       setCameras(data);
       setError(null);
     } catch (err) {
