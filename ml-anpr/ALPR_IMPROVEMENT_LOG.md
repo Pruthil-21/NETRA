@@ -168,3 +168,133 @@ prove nothing either way.
 3. Both fixes were validated against only 3 images total. Real
    dashcam/live footage may surface confusable-character pairs or edge
    cases not represented here.
+
+---
+
+# Session 2 — OCR engine comparison (PaddleOCR vs. EasyOCR)
+
+Continuation of the same experiment branch, same protections
+(`send_detection_to_watchlist()` untouched, `main` untouched). Follows
+up directly on "Proposed but not attempted" above — the PaddleOCR
+comparison was attempted this session, now that the 3/3 baseline gives
+a real target to try to beat with harder evidence (raw confidence
+margin, not just pass/fail), even though the exact-match rate itself
+can't go above 3/3 on this tiny set.
+
+## Experiment 3: PaddleOCR (PP-OCRv6) vs. current EasyOCR pipeline
+
+- **Architecture tested:** same YOLO vehicle detection + crop stage
+  (unchanged), swapped only the OCR call — PaddleOCR's `PaddleOCR(...).predict()`
+  fed the identical YOLO vehicle-crop images our real pipeline produces
+  (saved to disk and fed to PaddleOCR in a completely separate,
+  isolated venv — see "Problems found" below for why).
+- **Models used:** `paddleocr` 3.7.0 / `paddlepaddle` 3.3.1 (CPU),
+  `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec` (auto-downloaded on
+  first run, ~50MB total). Compared against the current pipeline's
+  EasyOCR (`easyocr.Reader(['en'], gpu=False)`), unchanged.
+- **Dataset:** the same 3 ground-truth images (`test_images/`), fed as
+  the exact YOLO vehicle-crop files the real pipeline generates, not
+  the raw uncropped photos — this matters, see "Problems found."
+- **Conditions tested:** only daytime, clear, well-lit, front/rear
+  plate photos — the only conditions any test data in this repo
+  currently covers. Night, glare, rain/fog, low-resolution, and extreme
+  angle are **not tested by this experiment** (no such footage exists
+  locally — see "Next improvement to investigate").
+- **OCR accuracy / complete plate accuracy:**
+
+  | file | EasyOCR (current pipeline) | PaddleOCR (raw, no correction) |
+  |---|---|---|
+  | car1.jpg | `MH,48.AW,4023` conf 0.803 → needs `.`-scoping fix to not be discarded | `MH.48.AW.4023` conf **1.000**, correct immediately |
+  | car2.jpg | `HR2OAG3739` conf 0.93 → needs position-correction fix (`O`→`0`) | `HR20AG3739` conf **0.999**, correct immediately |
+  | car3.jpg | `MHZODV2366` conf 0.45 → needs position-correction fix (`Z`→`2`, `O`→`0`) | `MH20DV2366` conf **0.999**, correct immediately |
+
+  PaddleOCR: **3/3 exact matches on the raw model output, zero
+  custom correction logic needed**, at 0.999–1.000 confidence.
+  Our current pipeline needs both fixes from Experiments 1-2 to reach
+  the same 3/3, and even then tops out at 0.45–0.93 confidence — a
+  real, measurable gap, not a marginal one.
+- **Detection accuracy:** not independently isolated in this
+  experiment — both engines were tested on the same YOLO-provided crop,
+  so this experiment measures OCR/recognition quality only, not
+  plate-region detection quality. (Plate-region detection itself is
+  still the coarse "whole vehicle crop + heuristic lower-band region"
+  approach from Experiment 2's session — a dedicated plate detector,
+  e.g. from the Roboflow "Indian Number Plates" dataset found during
+  research, is a separate untested lever, blocked on needing an API
+  key this environment doesn't have.)
+- **Night / low-quality CCTV performance:** **not tested** — no
+  night/low-light/motion-blur/rain footage exists in this repo to test
+  against. This is a real gap in what this experiment can claim, not an
+  oversight being glossed over.
+- **FPS/latency:** PaddleOCR: 0.45–1.11s per image (single OCR pass,
+  CPU). Current pipeline: EasyOCR needs *two* OCR passes per frame
+  (whole-crop + region-crop, added in an earlier session specifically
+  to compensate for weak signal on small crops) at roughly similar
+  per-pass cost. If PaddleOCR's accuracy holds up on harder data, it
+  may also let us drop back to a single OCR pass — untested, flagged as
+  a follow-up.
+
+### Problems found
+
+**`pip install paddleocr` broke the working pipeline.** Installing
+`paddleocr`/`paddlepaddle` into the real `ml-anpr/venv` pulled in
+`opencv-contrib-python` as a transitive dependency, which silently
+shadowed the existing `opencv-python==5.0.0.93` (`cv2.__version__`
+changed from `5.0.0` to `4.10.0` with no error or warning). This
+**directly caused a real regression**: the current pipeline's
+benchmark dropped from 3/3 to 2/3 (car3 started misreading
+`MH20DY2366` instead of `MH20DV2366` — a different OpenCV build's
+resize/decode behavior changed what EasyOCR saw). Caught immediately by
+re-running the existing benchmark after install, before doing anything
+else. Fixed by uninstalling `paddleocr`/`paddlepaddle`/`paddlex`/
+`opencv-contrib-python` and force-reinstalling `opencv-python==5.0.0.93`
+— re-verified 3/3 restored before continuing. All further PaddleOCR
+testing was done in a completely separate, throwaway venv
+(`/tmp/.../paddleocr_test_venv`, outside the repo) that never touches
+`ml-anpr/venv`, specifically so this can't happen again.
+
+**Lesson for whoever integrates this for real:** installing
+`paddleocr` alongside the existing `opencv-python` needs the opencv
+pin handled explicitly (e.g. install paddleocr first, then
+`pip install --force-reinstall opencv-python==<pinned version>`, and
+add that constraint to `requirements.txt`) — don't just `pip install
+paddleocr` into the real environment and assume it's additive.
+
+### Verdict: promising, evidence is real — **not integrated into
+`detect_plate.py` this session, left for the next iteration**
+
+This is a genuine, measured improvement over the current OCR engine on
+every image tested, by a wide confidence margin, with no correction
+hacks required. That's a strong case for switching. It is **not yet
+integrated** into the actual pipeline, deliberately: the dependency
+conflict above is a real signal to move carefully rather than fast
+here, and a full swap needs — beyond just replacing the OCR call —
+re-tuning the two-tier confidence floors (currently 0.25/0.4, tuned
+around EasyOCR's weaker confidence range; PaddleOCR's ~0.999 range
+suggests these floors and the whole two-tier design might need
+rethinking), re-running the full dashcam-video regression suite from
+Experiment 2's session (temporal voting, false-positive checks), and
+confirming `send_detection_to_watchlist()`'s contract stays untouched
+through the swap. That's real integration work deserving its own
+careful pass, not something to bolt on in the last few minutes of this
+one.
+
+## Next improvement to investigate
+
+1. **Integrate PaddleOCR into `detect_plate.py` properly** (highest
+   priority given the evidence above): fix the opencv pin in
+   `requirements.txt`, swap the OCR call, re-tune confidence floors for
+   PaddleOCR's actual confidence distribution, re-run the full video
+   regression suite, confirm no watchlist-contract changes.
+2. **Get real night/low-light/motion-blur/rain test data.** Every
+   experiment in this log — this one and Experiments 1-2 — is validated
+   against 3 daytime, clear, well-lit photos. The system requirements
+   this whole effort is scoped against explicitly include night, glare,
+   rain/fog, and low resolution, and **none of it has been tested
+   against any of those conditions**, because no such footage exists in
+   this repo. This is the single biggest gap between what's been proven
+   here and what the actual requirements ask for.
+3. Investigate a dedicated plate-region detector (Roboflow's "Indian
+   Number Plates" dataset, found during research) as a replacement for
+   the current heuristic lower-band crop — blocked on needing a
+   Roboflow API key not available in this environment.
