@@ -1,9 +1,10 @@
 from fastapi import Depends, FastAPI, HTTPException
+from pydantic import ValidationError
 
 from .auth import get_current_user, require_role
 from .db import get_conn
-from .schemas import CameraCreate, CameraOut, CameraUpdate
-from .services import audit_service, cameras_service
+from .schemas import CameraBulkResult, CameraCreate, CameraOut, CameraUpdate, ReportSummary
+from .services import audit_service, cameras_service, reports_service
 
 app = FastAPI()
 
@@ -37,6 +38,42 @@ def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
         created = cameras_service.create_camera(conn, camera.model_dump())
         audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
         return created
+
+
+@app.post("/cameras/bulk", response_model=list[CameraBulkResult])
+def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"))):
+    """Validates and inserts each row independently — one bad row reports an
+    error for its own index instead of failing the whole batch."""
+    results = []
+    with get_conn() as conn:
+        for index, raw in enumerate(cameras):
+            try:
+                validated = CameraCreate(**raw)
+            except ValidationError as e:
+                reason = "; ".join(
+                    f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in e.errors()
+                )
+                results.append(CameraBulkResult(index=index, status="error", reason=reason))
+                continue
+
+            try:
+                created = cameras_service.create_camera(conn, validated.model_dump())
+            except Exception as e:
+                conn.rollback()
+                results.append(CameraBulkResult(index=index, status="error", reason=str(e)))
+                continue
+
+            audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
+            results.append(CameraBulkResult(index=index, status="created", camera=created))
+    return results
+
+
+@app.get("/reports/summary", response_model=ReportSummary)
+def reports_summary(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        summary = reports_service.get_summary(conn)
+        audit_service.log(conn, user.get("sub"), "view", "report")
+        return summary
 
 
 @app.put("/cameras/{camera_id}", response_model=CameraOut)
