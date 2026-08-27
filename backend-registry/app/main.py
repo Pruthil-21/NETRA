@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+
 from app.db import get_conn
 
 app = FastAPI()
