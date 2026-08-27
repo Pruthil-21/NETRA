@@ -298,3 +298,142 @@ one.
    Number Plates" dataset, found during research) as a replacement for
    the current heuristic lower-band crop — blocked on needing a
    Roboflow API key not available in this environment.
+
+---
+
+# Session 3 — integrate PaddleOCR, and a false-positive regression it introduced
+
+Continuation of the same branch/protections. Executes Session 2's
+top-priority follow-up: integrate PaddleOCR into `detect_plate.py` for
+real, re-tune, and re-run the full regression suite rather than trust
+the static-image win alone.
+
+## Experiment 4: PaddleOCR integration + a real false-positive bug it surfaced
+
+- **Architecture tested:** same YOLO vehicle-crop stage; OCR engine
+  swapped from `easyocr.Reader` to `PaddleOCR(use_angle_cls=True,
+  lang='en')` (PP-OCRv6) via a small adapter (`_ocr_readtext()`)
+  matching EasyOCR's `readtext()` return shape, so the candidate
+  filtering / correction / temporal-voting logic below it needed zero
+  changes. `preprocess_for_ocr()` (grayscale + CLAHE, tuned for
+  EasyOCR) is no longer called on this path — PaddleOCR crashes on
+  single-channel input and, per testing, doesn't need it: the raw BGR
+  crop alone scored 0.999–1.000 on every ground-truth image.
+- **Models used:** `paddleocr` 3.7.0 / `paddlepaddle` 3.3.1 (CPU),
+  `PP-OCRv6_medium_det` + `PP-OCRv6_medium_rec`.
+- **Dataset / conditions tested:** the same 3 ground-truth images, plus
+  — for the first time — the full `dashcam_trimmed.mp4` regression
+  (real moving traffic, motion blur, multiple vehicles), not just
+  static photos. Still no night/low-light/rain footage available.
+- **Setup problem, fixed properly this time:** `pip install paddleocr`
+  again pulled in `opencv-contrib-python`, which again shadows
+  `opencv-python`. Fixed by installing paddleocr first, then
+  immediately `pip install --force-reinstall opencv-python==5.0.0.93`,
+  and verifying `cv2.__version__` plus the 3/3 benchmark *before*
+  touching any pipeline code. No `requirements.txt` exists in
+  `ml-anpr/` to pin this in (dependencies here are ad-hoc, not
+  tracked in any manifest) — noting that as a real gap, not something
+  this session's scope covers fixing.
+- **OCR / complete plate accuracy (static images):** 3/3 exact matches,
+  same as Session 1's result, but now at 1.0 confidence with **no
+  correction logic needed** — `_correct_plate_positions()` (Experiment
+  2) didn't have to fire for any of the 3 images this time; PaddleOCR
+  read them correctly on the first pass.
+- **Video regression — real, serious problem found:** first full run
+  of `dashcam_trimmed.mp4` produced **6 confirmed plates, 2 of them
+  fake**: `II22IS3507` and `IZ21S3521`, both auto-confirmed at
+  0.94–1.0 confidence with `note: "ok - pattern match"` — meaning both
+  would have fired a real `send_detection_to_watchlist()` call in the
+  live pipeline. Investigated by dumping an actual video frame:
+  `2023-11-22 15:35:23` is a dashcam-burned-in timestamp overlay in the
+  bottom-left corner, incrementing every frame — which lines up exactly
+  with the confirmed strings incrementing (`II22IS3507` → `II22IS3508`
+  → `II22IS3509` → ... → `II22IS3539` over the course of the clip).
+  Root cause confirmed directly: the YOLO "largest box" vehicle
+  selection picked a close-range SUV mirror whose bounding box extends
+  to `y2 = 1080` — the literal bottom pixel of a 1080px-tall frame —
+  pulling the overlay text straight into the OCR crop. The existing
+  `.`-based GPS-overlay filter (Experiment 1) didn't catch this because
+  the timestamp overlay has no `.` character in it, only digits and
+  colons/hyphens — a real gap in that filter's coverage, not a bug in
+  it. **This false-positive risk did not exist with EasyOCR** — across
+  all of Sessions 1–2's dashcam testing (same clip, same YOLO crops),
+  EasyOCR never confirmed anything from this overlay band. A stronger,
+  more confident OCR engine reading everything more accurately, including
+  text that shouldn't have been read as a plate at all, made this worse,
+  not better — a genuinely important, non-obvious finding: raw OCR
+  engine strength and false-positive resistance are not the same axis.
+- **Fix:** clip the vehicle crop's bottom edge to `min(y2, 0.92 *
+  raw_frame_height)` before OCR ever sees it — dashcam UI overlays
+  (date/time, speed/GPS) consistently live in a fixed bottom band of
+  the frame regardless of where a vehicle is, so real plates don't need
+  that band and it's safe to exclude.
+- **Re-verified after the fix:** static images still 3/3 (the clip only
+  matters for boxes that reach near the frame bottom — none of the 3
+  test photos do). Re-ran the full `dashcam_trimmed.mp4` regression:
+  **both timestamp false positives are gone.** Down to 4 confirmed
+  plates: `HR98E4959`, `THR26E06477`, `FRJ45CK2913`, `OL52OO0882` — zero
+  of them traceable to the overlay band.
+- **Genuine win, verified twice:** `HR98E4959` — the exact plate cited
+  in this project's own original problem description as the canonical
+  "unsolvable" motion-blur example (`HR9BE4959` / `HR98E4959` /
+  `HR9854952`, same real plate, never converging) — now converges
+  cleanly and repeatedly to the identical string across 10 separate
+  frames (200, 220, 230, 310, 320, 330, 340, 360, 370, 380), at
+  0.96–1.0 confidence every time, in both the pre-fix and post-fix
+  runs. This is a real, direct resolution of the problem this whole
+  effort was originally framed around.
+- **Not resolved — honest gap, not swept under the rug:**
+  `THR26E06477` and `FRJ45CK2913` (fallback tier, 11 chars — extra
+  stray character, likely from crop edge noise) and `OL52OO0882` are
+  still confirmed with real character noise. `OL52OO0882` in particular
+  is concerning: this looks like the same real plate Session 1's
+  EasyOCR pipeline correctly converged on as `DL52CD0882` on this exact
+  clip — under PaddleOCR it drifts through `DL52OO0882` / `DL72O0009`
+  / `DL52GD0882` / `DL52GO0882` and confirms the wrong one. Whether
+  this is PaddleOCR genuinely reading this specific plate worse, or an
+  artifact of which frames/angles got sampled, wasn't investigated
+  further this session — flagged honestly as unresolved rather than
+  guessed at.
+- **Night / low-quality CCTV performance:** still not tested. Still the
+  single biggest gap between everything proven in this log and the
+  actual system requirements.
+- **FPS/latency:** 0.45–1.11s per PaddleOCR call (two calls per
+  processed frame, same two-pass whole-crop + region-crop structure as
+  before) — meaningfully slower per-call than EasyOCR was, but this
+  session didn't measure full end-to-end frame throughput head-to-head;
+  flagged as a follow-up measurement, not claimed either way.
+
+### Verdict: **kept, with honestly-documented remaining issues**
+
+Net improvement over the EasyOCR baseline: solves the project's own
+canonical hard case (`HR9BE4959`-style drift) cleanly and repeatably,
+raises static-image confidence from a 0.45–0.93 range needing custom
+correction logic to ~1.0 needing none, and — after the overlay-band
+fix, which was *necessary*, not optional, to keep this — has zero
+demonstrated false positives, matching EasyOCR's clean record. It is
+**not** a flawless replacement: `OL52OO0882`/`THR26E06477`/
+`FRJ45CK2913` show it still has real character-level noise on some
+plates, on par with or in one case possibly worse than EasyOCR's own
+imperfect record on the same clip. Keeping this is a judgment call
+based on the balance of evidence, not a claim that every metric
+improved — flagged clearly for whoever reviews this branch.
+
+## Next improvement to investigate
+
+1. **Dig into why `OL52OO0882`/`DL52...` doesn't converge correctly** —
+   pull the actual frames this cluster is reading from and look at them
+   directly (the way the overlay bug was diagnosed), rather than
+   guessing from confidence numbers alone.
+2. **Re-tune the confidence floors (0.25 pattern / 0.4 fallback).**
+   Deferred again this session — still no real "PaddleOCR confidently
+   wrong" example to calibrate against (the overlay false positives
+   were confidently *shaped right*, not usefully wrong in a way that
+   suggests a floor fix). `THR26E06477`/`FRJ45CK2913` at 0.96-0.98
+   confidence in the fallback tier suggest confidence alone won't
+   separate real fallback-tier noise from real plates either — this
+   likely needs a different signal than a raised floor.
+3. **Get real night/low-light/motion-blur/rain test data** — unchanged
+   from Session 2, still the top gap, now three sessions running.
+4. Dedicated plate-region detector — unchanged from Session 2, still
+   blocked on a Roboflow API key this environment doesn't have.
