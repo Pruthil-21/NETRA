@@ -6,9 +6,9 @@ import uuid
 from datetime import datetime, timezone
 
 import cv2
-import easyocr
 import requests
 import torch
+from paddleocr import PaddleOCR
 from ultralytics import YOLO
 
 # Allow importing streaming/rtsp_reader.py even when running from inside
@@ -43,7 +43,32 @@ print(f"Using device: {device}")
 yolo_model = YOLO("yolov8n.pt")
 yolo_model.to(device)
 
-ocr_reader = easyocr.Reader(['en'], gpu=False)
+# Swapped from EasyOCR after a head-to-head test on our own ground-truth
+# images: PaddleOCR (PP-OCRv6) got 3/3 exact matches on raw output with
+# zero custom correction logic, at 0.999-1.000 confidence, vs. EasyOCR's
+# 0.45-0.93 (needing the correction logic below to reach the same 3/3).
+# Full methodology and numbers in ALPR_IMPROVEMENT_LOG.md.
+ocr_reader = PaddleOCR(use_angle_cls=True, lang='en')
+
+
+def _ocr_readtext(img):
+    """
+    Adapter matching EasyOCR's readtext() return shape
+    (list of (bbox, text, confidence)) so the candidate-filtering logic
+    below didn't need to change when the OCR engine did. PaddleOCR needs
+    a 3-channel image -- unlike EasyOCR it crashes on the grayscale
+    output of preprocess_for_ocr(), and testing showed it doesn't need
+    that preprocessing anyway (it has its own internal doc/text
+    preprocessing): the raw BGR crop alone scored 0.999-1.000 on every
+    ground-truth image tested.
+    """
+    results = ocr_reader.predict(img)
+    return [
+        (None, text, conf)
+        for r in results
+        for text, conf in zip(r.get('rec_texts', []), r.get('rec_scores', []))
+    ]
+
 
 INDIAN_PLATE_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
 
@@ -239,6 +264,13 @@ def preprocess_for_ocr(img):
     Upscales small crops and boosts local contrast (CLAHE) before OCR.
     Helps with distant/motion-blurred plates where raw OCR confidence
     is too low to pass filtering, even though the text is genuinely there.
+
+    NOT CURRENTLY CALLED: was tuned for EasyOCR. PaddleOCR (the current
+    OCR engine, see _ocr_readtext()) crashes on this function's
+    single-channel grayscale output and, per testing, doesn't need this
+    preprocessing anyway. Kept, not deleted, in case a future engine
+    swap needs it again or a low-light/small-plate benchmark shows
+    PaddleOCR needs help this function could still provide.
     """
     h, w = img.shape[:2]
     if max(h, w) < 300:
@@ -304,9 +336,24 @@ def detect_plate_from_frame(infer_frame, raw_frame):
         return {"plate_number": None, "confidence": 0, "note": "No vehicle detected"}
 
     x1, y1, x2, y2 = best_crop
+
+    # Dashcam footage commonly has a fixed UI overlay burned into the
+    # bottom strip of every frame (date/time, speed/GPS) -- confirmed
+    # directly on dashcam_trimmed.mp4: a close/large "vehicle" box (a
+    # mirror or the dashcam's own vehicle) can extend to the frame's
+    # bottom edge and pull that overlay text into the OCR crop. The
+    # on-screen timestamp increments every frame and was misread as a
+    # sequence of structurally-valid-shaped plates (e.g. II22IS3507,
+    # II22IS3508, ...), triggering real false-positive watchlist alerts.
+    # Real plates aren't mounted in the dashcam's own UI overlay band,
+    # so clip the crop's bottom edge to exclude it.
+    y2 = min(y2, int(raw_h * 0.92))
+    if y2 <= y1:
+        return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band"}
+
     vehicle_img = raw_frame[y1:y2, x1:x2]
 
-    ocr_results = list(ocr_reader.readtext(preprocess_for_ocr(vehicle_img)))
+    ocr_results = _ocr_readtext(vehicle_img)
 
     # Second pass on the plate's likely band within the vehicle box — a
     # much higher plate-pixel-density crop than the whole vehicle, so it
@@ -315,7 +362,7 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     # a detection the whole-crop pass would still have found.
     region = plate_region_crop(vehicle_img)
     if region is not None and region.size > 0:
-        ocr_results += ocr_reader.readtext(preprocess_for_ocr(region))
+        ocr_results += _ocr_readtext(region)
 
     if not ocr_results:
         return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read"}
