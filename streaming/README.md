@@ -1,25 +1,17 @@
-# NETRA — Streaming Module (P3)
+# Streaming
 
-Multi-protocol video streaming pipeline powered by MediaMTX and FFmpeg.
+Live workflow: `start_live_proxies.sh` fetches `https://live.corp8.cloud/api/cameras`, selects cameras with `width > 0`, pulls each camera's public HLS feed, transcodes video to H.264/AVC with FFmpeg, and publishes it to local MediaMTX as `stream/<camera-id>`.
 
-## Quickstart
+Start MediaMTX first, then run:
 
-1. **Install MediaMTX:**
-   * Download the binary for your OS from [MediaMTX Releases](https://github.com/bluenviron/mediamtx/releases) into this directory.
-   * Run `./mediamtx`
+```bash
+./start_live_proxies.sh
+```
 
-2. **Publish Video Feeds:**
-   * **Simulated CCTV Loop:** `./start_file_feed.sh`
-   * **Live Mac Webcam:** `./start_live_cam.sh`
+To run only confirmed active camera IDs, pass them explicitly:
 
----
+```bash
+./start_live_proxies.sh 6 13 16
+```
 
-## Endpoint Contract
-
-| Target / Role | Protocol | Endpoint URL |
-| :--- | :--- | :--- |
-| **P4 (Dashboard UI)** | HLS Manifest (Camera 1) | `http://localhost:8888/camera1/index.m3u8` |
-| **P4 (Dashboard UI)** | HLS Manifest (Livecam) | `http://localhost:8888/livecam/index.m3u8` |
-| **P4 (Dashboard UI)** | WebRTC View | `http://localhost:8889/livecam` |
-| **P5 (ANPR Analytics)** | RTSP Feed (Camera 1) | `rtsp://localhost:8554/camera1` |
-| **P5 (ANPR Analytics)** | RTSP Feed (Livecam) | `rtsp://localhost:8554/livecam` |
+The local HLS playlist is `http://localhost:8888/stream/<camera-id>/index.m3u8`. `start_all_cameras.sh` is retained as an alias for the live workflow. The separate `start_file_feed.sh` remains available only for isolated test-video troubleshooting.
