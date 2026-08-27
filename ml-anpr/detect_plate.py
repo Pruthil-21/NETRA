@@ -47,6 +47,44 @@ ocr_reader = easyocr.Reader(['en'], gpu=False)
 
 INDIAN_PLATE_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
 
+_DIGIT_TO_LETTER = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B', '6': 'G'}
+_LETTER_TO_DIGIT = {v: k for k, v in _DIGIT_TO_LETTER.items()}
+
+
+def _correct_plate_positions(cleaned):
+    """
+    Indian plates have fixed character-class positions: letters, then
+    digits, then letters, then digits. OCR commonly confuses
+    visually-similar letter/digit pairs (O/0, I/1, Z/2, S/5, B/8, G/6) --
+    confirmed directly against ground truth on car2.jpg (HR2OAG3739 vs
+    real HR20AG3739) and car3.jpg (MHZODV2366 vs real MH20DV2366), both
+    single wrong-type characters at digit positions. If a cleaned OCR
+    string is exactly plate-length but has a wrong-type character at a
+    fixed position, try correcting it via the known confusion map, and
+    only accept the correction if the result then matches the strict
+    pattern -- so this can't turn arbitrary text into a fake plate, only
+    recover a plate that was one confusable character away from matching.
+    """
+    for total_len, letter_run in ((10, 2), (9, 1)):
+        if len(cleaned) != total_len:
+            continue
+        expected = ['L', 'L', 'D', 'D'] + ['L'] * letter_run + ['D'] * 4
+        chars = list(cleaned)
+        changed = False
+        for i, kind in enumerate(expected):
+            c = chars[i]
+            if kind == 'D' and c in _LETTER_TO_DIGIT:
+                chars[i] = _LETTER_TO_DIGIT[c]
+                changed = True
+            elif kind == 'L' and c in _DIGIT_TO_LETTER:
+                chars[i] = _DIGIT_TO_LETTER[c]
+                changed = True
+        if changed:
+            candidate = ''.join(chars)
+            if INDIAN_PLATE_PATTERN.match(candidate):
+                return candidate
+    return None
+
 
 def _edit_similarity(a, b):
     """Normalized edit-distance similarity (1.0 = identical). Tolerant of
@@ -286,12 +324,17 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     fallback_candidates = []
 
     for (_, text, conf) in ocr_results:
-        if '.' in text:
-            continue
         cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
         if INDIAN_PLATE_PATTERN.match(cleaned):
+            # Real plates are often printed/read with dot separators
+            # ("MH.48.AW.4023") — only reject '.' text for the looser
+            # fallback tier (see below), since GPS-overlay text
+            # ("E77.1247,N28.5475") structurally can't survive cleaning
+            # into a full strict-pattern match the way a real plate can.
             candidates.append((cleaned, conf))
-        elif 6 <= len(cleaned) <= 12 and cleaned[:2].isalpha() \
+        elif (corrected := _correct_plate_positions(cleaned)) is not None:
+            candidates.append((corrected, conf))
+        elif '.' not in text and 6 <= len(cleaned) <= 12 and cleaned[:2].isalpha() \
                 and any(c.isdigit() for c in cleaned) and any(c.isalpha() for c in cleaned):
             # Real Indian plates always start with a 2-letter state code —
             # "starts with a digit" text (dashcam brand/sticker text like
