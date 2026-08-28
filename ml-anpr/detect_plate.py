@@ -541,6 +541,8 @@ def plate_region_crop(vehicle_img):
 
 
 MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
+LOW_CONFIDENCE_BOX_THRESHOLD = 0.4
+LOW_CONFIDENCE_BOX_EXPAND_FRACTION = 0.4
 
 
 def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
@@ -682,6 +684,27 @@ def detect_plate_from_frame(infer_frame, raw_frame):
                     int(x1 * scale_x), int(y1 * scale_y),
                     int(x2 * scale_x), int(y2 * scale_y)
                 )
+                # Session 11: low-confidence YOLO boxes measurably
+                # under-estimate the vehicle's true extent, cutting off
+                # the bumper/plate area -- confirmed directly on the
+                # low-light degraded set (box conf 0.26-0.29 vs. 0.54-0.88
+                # for well-detected clean-image boxes; 0.4 sits with
+                # real margin on both sides). Expanding the bottom edge
+                # by 40% of box height for low-confidence boxes recovered
+                # a plate that was otherwise completely missed
+                # (car1_lowlight.jpg: no OCR text at all -> exact match,
+                # 0.97 conf). Only the bottom edge, since that's
+                # specifically where the plate/bumper sits and where
+                # under-detection was observed -- not widening the box
+                # in every direction, which risks pulling in adjacent
+                # vehicles or the dashcam overlay band unnecessarily.
+                box_conf = float(box.conf[0])
+                if box_conf < LOW_CONFIDENCE_BOX_THRESHOLD:
+                    box_h = raw_box[3] - raw_box[1]
+                    raw_box = (
+                        raw_box[0], raw_box[1], raw_box[2],
+                        min(raw_h, int(raw_box[3] + LOW_CONFIDENCE_BOX_EXPAND_FRACTION * box_h)),
+                    )
                 area = (raw_box[2] - raw_box[0]) * (raw_box[3] - raw_box[1])
                 if area >= min_area:
                     boxes.append(raw_box)
