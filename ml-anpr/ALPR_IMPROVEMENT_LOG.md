@@ -1397,3 +1397,161 @@ condition: not triggered.
    benchmarked changes, worth a full end-to-end reread of the log for
    whoever reviews this branch before merge — a lot has accumulated
    across 10 sessions.
+
+---
+
+# Session 11 — DL52GD0882 investigated deeper, no safe fix found this firing
+
+Continuation of the same branch/protections. Both stated priorities
+are done (Sessions 7, 9, 10). This firing worked the log's own
+next-priority item: the `DL52GD0882` majority-vote issue Session 8
+diagnosed.
+
+## Deeper root cause found — Session 8's framing was real but incomplete
+
+Session 8 attributed this to confidence-weighted majority voting
+converging on the OCR's more-frequent-but-wrong character read (`GO`
+appearing more than the correct `GD`). Pulled the actual confirmation
+event log (not just the raw readings) to check exactly when and why
+each confirmation fired, and found a more specific, more important
+cause:
+
+- `DL52OO0882` (wrong in **two** positions, not the `GD`/`GO` question
+  at all) confirms almost immediately at frame 560, confidence 0.97 —
+  **before** almost all of the 33 `GD`/`GO` readings this vehicle
+  produces even occur (frames 570-1160). `PlateConfirmationTracker`
+  only needs `confirm_threshold=2` matching readings to lock in, so
+  this fires on very early, still-noisy data.
+- Once locked, the **duplicate-alert guard** (`if any(_plate_similarity(...)
+  >= threshold for c in self.confirmed)`) permanently blocks that
+  track's tracker from ever confirming a *different* string again —
+  so none of the dozens of subsequent readings, including the correct
+  `DL52GD0882`, can ever override the early wrong lock, no matter how
+  much stronger the later evidence is.
+- **A third factor, not previously documented:** a *separate* track
+  independently confirms `OL52OO0882` at frame 770. This is very
+  likely the same physical vehicle, tracked as a second `VehicleTracker`
+  fragment — exactly the sparse-10-frame-sampling track-continuity risk
+  Session 7's own design section flagged as a known weakness of
+  approach-1 IoU matching, now showing up concretely on a real,
+  long-lived (~600-frame, ~20 second) vehicle appearance.
+
+**So the real story is:** premature single-track lock-in *and*
+multi-track fragmentation, compounding — not simply "majority vote
+picked the wrong character," which was the right symptom but not the
+full mechanism.
+
+## Why no fix was attempted this firing
+
+Both underlying issues (early-confirmation lock-in, IoU track
+fragmentation on long/fast-moving vehicles) are used by *every* plate
+this pipeline confirms, on every stream — not something scoped to this
+one vehicle. A safe fix needs real design work: allowing a track's
+confirmed value to be corrected by later, stronger evidence without
+either (a) reopening the duplicate-alert spam problem the guard exists
+to prevent, or (b) needing a full redesign of track association
+(Session 7's approach 2/3 escalation path — centroid tracking or
+ByteTrack — which the original Priority 1 brief explicitly said only
+to pursue with evidence approach 1 is insufficient, and this session's
+finding is exactly that kind of evidence, just not yet acted on).
+Either fix touches core, shared logic and needs a full-suite
+regression re-run under the hard-stop policy — not something to force
+through as "one well-scoped piece" alongside everything else already
+changed this branch. Per the brief's own explicit allowance:
+**investigated thoroughly, no safe/justified change implemented this
+firing.**
+
+No code changed. `send_detection_to_watchlist()` untouched (trivially).
+Hard-stop: not triggered (no changes, no regression possible).
+
+## Next improvement to investigate
+
+1. **`DL52GD0882` fix, properly scoped as its own dedicated session:**
+   two candidate directions now identified with real evidence --
+   (a) allow a track's confirmed representative to be corrected if a
+   sufficiently stronger cluster forms later in the same track's life
+   (needs care to not reintroduce duplicate alerts), (b) escalate
+   Session 7's tracking approach past simple IoU matching (centroid
+   tracking or ByteTrack) specifically for long-lived, fast/far-moving
+   vehicles where sparse sampling breaks box continuity -- this
+   session's fragmentation finding is real evidence approach 1 has a
+   real limit, which the original Priority 1 brief anticipated might
+   happen.
+2. Low-light box-tightness, confidence floor re-tuning, dedicated
+   plate-region detector, `process_stream`/`process_hls_stream` still
+   untested against a live source — unchanged, checking these next.
+
+---
+
+# Session 12 — low-light box-tightness fixed, kept
+
+Continuation of the same branch/protections. Same firing as Session
+11's DL52GD0882 investigation above (no safe fix found there); moved
+to the next item, the low-light box-tightness bug flagged since
+Session 5.
+
+## Diagnosis: real, measured confidence gap
+
+Re-checked `car1_lowlight.jpg`'s YOLO box directly: confidence
+0.26-0.29. Compared against the primary (largest) vehicle box
+confidence on the 3 clean ground-truth images: 0.536, 0.877, 0.833 --
+a real, wide gap, not a marginal one. Confirmed the mechanism by
+testing directly: expanding the box's bottom edge by 40% of its own
+height recovered a plate that was otherwise completely unreadable
+(`car1_lowlight.jpg`: no OCR text at all -> `MH.48.AW.4023` at 0.97
+confidence).
+
+## Fix: expand only low-confidence boxes, bottom edge only
+
+`LOW_CONFIDENCE_BOX_THRESHOLD = 0.4` (sits with real margin between
+the low-light case's 0.26-0.29 and clean images' 0.54-0.88 -- not
+guessed), `LOW_CONFIDENCE_BOX_EXPAND_FRACTION = 0.4`. Only expands the
+bottom edge (where the plate/bumper sits, and where under-detection
+was actually observed), not the whole box in every direction --
+narrower change, lower risk of pulling in adjacent vehicles or the
+dashcam overlay band unnecessarily.
+
+## Full benchmark
+
+- **Clean images:** still 3/3, unaffected (all 3 primary-vehicle
+  confidences are well above 0.4, so the expansion never triggers on
+  them).
+- **Degraded set:** `lowlight` **2/3 → 3/3** -- `car1_lowlight` now
+  reads correctly. `motionblur`, `glare`, `fog` all unchanged.
+- **Dashcam video regression:** 9 of 10 previously-confirmed plates
+  identical to Session 10. One changed: `DL52OO0882` -> `OL52GO0882`.
+  Investigated, not waved through: both strings are variants of the
+  same vehicle cluster Session 8 already established has a
+  never-yet-achieved correct answer (`DL52GD0882`, still not the
+  confirmed string here either) -- this is lateral movement within an
+  already-known-unresolved hard case, not a regression of something
+  that previously worked, the same category of finding as Session 7's
+  `THR26E06477` -> `HR26EO6477` shift. Every explicitly named
+  hard-stop plate checked individually: all present and correct
+  (`HR98E4959`, `HR38AC7748`, `UP16DN8010`, `DL52GD4935`,
+  `HR26EO6477` all in the confirmed set; `HR20AG3739`/`MH48AW4023`/
+  `MH20DV2366` verified via the static benchmark). Total time: 515s
+  vs. Session 10's 490s -- negligible increase.
+
+### Verdict: **kept**
+
+Real, measured improvement (2/3->3/3 on the specific documented bug),
+zero regression on any named or previously-stable plate, one lateral
+shift within an already-flagged unresolved cluster, transparently
+investigated and explained rather than glossed over.
+`send_detection_to_watchlist()` verified byte-identical to `main`.
+Hard-stop condition: not triggered.
+
+## Next improvement to investigate
+
+1. Confidence floor re-tuning -- still deferred, still no good
+   calibration signal across 6+ sessions of looking.
+2. Dedicated plate-region detector -- still blocked on a Roboflow API
+   key not available in this environment.
+3. `process_stream`/`process_hls_stream` -- still untested against a
+   live source; check reachability next firing, don't block if
+   unreachable (consistent with every prior session's finding that
+   the demo tunnel is flaky).
+4. `DL52GD0882` proper fix -- unchanged from Session 11, needs its own
+   dedicated session (track-association or confirmation-locking
+   redesign, both cross-cutting).
