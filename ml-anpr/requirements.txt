@@ -25,6 +25,11 @@ ultralytics==8.4.123
 requests==2.32.5
 paddleocr==3.7.0
 paddlepaddle==3.3.1
+# Directly imported in nafnet/local_arch.py, not just a transitive
+# dependency -- was previously unpinned (flagged in final review before
+# Session 14). Pinned to what's currently resolving in the tested
+# environment.
+numpy==2.0.2
 
 # No new dependency for NAFNet motion-deblur (Session 9/10) -- it only
 # needs torch, already pinned above for YOLO. The architecture is

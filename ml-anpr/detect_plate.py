@@ -472,26 +472,47 @@ _NAFNET_CHECKPOINT_PATH = os.path.join(_NAFNET_CACHE_DIR, "NAFNet-GoPro-width32.
 _NAFNET_CHECKPOINT_URL = "https://huggingface.co/nyanko7/nafnet-models/resolve/main/NAFNet-GoPro-width32.pth"
 
 _nafnet_model = None
+# Session 14: set once a checkpoint fetch fails, so a dead network
+# doesn't get hammered with a fresh download attempt on every single
+# blurry frame -- one failure per process lifetime is enough to give up.
+_nafnet_unavailable = False
 
 
 def _get_nafnet_model():
     """Lazily loads and caches the NAFNet model (CPU) on first use, not
     at module import time -- most streams/images never hit the blur
     gate, so the ~68MB checkpoint fetch and model construction shouldn't
-    cost anything unless a frame actually needs deblurring."""
-    global _nafnet_model
+    cost anything unless a frame actually needs deblurring.
+
+    Returns None (not an exception) if the checkpoint can't be fetched --
+    see enhance_motion_blur() for the fallback this enables. Session 14:
+    the download previously had no error handling at all, so a blurry
+    frame on a machine with no cached checkpoint and no network access
+    at that moment would crash the entire processing loop, not just skip
+    that one frame's deblurring.
+    """
+    global _nafnet_model, _nafnet_unavailable
     if _nafnet_model is not None:
         return _nafnet_model
+    if _nafnet_unavailable:
+        return None
 
     from nafnet.NAFNet_arch import NAFNetLocal
 
-    if not os.path.exists(_NAFNET_CHECKPOINT_PATH):
-        os.makedirs(_NAFNET_CACHE_DIR, exist_ok=True)
-        print(f"[nafnet] downloading checkpoint to {_NAFNET_CHECKPOINT_PATH} ...")
-        response = requests.get(_NAFNET_CHECKPOINT_URL, timeout=60)
-        response.raise_for_status()
-        with open(_NAFNET_CHECKPOINT_PATH, "wb") as f:
-            f.write(response.content)
+    try:
+        if not os.path.exists(_NAFNET_CHECKPOINT_PATH):
+            os.makedirs(_NAFNET_CACHE_DIR, exist_ok=True)
+            print(f"[nafnet] downloading checkpoint to {_NAFNET_CHECKPOINT_PATH} ...")
+            response = requests.get(_NAFNET_CHECKPOINT_URL, timeout=60)
+            response.raise_for_status()
+            with open(_NAFNET_CHECKPOINT_PATH, "wb") as f:
+                f.write(response.content)
+    except requests.exceptions.RequestException as e:
+        print(f"[WARN] NAFNet checkpoint unavailable ({e}), skipping deblur for this frame")
+        if os.path.exists(_NAFNET_CHECKPOINT_PATH):
+            os.remove(_NAFNET_CHECKPOINT_PATH)  # don't leave a partial/corrupt file cached
+        _nafnet_unavailable = True
+        return None
 
     model = NAFNetLocal(
         img_channel=3, width=32, enc_blk_nums=[1, 1, 1, 28], middle_blk_num=1,
@@ -512,8 +533,14 @@ def enhance_motion_blur(img):
     real evidence, not a guess, but only tested against a synthetic
     15px box-kernel blur there; re-verified against real footage in
     Session 10 (see ALPR_IMPROVEMENT_LOG.md).
+
+    Falls back to the original, un-enhanced crop if the model can't be
+    loaded (Session 14) -- the caller doesn't need to know or care,
+    since this always returns *something* usable for OCR.
     """
     model = _get_nafnet_model()
+    if model is None:
+        return img
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
     tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0)
     with torch.no_grad():

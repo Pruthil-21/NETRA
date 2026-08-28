@@ -1630,3 +1630,84 @@ Hard-stop: not triggered (no changes, no regression possible).
    Priority 1 and 2 both done and kept, this branch is in a stable,
    fully-benchmarked state with one clearly-scoped remaining hard
    problem and no other currently-actionable items identified.
+
+---
+
+# Session 14 — two pre-merge review fixes: NAFNet error handling, numpy pin
+
+Not a new experiment -- two small, well-defined fixes requested
+directly from the final pre-merge review (which found the checkpoint
+download had no error handling, and `numpy` was directly imported in
+`nafnet/local_arch.py` but unpinned).
+
+## Fix 1: NAFNet checkpoint download no longer crashes the pipeline
+
+**Problem, exactly as the review found it:** `_get_nafnet_model()`'s
+download call had zero exception handling. If the blur gate fired on a
+machine with no cached checkpoint and no network access at that
+moment, `requests.get(...)`/`raise_for_status()` raised an uncaught
+exception that propagated through `enhance_motion_blur` ->
+`_read_plate_from_box` -> `detect_plate_from_frame` and crashed the
+entire `process_video_file`/`process_stream`/`process_hls_stream`
+loop -- not just that one frame.
+
+**Fix:** wrapped the download specifically (not the whole function --
+a genuine model-loading failure on an already-cached file is a
+different, real bug worth surfacing, not something to silently paper
+over) in `try/except requests.exceptions.RequestException`. On
+failure: logs `[WARN] NAFNet checkpoint unavailable (...), skipping
+deblur for this frame`, removes any partial/corrupt file so a future
+process can retry cleanly once the network is back, sets a
+module-level `_nafnet_unavailable` flag so a dead network doesn't get
+hammered with a fresh download attempt on every subsequent blurry
+frame in the same process, and returns `None`.
+`enhance_motion_blur()` returns the original, un-enhanced crop
+unchanged when the model is unavailable -- the caller doesn't need to
+know or care, processing continues normally with whatever the
+pre-NAFNet pipeline would have done.
+
+**Tested directly, not just reasoned about:** moved the cached
+checkpoint aside, monkey-patched the checkpoint URL to an unreachable
+domain, and called the actual functions:
+- `enhance_motion_blur()` on a real blurry crop: completed in 0.24s
+  (a genuine DNS resolution failure, not a hang), printed the warning,
+  returned the original image byte-for-byte unchanged, no crash.
+- Called again immediately: 0.00s, no second download attempt --
+  confirms the failure-caching behavior works.
+- Full `detect_plate()` pipeline under the same simulated failure:
+  completed normally, fell back to the pre-NAFNet result (no crash,
+  no plate found -- exactly the expected pre-Session-9 behavior for
+  that image).
+- Restored the real checkpoint and re-verified normal operation
+  resumed in a fresh process: `motionblur` back to 1/3, matching
+  Session 9/10 exactly.
+
+## Fix 2: `numpy==2.0.2` pinned in `requirements.txt`
+
+Matches what's actually resolving in the tested environment (verified
+via `pip show numpy` before pinning, not guessed).
+
+## Full regression suite, post-fix
+
+- **Clean images:** 3/3, unaffected.
+- **Degraded set:** `lowlight` 3/3 (Session 12's fix, unaffected),
+  `motionblur` 1/3 (Session 9/10's result, unaffected), `glare` 3/3,
+  `fog` 3/3 -- all unchanged.
+- **Dashcam video:** confirmed plate set is **byte-for-byte identical**
+  to the last full review's baseline (10 plates, zero difference,
+  checked programmatically with a set diff, not eyeballed). Every
+  named hard-stop plate individually verified present and correct.
+  512s total -- statistically the same as the prior 515s baseline, as
+  expected (the fix only adds a try/except wrapper on the success
+  path, no new per-frame cost).
+- `send_detection_to_watchlist()`: verified byte-identical to `main`
+  one final time.
+
+### Verdict: **both fixes kept**
+
+Real failure mode fixed and verified working under an actual
+simulated failure, not just code review -- exact scenario the
+pre-merge review flagged (cold machine, blur gate fires, network
+unreachable) now degrades gracefully instead of crashing. Zero
+regression across every benchmark. `main` untouched throughout.
+Nothing pushed or merged, per instructions.
