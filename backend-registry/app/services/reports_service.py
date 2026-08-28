@@ -1,5 +1,6 @@
 """Aggregate stats for the gap-analysis report — pulls numbers a teammate
 would otherwise count by hand for the pitch deck."""
+import psycopg
 
 
 def get_summary(conn):
@@ -39,6 +40,6 @@ def _count_last_24h(conn, table: str, ts_column: str):
                 f"SELECT COUNT(*) FROM {table} WHERE {ts_column} >= now() - interval '24 hours'"
             )
             return cur.fetchone()[0]
-    except Exception:
+    except psycopg.Error:
         conn.rollback()
         return None
