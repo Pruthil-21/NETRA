@@ -1000,3 +1000,163 @@ confirm correctly").
    stable hard case across yet another architecture change),
    confidence floor re-tuning, dedicated plate-region detector —
    unchanged from prior sessions.
+
+---
+
+# Session 8 — human ground truth cross-reference (priority interrupt)
+
+Not a scheduled firing continuing Priority 1/2 — a direct, urgent
+request to cross-reference 6+ sessions of this log against **real
+human-verified ground truth** from someone who watched the actual
+`dashcam_trimmed.mp4` clip directly, not the pipeline's own OCR output.
+This matters precisely because every accuracy claim in this log up to
+now was graded against either 3 static photos (real ground truth,
+verified by direct visual inspection) or the dashcam video (graded
+only by internal self-consistency — "does it converge," never against
+an independent human read). This session breaks that circularity for
+the dashcam clip specifically.
+
+**Human-confirmed ground truth (7 plates + 1 investigated further this
+session):** `HR38AC7748`, `HR26EQ6477`, `HR98E4959`, `UP16DN8010`,
+`RJ45CR2913`, `DL52GD4935`, `DL52GD0882`, plus one plate the human
+found too dark/blurry to confidently read themselves.
+
+## 1. `HR98E4959` — matches exactly, no discrepancy
+
+Confirmed correct as-is. No further action.
+
+## 2. `OL52OO0882` target correction — the real plate is `DL52GD0882`, and neither prior "target" was right
+
+Sessions 3-7 spent significant effort chasing convergence to
+`DL52CD0882` — but that string itself was never verified ground
+truth. Tracing it back: it was Session 1's *assumed* target, inferred
+from an early EasyOCR-era voting cluster's own internal
+self-consistency (the cluster's reconstructed representative at the
+time), never checked against an independent source. Six sessions
+accepted it without re-verifying. That's exactly the circularity this
+session was asked to break.
+
+**Visual investigation, not assumption:** pulled the actual video
+frames. At frame 560/570 (this vehicle at moderate distance), the
+character in question is genuinely ambiguous even at 8x zoom — could
+read either O or D. At **frame 870** (same vehicle, much closer —
+box is 620x556px vs ~300x330px at frame 560), it's unambiguous: a
+visible flat left edge on the character, clearly `D`, not `O`.
+**Ground truth is `DL52GD0882`**, confirmed by direct close-range visual
+inspection, not inferred.
+
+**Why the pipeline never confirmed it, despite reading it correctly
+repeatedly:** pulled every raw OCR reading for this vehicle across its
+~580-frame appearance in Session 7's log. The *majority* reading was
+actually `DL52GO0882` (25+ occurrences) against only 8 occurrences of
+the correct `DL52GD0882` — and both read at similarly high confidence
+(0.86-1.0), with no confidence-based way to tell them apart. This
+isn't the "OCR is noisy, needs more samples to converge" story this
+log has told about this plate since Session 3 — **the OCR's majority
+read for this specific plate, at this specific viewing angle, is
+wrong more often than it's right.** `PlateConfirmationTracker`'s
+confidence-weighted majority vote (Experiment 2's
+`PATTERN_MATCH_VOTE_WEIGHT` logic) is working exactly as designed —
+it's converging on the majority signal, and the majority signal
+itself is incorrect here. More samples of the same systematic bias
+won't fix this; it needs either a real accuracy improvement on this
+specific character confusion (`G_` position) or a different
+tie-breaking signal than raw majority count. Flagged as a real,
+newly-understood limitation, not the same "not enough data" framing
+prior sessions used.
+
+## 3. `HR38AC7748`, `UP16DN8010`, `DL52GD4935` — coverage gap, confirmed structural, not an accuracy failure
+
+Checked directly, not assumed: for each plate, pulled the exact frame
+and measured every vehicle box YOLO found in it, in raw pre-Session-7
+fashion (no area floor, all vehicle-class boxes).
+
+| plate | frame | this vehicle's box area | largest box in same frame |
+|---|---|---|---|
+| `HR38AC7748` | 10 | (visibly small car) | a bus filling most of the left frame — visually obvious, see log's frame dump |
+| `UP16DN8010` | 480 | 174,888px² (8.43% of frame) | 643,416px² (31.03% of frame) — **3.7x larger** |
+| `DL52GD4935` | 560 | 73,406px² (3.54% of frame) | 590,877px² (28.50% of frame) — **8.0x larger** |
+
+All three would have been mechanically impossible for the
+pre-Session-7 single-largest-box design to ever select, regardless of
+how many sessions ran or what OCR engine was used — not a detection
+accuracy problem this whole log's effort could have fixed without the
+Session 7 architecture change specifically. All three are read
+correctly (exact match to human ground truth) in Session 7's output,
+several at 1.0 confidence repeated across many frames (`HR38AC7748`:
+1.0 confidence, frames 10-90, every single sampled frame).
+
+## 4. `HR26EQ6477` vs. `HR26EO6477`, `RJ45CR2913` vs. `FRJ45CK2913`/`RJ45OK2913` — examined directly, mixed result
+
+**`HR26E_6477`:** pulled frame 260 (moderate distance) and zoomed 4x.
+My own reading leans toward `O` (the pipeline's read), not the human's
+`Q` — the character looks round without a visible tail, though at
+this resolution it's a genuinely close call and I can't be fully
+certain either way. Not resolved with full confidence in either
+direction; noting my independent read rather than deferring
+automatically to either source.
+
+**`RJ45C_2913`:** pulled frame 540, needed several attempts to
+correctly locate the plate region (`plate_region_crop`'s fixed
+55-92%/12-90% band assumption doesn't line up with where the plate
+actually sits in every crop — a separate, minor finding about that
+heuristic's limits, not chased further this session). Once correctly
+located and zoomed 6x, this read clearly: **`RJ45CK2913`** — the two
+characters in question look like `C` and `K` (not `R`), and critically,
+**there is no visible leading `F` on the plate itself** in this frame.
+This contradicts the human's `RJ45CR2913` (specifically the 6th
+character) but agrees with the pipeline's own `RJ45CK2913`-family
+reads once the spurious `F` prefix (present in some but not all of the
+pipeline's own historical reads — `FRJ45CK2913`, `ARJ45CK2913`,
+`RJA5CK2913` are all in the raw-reading history) is set aside as OCR
+noise picking up something adjacent to the plate, not part of it.
+
+**Recommendation:** for both of these, my own direct frame inspection
+doesn't cleanly confirm the human-provided correction — in one case
+(`RJ45C_2913`) it more clearly supports the pipeline's own prior
+reading. Not overriding the human-provided ground truth unilaterally
+based on one AI's own uncertain visual read of a blurry dashcam
+frame — flagging this as a case that could use a second human look at
+the specific frames now pulled (saved locally, not committed — see
+below), rather than either side being declared correct by default.
+
+## The 8th plate — investigated further per instructions, not guessed
+
+Searched systematically before falling back to "unconfirmable": every
+unique plate string across Session 7's full-video 10-frame-interval
+run (33 distinct strings, checked by eye) — no trace, not even a
+noisy fragment, resembling `DL20AS5815` or `DL26AS5015`. Followed up
+with a denser, non-overlapping 3-frame-interval sweep of the *entire*
+clip (skipping frames already covered by the 10-frame sampling),
+running the actual detection pipeline end-to-end and filtering for
+any `AS`-containing or `DL2`-prefixed result.
+
+**Result: zero matches.** The 3-frame sweep checked 529 additional
+frames (every 3rd frame not already a multiple of 10) across the
+entire 1629-frame clip — combined with Session 7's original 163-frame
+sweep, that's roughly 42% of all frames in the video individually run
+through the actual detection+OCR pipeline, filtered for anything
+`AS`-containing or `DL2`-prefixed. Nothing. Not a near-miss, not a
+low-confidence fragment — no candidate at all resembling either
+`DL20AS5815` or `DL26AS5015` anywhere in that coverage.
+
+**Verdict: `DL20AS5815`/`DL26AS5015` — ground truth unconfirmable from
+available footage.** Per the instructions, this is being logged as
+exactly that, not guessed at or forced to either candidate string.
+This is a real, useful finding in its own right: either this specific
+vehicle only appears in one of the ~58% of frames not covered by even
+this denser sweep (possible but would mean an unusually brief, narrow
+appearance), or — more likely given the human's own "too dark/blurry"
+assessment plus this pipeline's complete inability to extract even
+noisy candidate text from it — this plate sits below the hard limit
+of what's extractable from this footage at all, for a human or this
+pipeline alike. That's a meaningfully different conclusion than "the
+pipeline failed here" — there may be no signal in this footage to
+recover, regardless of technique.
+
+## What to do next
+
+Resume Priority 2 (motion blur) after this session, per instructions.
+This session's `DL52GD0882` finding (majority-vote can converge on a
+systematically wrong OCR read, not just noise) is worth keeping in
+mind for that work too, not just filed under "resolved."
