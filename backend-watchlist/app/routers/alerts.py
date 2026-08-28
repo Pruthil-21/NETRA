@@ -23,7 +23,6 @@ def get_alerts(
 ):
     return alerts_service.list_alerts(db)
 
-
 @router.patch("/{alert_id}", response_model=AlertOut)
 def update_alert_status(
     alert_id: int,
