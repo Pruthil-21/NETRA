@@ -1160,3 +1160,143 @@ Resume Priority 2 (motion blur) after this session, per instructions.
 This session's `DL52GD0882` finding (majority-vote can converge on a
 systematically wrong OCR read, not just noise) is worth keeping in
 mind for that work too, not just filed under "resolved."
+
+---
+
+# Session 9 — Priority 2, motion blur: LPDGAN rejected, NAFNet works (proof of concept)
+
+Continuation of the same branch/protections. First real attempt at
+Priority 2, per the brief's ordering: LPDGAN first, then a general
+pretrained deblur model if LPDGAN isn't viable, then classical
+techniques only as a last resort.
+
+## Step 1: LPDGAN — verified not viable, not assumed
+
+Checked directly against the GitHub API, not just the README: **zero
+releases**, **no license** (`license: null`), last pushed
+2024-05-30 — over a year stale. The README itself only documents a
+training command (`python main.py --mode train --dataroot
+./dataset`); no inference script, no pretrained weights. Training
+would need the LPBlur dataset, which Session 4 already confirmed is
+blocked (Google Drive/Baidu, no scriptable access). No license also
+directly fails the "legally usable" requirement — default copyright
+applies with nothing granted. **Rejected**, matching exactly the
+brief's own anticipated failure mode ("unmaintained, needs training
+data you don't have").
+
+## Step 2: general pretrained deblur models — two false starts, then a real one
+
+- **`nafnetlib`** (PyPI): `pip install` fails outright —
+  `error in nafnetlib setup command: 'install_requires' must be a
+  string or list of strings...`. Broken at the packaging level,
+  confirmed directly (not assumed from its low GitHub star count,
+  though that turned out to be a real signal). Uninstallable
+  regardless of Python/torch version. **Rejected.**
+- **`dblur`** (PyPI, MIT licensed, includes both NAFNet and Restormer):
+  installs cleanly, but ships **no pretrained weights of its own** —
+  every `deblur_*` method requires a locally-supplied checkpoint path.
+  Worse, its own `NAFNet` reimplementation uses different internal
+  layer naming than the real, published checkpoints (`attn_block.
+  project_in_conv` vs. the original's `conv1`/`conv2`/`conv3`) — 588
+  vs. 664 parameters, incompatible state dicts, confirmed by actually
+  trying to load a real checkpoint into it, not just reading docs.
+  **Not usable as a loader for real weights.**
+- **Official `megvii-research/NAFNet`** (the original repo, MIT +
+  Apache-2.0 licensed — confirmed by fetching the actual LICENSE file
+  after GitHub's API showed a non-standard "Other" classification,
+  which turned out to just be two standard licenses concatenated in
+  one file, not anything restrictive): the architecture code itself
+  (`NAFNet_arch.py`, ~200 lines) is small enough to vendor directly
+  rather than pull in the full `basicsr` training framework — needed
+  2 small supporting files (`arch_util.py`, `local_arch.py`) and one
+  trivial stub (`basicsr.utils.get_root_logger`, which the real code
+  only calls from a commented-out block, confirmed by reading it
+  before stubbing it).
+- **Weights:** the official repo's own download links are Google
+  Drive (same blocker as LPBlur/Session 4), but a real, scriptable
+  HuggingFace mirror exists (`nyanko7/nafnet-models`,
+  `NAFNet-GoPro-width32.pth`) — verified as a genuine direct download
+  (HTTP redirect to a real CDN, no login wall, no virus-scan
+  interstitial, matching `Content-Length`) before trusting it. Loaded
+  into the real architecture with the exact official GoPro-width32
+  config (`width=32, enc_blk_nums=[1,1,1,28], middle_blk_num=1,
+  dec_blk_nums=[1,1,1,1]`, from the official repo's own test config
+  file, not guessed): **0 missing keys, 0 unexpected keys** — an exact
+  match, strong evidence this is the real, correctly-paired checkpoint
+  and architecture, not a mismatched substitute.
+
+## Real benchmark result, isolated test venv (never touched `ml-anpr/venv`)
+
+- **Inference cost:** 0.43-1.13s per image on CPU — comparable to a
+  single PaddleOCR call, not a new order-of-magnitude cost.
+- **Motion-blur set** (`test_images_degraded/*_motionblur.jpg`, fed
+  through NAFNet then the real `detect_plate()` pipeline):
+
+  | image | before (Session 4 baseline) | after NAFNet deblur |
+  |---|---|---|
+  | car1 | miss (no plate-shaped text) | `MH43AW4023` (gt `MH48AW4023`) — 1 char off, conf 0.98, pattern-match tier |
+  | car2 | miss | `HP20AS3739` (gt `HR20AG3739`) — 2 chars off, conf 0.8, pattern-match tier |
+  | car3 | miss | `MH20DV2366` — **exact match**, conf 0.99 |
+
+  **0/3 → 1/3 exact matches.** More importantly than the raw count:
+  the failure mode itself changed completely. Before, the pipeline
+  couldn't extract plate-shaped text *at all* from 2 of 3 (car1's raw
+  OCR was `'BR'`, car2's was `'12200379'` — letters dropped entirely).
+  After deblurring, all 3 produce full, plate-shaped, pattern-matched
+  reads at high confidence, with the two "misses" being ordinary 1-2
+  character confusions (the same class of error `_correct_plate_positions()`
+  already exists to catch on clear images) — not a different failure
+  mode, a much smaller and more familiar one.
+- **Regression check on clean images:** ran the same deblur model on
+  the 3 clean ground-truth photos before feeding them to the real
+  pipeline — still 3/3 exact, same ~1.0 confidence. No evidence this
+  hurts already-sharp input.
+
+### Verdict: **real, working proof of concept — not yet integrated into `detect_plate.py`**
+
+This is a genuine, measured improvement, unlike Session 4's unsharp-mask
+attempt which made every case strictly worse. Deliberately not wired
+into the production pipeline this firing, for the same reason Session
+2 didn't rush PaddleOCR into `detect_plate.py` the moment it looked
+promising: integration is real, separate work, not something to bolt
+on in the last few minutes of a firing that already spent significant
+time on evaluation. Specifically still needed:
+1. **A gating mechanism**, not unconditional application — NAFNet
+   costs ~0.4-1.1s per image, comparable to Session 5's low-light
+   enhancement cost lesson (2.5-3.6x video slowdown when applied to
+   every frame unconditionally). Needs the same kind of cheap
+   pre-check `is_low_light()` used (e.g. Laplacian variance as a blur
+   heuristic) before this gets wired into `detect_plate_from_frame`'s
+   default path, not applied to every frame regardless of whether it's
+   actually blurry.
+2. **Vendoring properly** — the architecture code needs to actually
+   live in the repo (with the MIT/Apache attribution the license
+   requires) if this gets integrated, not just exist in a throwaway
+   test venv.
+3. **Checkpoint distribution** — 68MB, shouldn't be committed to git
+   directly; needs the same kind of "documented, fetched on setup"
+   treatment `requirements.txt`'s install-order note gives PaddleOCR.
+4. **Not yet tested against `dashcam_trimmed.mp4`** — only the static
+   synthetic motion-blur set. Real video motion blur may behave
+   differently than the synthetic 15px box-kernel blur this was
+   validated against.
+
+No production code changed this firing — all testing done in an
+isolated venv (`deblur_test_venv`, outside the repo), exactly
+following the methodology Session 2/3 established for PaddleOCR.
+`send_detection_to_watchlist()` untouched (trivially, given no
+production code changes). Hard-stop condition: not triggered (no
+regression possible from zero production changes).
+
+## Next improvement to investigate
+
+1. **Integrate NAFNet properly** (highest priority, mirrors Session
+   2→3's PaddleOCR pattern): build the blur-detection gate, vendor the
+   architecture code with correct attribution, decide on checkpoint
+   distribution, re-run the full dashcam video regression before
+   deciding to keep it as default behavior.
+2. Test against `dashcam_trimmed.mp4`'s real motion blur, not just the
+   synthetic benchmark set.
+3. Low-light box-tightness, confidence floor re-tuning, dedicated
+   plate-region detector, `process_stream`/`process_hls_stream` still
+   untested against a live source — unchanged from prior sessions.
