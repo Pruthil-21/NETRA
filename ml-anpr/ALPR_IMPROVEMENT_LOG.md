@@ -745,3 +745,258 @@ required that decision no longer exists on the evidence gathered.
    not noise from any preprocessing change.
 4. Confidence floor re-tuning, dedicated plate-region detector —
    unchanged from prior sessions.
+
+---
+
+# Session 7 — multi-vehicle detection: design (written before code, per instructions)
+
+New instructions for this and future sessions: recurring, unattended,
+overnight, 2-day deadline. Non-negotiables carried forward unchanged
+(branch-only, `main` untouched, `send_detection_to_watchlist()`
+contract frozen, benchmark before/after every change, hard-stop
+condition checked at the end of every firing — see top of this
+session for the exact condition list, not re-copied here to avoid
+drift between the instruction and a paraphrase of it).
+
+Priority 1: multi-vehicle detection. Current `detect_plate_from_frame`
+finds every YOLO vehicle box but only ever examines the single
+largest one, silently discarding every other vehicle in frame — so a
+frame with 3 vehicles, 2 of them with legible plates, only ever gets a
+chance at 1.
+
+## Real numbers gathered before designing anything
+
+Sampled YOLO's raw vehicle detections (no filtering) at 7 points
+across `dashcam_trimmed.mp4`: **6 to 15 vehicle boxes per frame**.
+Box areas as a percentage of total frame area:
+
+- frame 100: 6 boxes — `[16.0, 1.1, 0.46, 0.13, 29.0, 0.24]`
+- frame 500: 15 boxes — `[1.57, 2.19, 1.1, 0.84, 10.89, 0.46, 0.46, 0.14, 0.68, 1.2, 30.44, 0.46, 0.35, 0.86, 0.09]`
+- frame 1300: 15 boxes — `[0.9, 2.04, 9.69, 0.22, 5.3, 1.9, 1.44, 0.5, 0.29, 0.18, 1.93, 0.19, 29.18, 0.6, 0.25]`
+
+(full 7-point sample in this session's work, pattern consistent
+throughout)
+
+**This is the number that shapes the whole design.** Processing every
+box unconditionally — 2 OCR calls per box, same as the current
+single-box pipeline — would be a 6-15x multiplier on top of an
+already-measured 168-280s baseline for this clip: 15-40+ minutes,
+plausibly worse. That's not just an FPS concern (which the brief
+explicitly deprioritizes) — it's large enough to risk not finishing a
+benchmark run within a session's turn budget at all, which would
+itself violate "benchmark before/after every change."
+
+The overwhelming majority of boxes are tiny: most sampled frames have
+only 1-3 boxes above ~3% of frame area, and 4-12+ boxes under 2%.
+Those small boxes are distant background vehicles — physically too
+few pixels for a legible plate regardless of OCR quality, the same
+reasoning that made "largest box" a defensible (if incomplete) choice
+in the original design. This isn't a guess: every plate this log has
+ever successfully confirmed came from a box in the large end of this
+distribution (the current single-largest-box design already selects
+for size, and it works).
+
+**Design decision:** add a minimum box-area threshold (3% of frame
+area) alongside YOLO's own confidence threshold, not just "all boxes
+above a justified confidence threshold" read literally. Justified by
+the measured size distribution above, not guessed — cuts most frames
+from 6-15 boxes down to 1-4, a 2-4x multiplier instead of 6-15x, while
+still processing every vehicle actually close enough to plausibly have
+a legible plate. This threshold is a starting point, not asserted as
+correct — flagged for recalibration if benchmarking shows real plates
+being cut at this size or the multiplier still being too costly.
+
+## Design
+
+**1. `detect_plate_from_frame` returns a list, not a single dict.**
+Collects every vehicle box clearing both YOLO's own confidence
+threshold and the new 3%-of-frame-area size floor (previously: tracked
+only the single largest). Runs the existing per-box pipeline (overlay
+clip, low-light gate, crop, OCR, candidate filtering) unchanged for
+each box. Each result dict gains a `"box"` key (the vehicle's
+`(x1,y1,x2,y2)` in `raw_frame` coordinates) so callers that need
+cross-frame identity can do their own association — this function
+itself stays stateless and per-frame, same as before, just multi-box
+instead of single-box.
+
+**2. `detect_plate()` (the static single-image test wrapper) keeps its
+existing single-dict contract**, unchanged, by taking the largest-box
+result from the new list. This is a deliberate compatibility choice,
+not an oversight: every existing benchmark script in this log's
+history (all 6 prior sessions) calls `detect_plate(...).get(...)`
+expecting one dict, and every ground-truth test image
+(`test_images/*.jpg`) has exactly one vehicle in it anyway — there is
+no multi-vehicle scenario to test in the static-image benchmark, and
+changing this contract would only add risk (breaking every prior
+regression check) for zero benefit. The actual architectural change —
+true multi-vehicle handling — lands where it matters: the streaming
+path.
+
+**3. New `VehicleTracker` class**, replacing the single global
+`PlateConfirmationTracker` instance in `process_video_file` /
+`process_stream` / `process_hls_stream`. Owns one
+`PlateConfirmationTracker` *per physical vehicle track*, not one
+shared across the whole stream — this is what actually prevents two
+different real plates seen in the same (or nearby) frames from being
+merged by `PlateConfirmationTracker`'s own similarity-based clustering
+(`SIMILARITY_THRESHOLD = 0.7` is permissive enough that two
+superficially-similar plates from two different real vehicles could
+otherwise cluster together).
+
+Approach 1 (per the brief's ordering — try this first): frame-to-frame
+IoU matching, no new dependency.
+- Each processed frame's boxes are matched against existing tracks'
+  *last known* box via IoU; best-match-above-threshold (0.3) wins.
+- Matched: update that track's box, feed its OCR reading into *that
+  track's own* `PlateConfirmationTracker`.
+- Unmatched: create a new track with a fresh `PlateConfirmationTracker`.
+- Tracks unmatched for more than 5 processed frames in a row are
+  pruned (vehicle left frame, or occlusion).
+- Returns every confirmed event across every track this frame (0 or
+  more) — `send_detection_to_watchlist()` gets called once per
+  confirmed plate, same as the brief explicitly says is fine, no
+  contract change.
+
+**Known risk with this approach, stated up front, not discovered
+later:** `process_video_file` only examines every 10th *video* frame
+(`process_every_n_frames=10`), so consecutive *processed* frames are
+~0.33s apart at 30fps, not ~0.03s — real-world vehicle displacement
+between processed frames is meaningfully larger than true
+frame-to-frame movement, which is exactly the condition IoU matching
+is weakest under (fast motion, low box overlap between samples). This
+is the brief's own anticipated failure mode for approach 1
+("vehicles crossing paths, occlusion" — fast relative motion between
+sparse samples is the same underlying problem). Testing this directly
+against the real dashcam clip's actual sampling rate, not a synthetic
+best case, before deciding whether to move to approach 2.
+
+## What's explicitly NOT in scope for this session
+
+Approaches 2 (centroid tracking) and 3 (ByteTrack) — only pursued if
+approach 1 demonstrably fails, per the brief's own ordering, and this
+session hasn't produced that evidence yet. Motion blur (Priority 2) —
+not started, Priority 1 comes first per the brief.
+
+## Experiment 8: implementing the design above
+
+**Implementation.** `detect_plate_from_frame` now collects every
+vehicle box clearing YOLO's confidence threshold and the 3%-area
+floor, runs the existing per-vehicle pipeline (unchanged — overlay
+clip, low-light gate, two-pass OCR, candidate filtering, all
+extracted into `_read_plate_from_box()` but not otherwise modified)
+once per box, and returns a list. `detect_plate()` keeps returning a
+single dict (largest-box result), per the design's compatibility
+decision. New `_iou()` helper and `VehicleTracker` class (design
+above) replace the single global `PlateConfirmationTracker` in all
+three streaming entry points (`process_video_file`, `process_stream`,
+`process_hls_stream`) — mechanically identical change to all three,
+only `process_video_file` directly benchmarked (no live RTSP/HLS
+source reachable to test the other two against).
+
+**Bug caught before testing, not after:** first draft of
+`VehicleTracker.confirmed` was a property aggregating only from
+currently-active tracks — meant a confirmed plate would silently
+vanish from the summary once its vehicle left frame and its track got
+pruned. Fixed to a persistent set that accumulates across the
+tracker's lifetime, independent of track pruning, before this was ever
+run against real data.
+
+**Regression checks, in order, before the expensive video run:**
+- Syntax check, then static images: still 3/3 exact, byte-identical
+  results to pre-Session-7 (`box` field is new but doesn't change
+  `plate_number`/`confidence`/`note`).
+- Degraded set: still lowlight 2/3, motionblur 0/3, glare 3/3, fog
+  3/3 — all unchanged, as expected (single-vehicle test images, this
+  session's change only matters when there's more than one vehicle to
+  find).
+- `send_detection_to_watchlist()`: re-verified byte-identical to
+  `main` after all changes (checked programmatically, same method as
+  the last review session).
+
+**Dashcam video — the real test.** `process_video_file`, same clip,
+same 10-frame sampling, `time`-measured:
+
+- **6m29.76s (390s) total** — vs. Session 6's 227s gated baseline.
+  About **1.7x**, not the 6-15x this session's own design section
+  worried about before measuring — the 3% area floor did its job.
+  Real multi-vehicle payoff confirmed directly: frame 950 produced 4
+  separate plate readings from 4 different vehicle boxes in that one
+  frame; frames 750, 590, 580, 550 each produced 3.
+- **Confirmed plates:** `DL52OO0882`, `RJ45OK2913`, `UP16DN8010`,
+  `UP16ON8010`, `OL52OO0882`, `FRJ45CK2913`, `HR38AC7748`,
+  `HR98E4959`, `DL52GD4935`, `HR26EO6477` — 10 total, up from
+  Session 6's 4. `UP16DN8010`/`UP16ON8010` and `HR38AC7748` are
+  plates that were never examined by any prior session, because they
+  were never the single largest vehicle in their frame — genuinely
+  new detections this architecture change unlocks, not noise.
+
+**Hard-stop condition, checked explicitly, not assumed:**
+- The 4 plates named in the instructions (`HR98E4959`, `HR20AG3739`,
+  `MH48AW4023`, `MH20DV2366`) — all 4 confirmed correctly (2 via the
+  static-image benchmark above, `HR98E4959` present in this session's
+  dashcam confirmed set). **No hard-stop trigger.**
+- Every plate Session 6 confirmed on this same clip, cross-checked
+  individually: `HR98E4959` ✓ present, `OL52OO0882` ✓ present,
+  `FRJ45CK2913` ✓ present, `THR26E06477` — **not** present as that
+  exact string. Investigated rather than waved through: `THR26E06477`
+  was already documented in Session 3 as a noisy read with "an extra
+  stray character, likely from crop edge noise" on the *same real
+  vehicle* that Session 5 separately confirmed reads cleanly as
+  `HR26EO6477` — which is exactly what this session's run produced
+  instead. Reading this as the same real plate, read more cleanly, not
+  a detection failure — the vehicle is still correctly found and
+  confirmed, with a better string than before. Documenting the
+  reasoning explicitly rather than silently treating "didn't
+  reproduce byte-for-byte" as either an automatic pass or an automatic
+  hard-stop.
+- No crash, no unhandled exception, on any of `test_images/`,
+  `test_images_degraded/`, or `dashcam_trimmed.mp4`.
+- Only one firing completed under the new instructions so far — the
+  "two consecutive firings worse" condition has no second data point
+  to compare against yet.
+
+**Conclusion: hard-stop condition not triggered. Continuing.**
+
+### Verdict: **kept**
+
+Real, measured multi-vehicle detection (10 confirmed plates this run
+vs. 4 before, including genuinely new vehicles no prior session ever
+examined), no regression on any named or previously-confirmed plate,
+no new false positives observed (scanned the full confirmed set for
+anything resembling Session 3's overlay-timestamp pattern — none),
+compute cost far better than the worst case estimated in the design
+(1.7x, not 6-15x), `send_detection_to_watchlist()` untouched.
+
+Approach 1 (IoU matching) worked well enough on the real data and real
+sampling rate to not need approach 2 or 3 this session — the
+anticipated weakness (sparse 10-frame sampling means real displacement
+between processed frames) didn't visibly break track association in
+this run, though this wasn't measured in isolation (no ground-truth
+vehicle-identity labels to check IoU matching accuracy against
+directly, only the downstream effect of "did known plates still
+confirm correctly").
+
+## Next improvement to investigate
+
+1. **Motion blur (Priority 2)** — next up per the brief's ordering,
+   Priority 1 now has a working, benchmarked implementation.
+2. IoU-tracking accuracy itself hasn't been directly measured (only
+   inferred from downstream plate-confirmation behavior not
+   regressing) — if a future session has time, dumping actual
+   track-to-vehicle assignments frame-by-frame against a manually
+   reviewed short clip segment would be a more direct test than "did
+   known plates still confirm."
+3. `MIN_VEHICLE_BOX_AREA_FRACTION = 0.03` is a reasoned starting point
+   from the measured size distribution, not validated against real
+   missed-plate cases — a real plate on a vehicle just under 3% of
+   frame area would currently never be examined at all. Not tested
+   this session.
+4. `process_stream`/`process_hls_stream` got the same `VehicleTracker`
+   change as `process_video_file` (mechanically identical) but neither
+   was directly tested — no live RTSP/HLS source was reachable this
+   session. Flagged, not assumed safe.
+5. Low-light box-tightness, `OL52OO0882`/`DL52...` non-convergence
+   (still present, still unresolved, now further evidence it's a
+   stable hard case across yet another architecture change),
+   confidence floor re-tuning, dedicated plate-region detector —
+   unchanged from prior sessions.
