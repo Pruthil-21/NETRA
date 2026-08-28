@@ -25,3 +25,11 @@ ultralytics==8.4.123
 requests==2.32.5
 paddleocr==3.7.0
 paddlepaddle==3.3.1
+
+# No new dependency for NAFNet motion-deblur (Session 9/10) -- it only
+# needs torch, already pinned above for YOLO. The architecture is
+# vendored in ml-anpr/nafnet/ (see its LICENSE file for attribution).
+# Its ~68MB pretrained checkpoint is NOT committed to git -- it's
+# fetched once to ~/.cache/netra_nafnet/ on first actual use (only
+# when a frame's vehicle crop trips the blur-detection gate) and
+# cached there. No manual setup step needed.
