@@ -2,7 +2,7 @@
 
 Field names match /contract/API_CONTRACT.md exactly.
 """
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -37,3 +37,23 @@ class CameraUpdate(BaseModel):
 
 class CameraOut(CameraCreate):
     id: int
+
+
+class CameraBulkResult(BaseModel):
+    """One row's outcome from POST /cameras/bulk — a bad row never fails the
+    whole batch, so the caller needs a per-row success/failure verdict."""
+    index: int
+    status: Literal["created", "error"]
+    camera: Optional[CameraOut] = None
+    reason: Optional[str] = None
+
+
+class ReportSummary(BaseModel):
+    total_cameras: int
+    cameras_by_department: dict[str, int]
+    cameras_by_connectivity_status: dict[str, int]
+    cameras_by_health_status: dict[str, int]
+    # None when backend-watchlist's schema hasn't been applied yet in this
+    # environment — see reports_service._count_last_24h.
+    alerts_last_24h: Optional[int] = None
+    detections_last_24h: Optional[int] = None

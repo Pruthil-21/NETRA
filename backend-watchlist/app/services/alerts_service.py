@@ -6,12 +6,11 @@ in the latest history row so callers always see the current status.
 """
 from psycopg2.extras import RealDictCursor
 
-from ..schemas import DetectionIn
 from . import watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
-    SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.matched_at,
-           COALESCE(h.status, a.status) AS status
+    SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
+           a.matched_at, COALESCE(h.status, a.status) AS status
     FROM alerts a
     LEFT JOIN LATERAL (
         SELECT status FROM alert_status_history
@@ -32,19 +31,21 @@ def get_alert(db: RealDictCursor, alert_id: int):
     return db.fetchone()
 
 
-def process_detection(db: RealDictCursor, detection: DetectionIn):
-    """Checks a plate against the watchlist; creates an alert if it matches."""
-    match = watchlist_service.find_by_plate(db, detection.plate_number)
+def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, detection_id: int):
+    """Checks a plate against the watchlist; creates an alert (linked back to
+    the detections row that triggered it) if it matches. Called as a side
+    effect of POST /detections — a match is a detection too."""
+    match = watchlist_service.find_by_plate(db, plate_number)
     if not match:
         return None
 
     db.execute(
         """
-        INSERT INTO alerts (camera_id, plate_number, watchlist_id, status)
-        VALUES (%s, %s, %s, 'NEW')
+        INSERT INTO alerts (camera_id, plate_number, watchlist_id, detection_id, status)
+        VALUES (%s, %s, %s, %s, 'NEW')
         RETURNING id
         """,
-        (detection.camera_id, detection.plate_number, match["id"]),
+        (camera_id, plate_number, match["id"], detection_id),
     )
     new_id = db.fetchone()["id"]
     return get_alert(db, new_id)
