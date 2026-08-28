@@ -74,7 +74,12 @@ describe('P2 Frontend Map: Feature Tests', () => {
   });
 
   it('Feature 3: CameraDetailDrawer displays complete PostGIS registry fields', () => {
-    render(<CameraDetailDrawer camera={MOCK_CAMERAS[0]} />);
+    vi.spyOn(organizerCameraService, 'getAll').mockResolvedValue([]);
+    render(
+      <CameraRegistryProvider>
+        <CameraDetailDrawer camera={MOCK_CAMERAS[0]} />
+      </CameraRegistryProvider>
+    );
 
     expect(screen.getByText('Sector 10 CH Road Junction')).toBeInTheDocument();
     expect(screen.getByText('1')).toBeInTheDocument();
