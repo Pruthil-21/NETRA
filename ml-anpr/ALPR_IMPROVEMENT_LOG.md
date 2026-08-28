@@ -1300,3 +1300,100 @@ regression possible from zero production changes).
 3. Low-light box-tightness, confidence floor re-tuning, dedicated
    plate-region detector, `process_stream`/`process_hls_stream` still
    untested against a live source — unchanged from prior sessions.
+
+---
+
+# Session 10 — NAFNet integration: gate, vendor, benchmark, kept
+
+Continuation of the same branch/protections. Integrates Session 9's
+proof of concept into the real pipeline, per that session's own
+next-steps list.
+
+## 1. Blur-detection gate — real per-vehicle data, not a frame-wide guess
+
+Motion blur depends on a specific vehicle's relative motion to the
+camera, not overall scene brightness — unlike `is_low_light()`, this
+is checked per vehicle crop in `_read_plate_from_box()`, not once per
+frame. Laplacian-variance threshold calibrated the same way as the
+brightness gate: clean images measure 685-1061, synthetic
+motion-blurred counterparts measure 196-225 — clean gap. **Real risk
+found and handled:** fog-degraded images measure 279.8, closer to the
+blur range than to clean. Set `BLUR_LAPLACIAN_VARIANCE_THRESHOLD =
+250` — below fog's value (so fog doesn't falsely trigger NAFNet, which
+was only validated against motion blur, not haze) but above all 3
+motion-blur samples. Documented as a real but non-huge margin, not
+asserted as fully robust to every case.
+
+## 2. Vendored properly, not just copy-pasted
+
+`ml-anpr/nafnet/` — `NAFNet_arch.py`, `arch_util.py`, `local_arch.py`
+from the official `megvii-research/NAFNet` repo, import paths fixed
+to relative (`from .arch_util import ...`), the one unused
+`basicsr.utils` import removed (confirmed dead/commented-out code
+before removing, not stubbed). `LICENSE` file added reproducing the
+full MIT + Apache-2.0 text from the source repo, with an explicit note
+of what was modified. Checkpoint (68MB) is **not** committed —
+`_get_nafnet_model()` fetches it once to `~/.cache/netra_nafnet/` on
+first actual use (lazy, not at import time) and caches it there,
+verified working: file present after first run, exact byte-size match
+to the Session 9-verified download, second run doesn't re-download.
+
+## 3. Full benchmark suite, before deciding to keep
+
+- **Clean images:** still 3/3, unaffected (blur gate correctly never
+  triggers on sharp crops — 685-1061 variance, threshold 250).
+- **Degraded set:** `motionblur` **0/3 → 1/3**, matching Session 9's
+  proof-of-concept result exactly now that it's wired into the real
+  pipeline. `lowlight` 2/3, `glare` 3/3, `fog` **3/3** (critical
+  confirmation the fog false-trigger risk identified in step 1 didn't
+  materialize — fog images correctly did not engage the blur gate).
+- **Dashcam video regression (the one that matters most):** confirmed
+  plate set is **byte-for-byte identical to Session 7's**: `DL52OO0882`,
+  `RJ45OK2913`, `UP16DN8010`, `UP16ON8010`, `OL52OO0882`,
+  `FRJ45CK2913`, `HR38AC7748`, `HR98E4959`, `DL52GD4935`, `HR26EO6477`
+  — same 10 plates, zero change. All hard-stop-named plates present
+  and correct (`HR98E4959` in the dashcam set; `HR20AG3739`,
+  `MH48AW4023`, `MH20DV2366` verified via the static-image benchmark).
+  Total time: 490s vs. Session 7's 390s baseline (~1.26x) — modest,
+  expected, not the kind of cost Session 5's unconditional low-light
+  application incurred.
+- **Verified the gate actually engages on real footage, not just
+  synthetic images** — an 8-frame spot-check first found zero
+  triggers (a too-small, unlucky sample), so followed up with a
+  broader sweep (84 real vehicle crops across the whole clip, every
+  40th frame): **4/84 (~5%) triggered**, with real low-variance values
+  (59.0, 152.7, 155.6 — well below the 250 threshold, not
+  borderline). Confirms this isn't silently inert on real video.
+
+## Not yet done, honestly flagged
+
+`DL52GD0882` (Session 8's human-confirmed ground truth for that
+vehicle) still isn't the confirmed string — the dashcam set still
+shows `DL52OO0882`/`OL52OO0882`. Expected, not a regression: Session
+10 targeted motion blur specifically, not the majority-vote
+character-bias issue Session 8 diagnosed for that plate, which is a
+different, already-flagged, still-open problem.
+
+### Verdict: **kept**
+
+Real, measured win with zero regression: identical dashcam-confirmed
+plates, improved motion-blur accuracy (0/3→1/3, verified via the real
+pipeline not just the isolated test venv), confirmed working on real
+footage at a modest, bounded rate and cost. `send_detection_to_watchlist()`
+verified byte-identical to `main` after all changes. Hard-stop
+condition: not triggered.
+
+## Next improvement to investigate
+
+1. `DL52GD0882` majority-vote character-bias issue — unchanged from
+   Session 8, still open, a different problem from motion blur.
+2. Fog's proximity to the blur threshold (279.8 vs. 250) is a real,
+   documented margin, not a guaranteed-safe one — worth a wider fog
+   sample if more synthetic/real foggy footage becomes available.
+3. Low-light box-tightness, confidence floor re-tuning, dedicated
+   plate-region detector, `process_stream`/`process_hls_stream` still
+   untested against a live source — unchanged from prior sessions.
+4. With both Priority 1 and Priority 2 now addressed with kept,
+   benchmarked changes, worth a full end-to-end reread of the log for
+   whoever reviews this branch before merge — a lot has accumulated
+   across 10 sessions.

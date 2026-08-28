@@ -16,6 +16,11 @@ from ultralytics import YOLO
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from streaming.rtsp_reader import RTSPStreamReader
 
+# Same reasoning, for the vendored nafnet/ package (Session 10) --
+# makes it importable regardless of the caller's cwd, not just when
+# cwd happens to be ml-anpr/.
+sys.path.insert(0, os.path.dirname(__file__))
+
 # ---------------------------------------------------------------------------
 # CONFIRM WITH P6 BEFORE DEMO:
 # 1. Exact endpoint path (/alerts vs /detections)
@@ -431,6 +436,92 @@ def enhance_low_light(img):
     return cv2.cvtColor(cv2.merge((l2, a, b)), cv2.COLOR_LAB2BGR)
 
 
+BLUR_LAPLACIAN_VARIANCE_THRESHOLD = 250
+
+# Unlike low-light (a genuinely frame-wide property), motion blur is
+# per-vehicle -- it depends on that specific vehicle's relative motion
+# to the camera, not overall scene brightness. Checked per vehicle crop
+# in _read_plate_from_box(), not once per frame like is_low_light().
+
+
+def is_blurry(img):
+    """
+    Laplacian-variance blur heuristic, threshold calibrated against our
+    own data (Session 10), not guessed: the 3 clean ground-truth images
+    measure 685-1061; their synthetically motion-blurred counterparts
+    measure 196-225 -- a clean gap. The one real risk found: fog-degraded
+    images measure 279.8, closer to the blur range than to clean --
+    250 sits below fog's value so fog doesn't trigger this gate (fog
+    isn't motion blur, and NAFNet was only validated against motion
+    blur), but the margin against fog specifically is real, not huge,
+    and this is a whole-crop average so it can still be fooled by a
+    partly-sharp, partly-blurred crop. Flagged as a real limitation,
+    not asserted as fully robust.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var() < BLUR_LAPLACIAN_VARIANCE_THRESHOLD
+
+
+_NAFNET_CACHE_DIR = os.path.expanduser("~/.cache/netra_nafnet")
+_NAFNET_CHECKPOINT_PATH = os.path.join(_NAFNET_CACHE_DIR, "NAFNet-GoPro-width32.pth")
+# Verified in Session 9 as a genuine direct download (HTTP redirect to a
+# real CDN, matching Content-Length, no login wall) -- a community
+# HuggingFace mirror of the official megvii-research checkpoint. Not
+# committed to git (68MB); fetched once and cached on first use, same
+# pattern PaddleOCR's own models already follow in this pipeline.
+_NAFNET_CHECKPOINT_URL = "https://huggingface.co/nyanko7/nafnet-models/resolve/main/NAFNet-GoPro-width32.pth"
+
+_nafnet_model = None
+
+
+def _get_nafnet_model():
+    """Lazily loads and caches the NAFNet model (CPU) on first use, not
+    at module import time -- most streams/images never hit the blur
+    gate, so the ~68MB checkpoint fetch and model construction shouldn't
+    cost anything unless a frame actually needs deblurring."""
+    global _nafnet_model
+    if _nafnet_model is not None:
+        return _nafnet_model
+
+    from nafnet.NAFNet_arch import NAFNetLocal
+
+    if not os.path.exists(_NAFNET_CHECKPOINT_PATH):
+        os.makedirs(_NAFNET_CACHE_DIR, exist_ok=True)
+        print(f"[nafnet] downloading checkpoint to {_NAFNET_CHECKPOINT_PATH} ...")
+        response = requests.get(_NAFNET_CHECKPOINT_URL, timeout=60)
+        response.raise_for_status()
+        with open(_NAFNET_CHECKPOINT_PATH, "wb") as f:
+            f.write(response.content)
+
+    model = NAFNetLocal(
+        img_channel=3, width=32, enc_blk_nums=[1, 1, 1, 28], middle_blk_num=1,
+        dec_blk_nums=[1, 1, 1, 1], train_size=(1, 3, 256, 256), fast_imp=True,
+    )
+    checkpoint = torch.load(_NAFNET_CHECKPOINT_PATH, map_location="cpu")
+    model.load_state_dict(checkpoint["params"])
+    model.eval()
+    _nafnet_model = model
+    return model
+
+
+def enhance_motion_blur(img):
+    """
+    Runs the vendored NAFNet (nafnet/) on a blurry crop. Session 9
+    measured 0/3 -> 1/3 exact matches on the synthetic motion-blur
+    benchmark, no regression on clean images, ~0.4-1.1s/image on CPU --
+    real evidence, not a guess, but only tested against a synthetic
+    15px box-kernel blur there; re-verified against real footage in
+    Session 10 (see ALPR_IMPROVEMENT_LOG.md).
+    """
+    model = _get_nafnet_model()
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype("float32") / 255.0
+    tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0)
+    with torch.no_grad():
+        out = model(tensor)
+    out = out.squeeze(0).permute(1, 2, 0).clamp(0, 1).numpy()
+    return cv2.cvtColor((out * 255).astype("uint8"), cv2.COLOR_RGB2BGR)
+
+
 def plate_region_crop(vehicle_img):
     """
     Real plates sit in a fairly predictable band of a vehicle's bounding
@@ -479,6 +570,13 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     vehicle_img = raw_frame[y1:y2, x1:x2]
     if frame_is_dark:
         vehicle_img = enhance_low_light(vehicle_img)
+
+    # Session 9/10: motion blur is per-vehicle, not frame-wide, so this
+    # is checked on the crop itself, not once per frame like
+    # is_low_light(). See is_blurry()'s docstring for the threshold and
+    # its known fog-proximity limitation.
+    if is_blurry(vehicle_img):
+        vehicle_img = enhance_motion_blur(vehicle_img)
 
     ocr_results = _ocr_readtext(vehicle_img)
 
