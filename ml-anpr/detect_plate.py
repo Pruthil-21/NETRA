@@ -259,6 +259,106 @@ class PlateConfirmationTracker:
         }
 
 
+def _iou(box_a, box_b):
+    """Intersection-over-union of two (x1,y1,x2,y2) boxes, 0.0 if disjoint."""
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    return inter / (area_a + area_b - inter)
+
+
+class VehicleTracker:
+    """
+    Associates per-frame vehicle detections (detect_plate_from_frame's
+    list output, Session 7) into persistent per-vehicle tracks via
+    frame-to-frame IoU matching, so PlateConfirmationTracker's
+    similarity-based clustering runs independently per physical vehicle
+    instead of pooling every vehicle seen in a stream into one shared
+    set of clusters -- SIMILARITY_THRESHOLD=0.7 is permissive enough
+    that two different real plates from two different vehicles could
+    otherwise merge if they're superficially similar strings.
+
+    Approach 1 from ALPR_IMPROVEMENT_LOG.md Session 7's design (tried
+    first per instructions): greedy best-IoU matching against each
+    track's last-seen box, no new dependency. Known risk, stated in the
+    design before testing: process_video_file/process_stream only
+    examine every Nth frame, so real displacement between *processed*
+    frames is larger than true frame-to-frame motion -- this is
+    exactly the condition IoU matching is weakest under. See Session 7
+    for whether this held up on the real dashcam clip's actual sampling
+    rate.
+    """
+    IOU_MATCH_THRESHOLD = 0.3
+    MAX_MISSED_FRAMES = 5
+
+    def __init__(self, window_size=10, confirm_threshold=2):
+        self.window_size = window_size
+        self.confirm_threshold = confirm_threshold
+        self.tracks = []  # each: {"box": (x1,y1,x2,y2), "tracker": PlateConfirmationTracker, "missed": int}
+        # Persists across track pruning -- a confirmed plate must not
+        # silently disappear from the summary just because the vehicle
+        # that produced it later left frame and its track got pruned.
+        self.confirmed = set()
+
+    def update(self, detections):
+        """
+        detections: detect_plate_from_frame's list output for one
+        frame. Returns a list of confirmed-event dicts for this frame
+        (0 or more -- one per vehicle track that just crossed its own
+        confirm_threshold).
+        """
+        confirmed_events = []
+        matched = set()
+
+        for det in detections:
+            box = det.get("box")
+            if box is None:
+                continue
+
+            best_track, best_iou = None, 0.0
+            for t in self.tracks:
+                if id(t) in matched:
+                    continue
+                iou = _iou(t["box"], box)
+                if iou >= self.IOU_MATCH_THRESHOLD and iou > best_iou:
+                    best_track, best_iou = t, iou
+
+            if best_track is None:
+                best_track = {
+                    "box": box,
+                    "tracker": PlateConfirmationTracker(
+                        window_size=self.window_size, confirm_threshold=self.confirm_threshold
+                    ),
+                    "missed": 0,
+                }
+                self.tracks.append(best_track)
+
+            best_track["box"] = box
+            best_track["missed"] = 0
+            matched.add(id(best_track))
+
+            plate = det.get("plate_number")
+            if not plate:
+                continue
+            confirmed = best_track["tracker"].add(plate, det["confidence"], det["note"])
+            if confirmed:
+                confirmed_events.append(confirmed)
+                self.confirmed.add(confirmed["plate_number"])
+
+        for t in self.tracks:
+            if id(t) not in matched:
+                t["missed"] += 1
+        self.tracks = [t for t in self.tracks if t["missed"] <= self.MAX_MISSED_FRAMES]
+
+        return confirmed_events
+
+
 def preprocess_for_ocr(img):
     """
     Upscales small crops and boosts local contrast (CLAHE) before OCR.
@@ -349,50 +449,18 @@ def plate_region_crop(vehicle_img):
     return vehicle_img[y1:y2, x1:x2]
 
 
-def detect_plate_from_frame(infer_frame, raw_frame):
+MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
+
+
+def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     """
-    Runs YOLO on the small infer_frame (fast), but crops the plate region
-    from the full-resolution raw_frame for OCR (maximum detail).
+    The per-vehicle detection pipeline (overlay-band clip, crop,
+    low-light enhancement, two-pass OCR, candidate filtering) --
+    unchanged logic from the pre-Session-7 single-box version, just
+    extracted so detect_plate_from_frame can run it once per qualifying
+    vehicle box instead of once for the single largest.
     """
-    if infer_frame is None or raw_frame is None:
-        return {"error": "Empty frame"}
-
-    # Session 5 measured enhance_low_light() applied unconditionally
-    # costing 2.5-3.6x end-to-end video throughput for a partial
-    # accuracy gain -- too costly to force in for every frame. Session
-    # 6 gates it behind a cheap brightness check instead, so it only
-    # runs on frames that are actually dark. See is_low_light()'s
-    # docstring for the threshold, and ALPR_IMPROVEMENT_LOG.md Session
-    # 6 for the measured cost of this gated version specifically.
-    frame_is_dark = is_low_light(infer_frame)
-    results = yolo_model(enhance_low_light(infer_frame) if frame_is_dark else infer_frame, verbose=False)
-    vehicle_classes = {2, 3, 5, 7}
-
-    best_crop = None
-    best_area = 0
-
-    infer_h, infer_w = infer_frame.shape[:2]
-    raw_h, raw_w = raw_frame.shape[:2]
-    scale_x = raw_w / infer_w
-    scale_y = raw_h / infer_h
-
-    for r in results:
-        for box in r.boxes:
-            cls_id = int(box.cls[0])
-            if cls_id in vehicle_classes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                area = (x2 - x1) * (y2 - y1)
-                if area > best_area:
-                    best_crop = (
-                        int(x1 * scale_x), int(y1 * scale_y),
-                        int(x2 * scale_x), int(y2 * scale_y)
-                    )
-                    best_area = area
-
-    if best_crop is None:
-        return {"plate_number": None, "confidence": 0, "note": "No vehicle detected"}
-
-    x1, y1, x2, y2 = best_crop
+    x1, y1, x2, y2 = box
 
     # Dashcam footage commonly has a fixed UI overlay burned into the
     # bottom strip of every frame (date/time, speed/GPS) -- confirmed
@@ -406,7 +474,7 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     # so clip the crop's bottom edge to exclude it.
     y2 = min(y2, int(raw_h * 0.92))
     if y2 <= y1:
-        return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band"}
+        return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band", "box": box}
 
     vehicle_img = raw_frame[y1:y2, x1:x2]
     if frame_is_dark:
@@ -424,7 +492,7 @@ def detect_plate_from_frame(infer_frame, raw_frame):
         ocr_results += _ocr_readtext(region)
 
     if not ocr_results:
-        return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read"}
+        return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read", "box": box}
 
     candidates = []
     fallback_candidates = []
@@ -456,22 +524,97 @@ def detect_plate_from_frame(infer_frame, raw_frame):
         plate_text, ocr_conf = fallback_candidates[0]
         note = "ok - fallback, unverified pattern"
     else:
-        return {"plate_number": None, "confidence": 0, "note": "Text found, none plate-shaped"}
+        return {"plate_number": None, "confidence": 0, "note": "Text found, none plate-shaped", "box": box}
 
     return {
         "plate_number": plate_text,
         "confidence": round(ocr_conf, 2),
-        "note": note
+        "note": note,
+        "box": box,
     }
 
 
+def detect_plate_from_frame(infer_frame, raw_frame):
+    """
+    Runs YOLO on the small infer_frame (fast), but crops the plate
+    region(s) from the full-resolution raw_frame for OCR (maximum
+    detail). Returns a LIST of per-vehicle result dicts (Session 7) --
+    every vehicle box clearing both YOLO's own confidence threshold and
+    MIN_VEHICLE_BOX_AREA_FRACTION (previously: only the single largest
+    box was ever examined, silently discarding every other vehicle in
+    frame). See ALPR_IMPROVEMENT_LOG.md Session 7 for why the area
+    floor exists -- measured 6-15 vehicle boxes per dashcam frame, most
+    of them too small to plausibly contain a legible plate; processing
+    all of them unconditionally would be a 6-15x compute multiplier.
+
+    Each result dict includes a "box" key ((x1,y1,x2,y2) in raw_frame
+    coordinates) so stateful callers (see VehicleTracker) can associate
+    detections into per-vehicle tracks across frames -- this function
+    itself stays stateless and per-frame.
+
+    Returns an empty list if no qualifying vehicle box was found at all.
+    """
+    if infer_frame is None or raw_frame is None:
+        return [{"error": "Empty frame"}]
+
+    # Session 5 measured enhance_low_light() applied unconditionally
+    # costing 2.5-3.6x end-to-end video throughput for a partial
+    # accuracy gain -- too costly to force in for every frame. Session
+    # 6 gates it behind a cheap brightness check instead, so it only
+    # runs on frames that are actually dark. See is_low_light()'s
+    # docstring for the threshold, and ALPR_IMPROVEMENT_LOG.md Session
+    # 6 for the measured cost of this gated version specifically.
+    frame_is_dark = is_low_light(infer_frame)
+    results = yolo_model(enhance_low_light(infer_frame) if frame_is_dark else infer_frame, verbose=False)
+    vehicle_classes = {2, 3, 5, 7}
+
+    infer_h, infer_w = infer_frame.shape[:2]
+    raw_h, raw_w = raw_frame.shape[:2]
+    scale_x = raw_w / infer_w
+    scale_y = raw_h / infer_h
+    min_area = MIN_VEHICLE_BOX_AREA_FRACTION * raw_h * raw_w
+
+    boxes = []
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            if cls_id in vehicle_classes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                raw_box = (
+                    int(x1 * scale_x), int(y1 * scale_y),
+                    int(x2 * scale_x), int(y2 * scale_y)
+                )
+                area = (raw_box[2] - raw_box[0]) * (raw_box[3] - raw_box[1])
+                if area >= min_area:
+                    boxes.append(raw_box)
+
+    if not boxes:
+        return [{"plate_number": None, "confidence": 0, "note": "No vehicle detected", "box": None}]
+
+    return [_read_plate_from_box(box, raw_frame, raw_h, frame_is_dark) for box in boxes]
+
+
 def detect_plate(image_path):
-    """Wrapper for testing against static image files (unaffected by the
-    live-stream reader — uses the raw image directly for both stages)."""
+    """
+    Wrapper for testing against static image files (unaffected by the
+    live-stream reader — uses the raw image directly for both stages).
+
+    detect_plate_from_frame() returns a list (Session 7, multi-vehicle
+    support) -- kept this wrapper's return contract as a single dict,
+    unchanged, since every existing ground-truth test image has exactly
+    one vehicle and every regression check in this log's history calls
+    detect_plate(...).get(...) expecting one dict. Picks the
+    largest-box result, matching the pre-Session-7 single-box behavior
+    exactly for the single-vehicle case this wrapper is actually used
+    for.
+    """
     img = cv2.imread(image_path)
     if img is None:
         return {"error": f"Could not read image at {image_path}"}
-    return detect_plate_from_frame(img, img)
+    results = detect_plate_from_frame(img, img)
+    if not results or "error" in results[0]:
+        return results[0] if results else {"error": "No result"}
+    return max(results, key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]) if r["box"] else 0)
 
 
 def send_detection_to_watchlist(plate_number, camera_id_str):
@@ -504,7 +647,10 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
     print("Press Ctrl+C to stop.\n")
 
     frame_count = 0
-    tracker = PlateConfirmationTracker(window_size=window_size, confirm_threshold=confirm_threshold)
+    # Session 7: one PlateConfirmationTracker per physical vehicle
+    # track (via IoU association), not one shared globally -- see
+    # VehicleTracker's docstring and ALPR_IMPROVEMENT_LOG.md Session 7.
+    tracker = VehicleTracker(window_size=window_size, confirm_threshold=confirm_threshold)
 
     try:
         while True:
@@ -516,14 +662,9 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
             if frame_count % process_every_n_frames != 0:
                 continue
 
-            result = detect_plate_from_frame(infer_frame, raw_frame)
-            plate = result.get("plate_number")
+            results = detect_plate_from_frame(infer_frame, raw_frame)
 
-            if not plate:
-                continue
-
-            confirmed = tracker.add(plate, result["confidence"], result["note"])
-            if confirmed:
+            for confirmed in tracker.update(results):
                 event = {
                     "event_id": str(uuid.uuid4()),
                     "camera_id": camera_id,
@@ -559,7 +700,10 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
     print(f"Reading from file: {video_path}\n")
 
     frame_count = 0
-    tracker = PlateConfirmationTracker(window_size=window_size, confirm_threshold=confirm_threshold)
+    # Session 7: one PlateConfirmationTracker per physical vehicle
+    # track (via IoU association), not one shared globally -- see
+    # VehicleTracker's docstring and ALPR_IMPROVEMENT_LOG.md Session 7.
+    tracker = VehicleTracker(window_size=window_size, confirm_threshold=confirm_threshold)
 
     while True:
         ret, frame = cap.read()
@@ -571,15 +715,12 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
         if frame_count % process_every_n_frames != 0:
             continue
 
-        result = detect_plate_from_frame(frame, frame)
-        plate = result.get("plate_number")
+        results = detect_plate_from_frame(frame, frame)
+        for result in results:
+            if result.get("plate_number"):
+                print(f"[reading, frame {frame_count}] {result}")
 
-        if not plate:
-            continue
-        print(f"[reading, frame {frame_count}] {result}")
-
-        confirmed = tracker.add(plate, result["confidence"], result["note"])
-        if confirmed:
+        for confirmed in tracker.update(results):
             event = {
                 "event_id": str(uuid.uuid4()),
                 "camera_id": camera_id,
@@ -621,7 +762,10 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
     print("Press Ctrl+C to stop.\n")
 
     frame_count = 0
-    tracker = PlateConfirmationTracker(window_size=window_size, confirm_threshold=confirm_threshold)
+    # Session 7: one PlateConfirmationTracker per physical vehicle
+    # track (via IoU association), not one shared globally -- see
+    # VehicleTracker's docstring and ALPR_IMPROVEMENT_LOG.md Session 7.
+    tracker = VehicleTracker(window_size=window_size, confirm_threshold=confirm_threshold)
 
     try:
         while True:
@@ -639,14 +783,9 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
             if frame_count % process_every_n_frames != 0:
                 continue
 
-            result = detect_plate_from_frame(frame, frame)
-            plate = result.get("plate_number")
+            results = detect_plate_from_frame(frame, frame)
 
-            if not plate:
-                continue
-
-            confirmed = tracker.add(plate, result["confidence"], result["note"])
-            if confirmed:
+            for confirmed in tracker.update(results):
                 event = {
                     "event_id": str(uuid.uuid4()),
                     "camera_id": camera_id,
