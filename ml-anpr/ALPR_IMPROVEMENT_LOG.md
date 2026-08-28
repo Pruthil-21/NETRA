@@ -1711,3 +1711,119 @@ pre-merge review flagged (cold machine, blur gate fires, network
 unreachable) now degrades gracefully instead of crashing. Zero
 regression across every benchmark. `main` untouched throughout.
 Nothing pushed or merged, per instructions.
+
+---
+
+# Session 15 -- Priority 0: `send_detection_to_watchlist()` moved to the new `POST /detections` contract
+
+Deliberate contract update, not an experiment. P6 retired `POST /alerts`
+in favor of `POST /detections` (origin/main @ `cee989d`,
+`b09d1e2 feat(watchlist): add vehicle detection history + unify ANPR
+ingestion into POST /detections`). Local `main` in this checkout was
+still on `72cb8af`, one merge behind -- `git fetch origin main` (fetch
+only, local `main` branch pointer never moved) was needed before the
+new contract was visible at all. Verified the new shape three ways
+before writing any code, not just from the task description: the
+updated `contract/API_CONTRACT.md`, the real
+`backend-watchlist/app/routers/detections.py`, and
+`backend-watchlist/app/schemas.py`'s `DetectionIn` -- all three agree.
+
+## What changed
+
+- `ALERT_API_URL` -> `DETECTION_API_URL`, now points at `.../detections`
+  instead of `.../alerts`. The `# CONFIRM WITH P6 BEFORE DEMO` comment's
+  item 1 (endpoint path) is resolved; items 2-3 (real internal key,
+  camera_id mapping) are still open and still flagged.
+- `send_detection_to_watchlist(plate_number, camera_id_str)` gained a
+  third parameter, `confidence=None`, sent as `"confidence"` in the
+  POST body -- `DetectionIn.confidence` is `Optional[float]`, so `None`
+  serializes to JSON `null`, which the schema accepts. Both call sites
+  (in `process_stream` and `process_video_file`) already had
+  `confirmed["confidence"]` on hand from
+  `PlateConfirmationTracker.add()`'s return value, so no new plumbing
+  was needed to source it.
+- Response handling rewritten for the new contract shape. The old
+  `/alerts` returned `201` (match) or `204` (no match). The new
+  `/detections` always returns `201` with `{detection, alert}` --
+  `alert` is `null` on no-match. Now checks
+  `response.json().get("alert") is not None` to decide whether to print
+  `[ALERT]`, instead of branching on status code.
+- Nothing else in the detection/tracking pipeline touched, per the
+  brief.
+
+## Testing
+
+**Real end-to-end call: not possible from this machine.** The
+configured backend at `192.168.31.11:8001` is an unreachable LAN
+address from here (confirmed via `curl -m 3`, connection failed
+outright), and no local Docker/Postgres stack is available to stand up
+the real service (`docker` isn't installed on this machine). Rather
+than skip verification or fake a "tested end-to-end" claim, wrote a
+throwaway local mock server
+(`scratchpad/mock_detections_server.py`, not committed) that mimics
+the exact documented contract shape and asserts the client's request
+is well-formed (`camera_id` is `int`, `plate_number` is `str`,
+`confidence` key present, `X-Internal-Key` header present), then
+pointed `send_detection_to_watchlist()` at it for three cases:
+no-match, watchlist-match (confirmed `[ALERT]` line prints with the
+mock's returned alert object), and `confidence=None`. All three
+completed without exception. This validates the client's request/
+response handling against the contract's exact shape; it is explicitly
+**not** a substitute for a real call against the actual
+backend-watchlist service, which still needs to happen once that
+service is reachable (flagged, not silently assumed done).
+
+**Static images:** 3/3, unchanged (`MH48AW4023`, `HR20AG3739`,
+`MH20DV2366`).
+
+**Degraded set:** `lowlight` 3/3, `motionblur` 1/3, `glare` 3/3, `fog`
+3/3 -- all unchanged from Session 14.
+
+**Dashcam video, with a deliberate extra step:** first run (post-change
+code) confirmed set differed from the last documented baseline in
+exactly one entry -- `DL52OO0882` (baseline) was replaced by
+`OL52GO0882`. Everything else, including every named hard-stop plate
+(`HR98E4959`, `HR38AC7748`, `UP16DN8010`, `DL52GD4935`, `HR26EO6477`),
+was identical. Since this change cannot touch OCR/tracking logic at
+all (it only affects what happens after a plate is already confirmed),
+a real regression here would have been surprising -- but "surprising"
+isn't "impossible," so this was checked directly rather than
+hand-waved: `git stash`ed the Priority 0 diff, reran the identical
+dashcam video against the untouched pre-change code, and got
+`OL52GO0882` again, not `DL52OO0882`. Same result with and without the
+change -- proves this is pre-existing run-to-run nondeterminism in the
+already-documented, still-unresolved `DL52GD0882` cluster (Sessions 8/
+11/13), not a regression this change introduced. `git stash pop`
+restored the Priority 0 diff before committing.
+
+`send_detection_to_watchlist()` is now *intentionally* different from
+`main` -- that's the entire point of this session, since `main`'s copy
+still points at the retired `/alerts` endpoint. The "verify byte-
+identical to main" check from Sessions 1-14 no longer applies to this
+function specifically; it's superseded by "verify against the real,
+current backend-watchlist contract," which is what the three-way check
+above did.
+
+### Verdict: **kept**
+
+Contract change implemented and verified against the real route code
+(not just the docs, which could itself have lagged), client-side
+request/response handling verified against a contract-shape-accurate
+mock (real end-to-end blocked by environment, not skipped silently),
+zero regression on every benchmark that's actually sensitive to this
+change, and the one observed difference was independently proven to be
+pre-existing nondeterminism rather than caused by this change. `main`
+untouched throughout (confirmed `git log --oneline main -1` still
+`72cb8af` before and after -- only `origin/main`'s remote-tracking ref
+moved, via `fetch`, never the local branch itself). Nothing pushed or
+merged.
+
+## Next
+
+Priority 1 (`DL52GD0882`) is next, per the brief's own sequencing
+("once Priority 0 is done and verified"). Deferred to the next firing
+rather than started here, consistent with every prior session's
+one-well-scoped-piece-per-firing discipline -- it's explicitly the
+bigger, higher-risk piece of work in the brief, needs its own design
+written before any code, and needs the same full-suite + HR98E4959-
+specific care this session just modeled for a much smaller change.
