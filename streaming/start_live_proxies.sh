@@ -21,9 +21,18 @@ require_command() {
 
 cleanup() {
   local status=$?
+  local job_pid
   trap - EXIT INT TERM
+
   echo "Stopping live proxy streams..."
-  kill $(jobs -p) 2>/dev/null || true
+
+  while read -r job_pid; do
+    [[ -n "$job_pid" ]] || continue
+    pkill -TERM -P "$job_pid" 2>/dev/null || true
+    kill "$job_pid" 2>/dev/null || true
+  done < <(jobs -pr)
+
+  wait 2>/dev/null || true
   rm -f "$PID_FILE"
   exit "$status"
 }
@@ -92,6 +101,7 @@ publish_camera() {
     echo "[camera $camera_id] Pulling $source_url -> ${RTSP_BASE_URL%/}/stream/$camera_id"
     ffmpeg -hide_banner -loglevel warning -nostdin \
       -rw_timeout 15000000 \
+      -http_persistent 0 \
       -cookies "$SOURCE_COOKIE" \
       -user_agent "$SOURCE_USER_AGENT" \
       -referer "${HLS_BASE_URL%/}/" \
