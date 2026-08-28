@@ -29,3 +29,6 @@ streaming/videos/
 docker-compose.override.yml
 *.pt
 debug_*.jpg
+
+# Local dev tunnel script (machine-specific)
+scripts/start-tunnels.sh

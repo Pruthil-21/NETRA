@@ -11,18 +11,72 @@ services:
       - "${DB_HOST_PORT:-5432}:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
+      - ./backend-registry/app/schema.sql:/docker-entrypoint-initdb.d/01-registry-schema.sql:ro
+      - ./backend-watchlist/app/schema.sql:/docker-entrypoint-initdb.d/02-watchlist-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netra -d netra"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
   mediamtx:
     image: bluenviron/mediamtx:latest
     ports:
-      - "8554:8554"   # RTSP ingest
-      - "8888:8888"   # HLS output
-      - "8889:8889"   # WebRTC output
+      - "8554:8554"
+      - "8888:8888"
+      - "8889:8889"
     volumes:
       - ./streaming/mediamtx.yml:/mediamtx.yml
 
-  # backend-registry, backend-watchlist, frontend-map, frontend-dashboard
-  # services added here by their owners once each has a Dockerfile (Day 2+)
+  backend-registry:
+    build:
+      context: ./backend-registry
+    environment:
+      DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
+      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
+    ports:
+      - "${REGISTRY_HOST_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend-watchlist:
+    build:
+      context: ./backend-watchlist
+    environment:
+      DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
+      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+    ports:
+      - "${WATCHLIST_HOST_PORT:-8001}:8001"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
   db_data:
