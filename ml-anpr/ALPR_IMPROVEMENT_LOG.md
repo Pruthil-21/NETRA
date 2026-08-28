@@ -1555,3 +1555,78 @@ Hard-stop condition: not triggered.
 4. `DL52GD0882` proper fix -- unchanged from Session 11, needs its own
    dedicated session (track-association or confirmation-locking
    redesign, both cross-cutting).
+
+---
+
+# Session 13 — remaining flagged items checked, no safe change found
+
+Continuation of the same branch/protections. Worked through the log's
+remaining flagged items in order.
+
+## Quick checks (items 1-3)
+
+- **Confidence floor re-tuning:** still no calibration signal --
+  actually *more* evidence against attempting it now than before.
+  Session 8 already showed both the correct and incorrect readings
+  for `DL52GD0882` hit similarly high confidence (0.86-1.0) -- if
+  confidence itself can't discriminate right from wrong on real data
+  we have in hand, moving the floor threshold up or down doesn't
+  address the actual problem. Staying deferred, now with a clearer
+  reason why than "no evidence yet."
+- **Dedicated plate-region detector:** still blocked, no Roboflow API
+  key configured in this environment (checked directly).
+- **Live stream reachability:** the demo Cloudflare tunnel URL from
+  earlier sessions is unreachable (connection failure, not even an
+  HTTP error) -- consistent with every prior session's finding that
+  this tunnel is ephemeral/flaky. `process_stream`/`process_hls_stream`
+  remain untested against a live source; not blocking on it.
+
+## Item 4: `DL52GD0882` -- a candidate fix considered and rejected on paper, before writing code
+
+Considered a narrower, lower-risk alternative to Session 11's two
+heavier candidate directions: deduplicate *consecutive* identical
+readings within a track before voting, so one persisting viewing
+artifact (the long, unbroken `DL52GO0882` run identified in Session
+11) can't dominate the confidence-weighted vote by sheer repetition.
+
+**Checked directly against real data before implementing anything,
+and rejected:** pulled `HR98E4959`'s own raw reading sequence --
+the project's headline example, the one this whole effort has used
+to demonstrate the confirmation system works. It shows the **exact
+same shape**: 10+ consecutive, uninterrupted, identical readings
+(frames 330-440, no other value interspersed for that track) before
+confirming. A naive consecutive-deduplication rule can't tell
+"correctly and consistently read plate" apart from "incorrectly and
+persistently misread plate" -- both look identical from inside the
+tracker (a long run of one repeated string). Implementing this would
+very likely have prevented `HR98E4959` -- a named hard-stop plate --
+from ever reaching `confirm_threshold` again. Caught by reasoning
+through the actual data first, not by trial and error against the
+benchmark.
+
+This doesn't invalidate Session 11's conclusion; it reinforces it.
+Both of Session 11's identified fix directions (allow corrected
+re-confirmation, or escalate track association) remain the real paths
+forward, and both are genuinely bigger, more careful pieces of work
+than fit safely in a single autonomous firing under the hard-stop
+policy -- not something a narrower shortcut sidesteps.
+
+### Verdict: **no code change this firing**
+
+No safe, evidence-backed improvement was found across all 4 flagged
+items. Per the brief's own explicit allowance for this outcome:
+investigated thoroughly, documented honestly, nothing forced through.
+
+No code changed. `send_detection_to_watchlist()` untouched (trivially).
+Hard-stop: not triggered (no changes, no regression possible).
+
+## Next improvement to investigate
+
+1. `DL52GD0882` -- still needs a genuinely dedicated session with its
+   own careful design and full-suite regression testing, per Sessions
+   11 and 13's combined analysis. Not a quick fix; two real candidate
+   directions identified, neither attempted yet.
+2. Everything else remains as documented across Sessions 1-12 --
+   Priority 1 and 2 both done and kept, this branch is in a stable,
+   fully-benchmarked state with one clearly-scoped remaining hard
+   problem and no other currently-actionable items identified.
