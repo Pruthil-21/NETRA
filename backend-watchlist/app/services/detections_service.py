@@ -21,8 +21,8 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
 
 def search_detections(
     db: RealDictCursor,
-    plate_number: str = None,
-    camera_id: int = None,
+    plate_number: str | None = None,
+    camera_id: int | None = None,
     date_from=None,
     date_to=None,
 ):
