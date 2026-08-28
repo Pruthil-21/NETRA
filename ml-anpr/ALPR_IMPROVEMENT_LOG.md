@@ -1827,3 +1827,153 @@ one-well-scoped-piece-per-firing discipline -- it's explicitly the
 bigger, higher-risk piece of work in the brief, needs its own design
 written before any code, and needs the same full-suite + HR98E4959-
 specific care this session just modeled for a much smaller change.
+
+---
+
+# Session 16 -- Priority 1: `DL52GD0882` design investigation, both candidate directions ruled out with new hard evidence
+
+Per instructions: design written and evidence gathered *before* any
+code. Started from Session 11's two candidate directions -- (a) allow
+a track's confirmed value to be corrected by significantly stronger
+later evidence, without reopening duplicate-alert spam, or (b)
+escalate track association past IoU (centroid tracking first) for
+long-lived fast-moving vehicles. Both are now ruled out, with harder
+evidence than Sessions 8/11/13 had, for a reason neither prior session
+identified: **there is no stronger evidence for the correct answer
+anywhere in this vehicle's own reading history, under any weighting
+scheme tested.** This isn't a tracking or confirmation-logic bug at
+all -- it's an OCR character-confusion limitation that the
+confirmation layer structurally cannot see past.
+
+## Method: instrumented the real pipeline, not a synthetic replay
+
+Wrote a diagnostic that runs `detect_plate_from_frame` across the full
+dashcam clip (same 10-frame sampling as `process_video_file`) and logs
+every raw reading belonging to this vehicle's plate family --
+`(frame, track_id, plate_string, confidence, note, box_area)` -- by
+replicating `VehicleTracker`'s own IoU matching alongside the real
+`tracker.update()` call, not a separate/synthetic run. Confirmed the
+same fragmentation Session 11 found: this one physical vehicle
+produces at least 3 separate `VehicleTracker` track fragments across
+its ~750-frame appearance (`track 5726498624`: frames 540-630;
+`track 5726496896`: frames 750-1290, the one long enough to actually
+matter; `track 5726549056`: frame 1290 only, likely a 4th fragment or
+tail noise) -- each with its own independent, empty `confirmed` set,
+exactly the mechanism Session 11 identified for duplicate alerts on
+one vehicle.
+
+## The actual vote tally, from real data, not assumed
+
+Isolated the single ambiguous character position (`DL52G_0882` vs.
+`DL52O_0882` family -- the 6th character, `D` vs `O`) across track
+`5726496896` alone (frames 750-1160, 42 readings, the track that would
+actually reach `confirm_threshold` and lock in a value) and tallied
+every weighting scheme the two candidate directions could plausibly
+use to pick a "stronger" answer:
+
+| character | count | confidence-sum | box-area-sum |
+|---|---|---|---|
+| `O` (wrong) | 34 | 32.10 | 6,411,388 |
+| `D` (correct) | 8 | 7.69 | 1,841,929 |
+
+`O` wins by **4.3x on raw count, 4.2x on confidence-weighted sum, and
+3.5x on box-area-weighted sum**. Every metric available to the
+confirmation layer says `O` is the stronger signal -- because, in this
+specific footage, it genuinely is the more common OCR output for this
+character, not a rare fluke a bit more data would wash out.
+
+This also directly retests Session 8's box-size hypothesis (frame 560,
+small/far box, ambiguous; frame 870, large/close box, unambiguously
+`D`) against the full data, not just those two frames. It doesn't
+hold up: `D` occurs at both small boxes (frame 1160: 72,380px²) and
+large boxes (frame 900: 392,942px²), and so does `O` (frame 920:
+400,890px², larger than any `D` frame) -- box size correlates with
+overall image quality generically, but does not correlate with
+*which* character this specific OCR engine reads at this position.
+Checked directly and found not to generalize, rather than assumed
+from two data points.
+
+## Why this rules out both candidate directions specifically
+
+- **(a) Correct a locked-in value via significantly stronger later
+  evidence:** there is no later evidence stronger than the wrong
+  answer to correct *to*. The wrong cluster (`O`) has more support by
+  every measure across the entire track, not just in the early frames
+  that cause premature lock-in. A "smarter" correction rule doesn't
+  have a correct target to converge toward with this pipeline's actual
+  OCR output on this footage -- it would either still lock onto `O` (if
+  it re-evaluates the same majority logic later) or require inventing
+  a new signal with no basis in the data (arbitrary/unjustified,
+  exactly what this project's discipline has consistently avoided).
+- **(b) Fix track fragmentation (centroid tracking):** would reduce the
+  *number* of separate alerts fired for this one vehicle (today, up to
+  3 independent tracks each get their own shot at confirming and
+  alerting) -- a real, legitimate improvement in its own right. But it
+  would **not** fix the plate string: pooling all fragments' readings
+  into one track still leaves `O` dominant by the same ~4x margin
+  shown above (fragment 1's readings lean `O`/`OO` too -- see the raw
+  log: `OL52OO0882`, `DL52OO0882` at frames 540-630). Implementing a
+  full track-association rework -- cross-cutting logic touching every
+  confirmed plate in the pipeline, needing the same careful
+  full-suite + HR98E4959-specific reverification as any other change
+  here -- for a benefit that's real but doesn't solve the named
+  problem (the alert would still carry the wrong plate number, just
+  once instead of up to three times) isn't a good risk/benefit trade
+  for an unattended firing under the hard-stop policy.
+
+## What this actually is
+
+Restates and sharpens Session 8's own conclusion: this needs "either a
+real accuracy improvement on this specific character confusion, or a
+different tie-breaking signal than raw majority count" -- and this
+session's contribution is showing concretely that **no tie-breaking
+signal available at the confirmation-tracking layer exists** for this
+case; every signal tested points the same wrong way. A real fix would
+need to change what happens *before* confirmation -- e.g. a better/
+fine-tuned OCR model, an ensemble of OCR engines voting independently
+per character, or manual correction against a real plate registry --
+none of which are safe, well-evidenced, one-firing changes to attempt
+unattended, and several (model fine-tuning, ensembling) are
+substantial enough to need their own dedicated scoping the same way
+NAFNet did (Sessions 9-10).
+
+### Verdict: **no code change this firing**
+
+Both of the brief's candidate directions are ruled out with concrete
+evidence, not risk-aversion alone: (a) is mathematically incapable of
+producing the correct answer given this pipeline's actual OCR output
+on this footage, and (b) doesn't solve the named problem even though
+it's a legitimate smaller improvement on its own. Per the brief's own
+explicit allowance for this outcome, and consistent with Sessions 11
+and 13's same call: investigated thoroughly, documented with harder
+evidence than either of those sessions had, nothing forced through.
+
+No code changed. `send_detection_to_watchlist()` untouched (trivially,
+no code touched at all this firing). Hard-stop: not triggered (no
+changes, no regression possible). `main` untouched
+(`git log --oneline main -1` still `72cb8af`). Nothing pushed or
+merged.
+
+## Recommendation for a human decision (not something to act on unattended)
+
+`DL52GD0882` should be treated the same way Session 8 treated the
+unconfirmable 8th plate: a documented, known limitation of this
+specific footage/OCR combination, not an open bug in the confirmation
+or tracking logic (both are now cleared with direct evidence). If a
+correct alert for this plate matters for the demo, the realistic paths
+are: (1) accept the current alert's plate string is wrong for this one
+vehicle and note it as a known gap, (2) manually correct/flag this one
+plate in the watchlist data if it's a real vehicle of interest, or (3)
+scope real OCR-accuracy work (fine-tuning or ensembling) as its own
+dedicated, benchmarked effort -- not something to start unattended
+this deep into an overnight run.
+
+## Next
+
+No further currently-actionable items identified for Priority 1 or 2 --
+this branch is in a stable, fully-benchmarked state: Priority 0 (new
+`/detections` contract) and the two original priorities (multi-vehicle
+detection, motion blur) are done and kept, and the one remaining named
+problem (`DL52GD0882`) now has a conclusive, evidence-backed diagnosis
+rather than an open question. Nothing left that meets this branch's
+own bar for a safe, well-evidenced, unattended change.
