@@ -12,6 +12,15 @@ CREATE TABLE cameras (
     retention_days      INTEGER NOT NULL,
     health_status       TEXT NOT NULL DEFAULT 'unknown',
     rtsp_url            TEXT,
+    -- Playback identity, decoupled from `id` on purpose: `id` is this registry's
+    -- own SERIAL and isn't guaranteed to match the id a camera is known by on
+    -- whatever MediaMTX/stream source publishes it (e.g. the event organizer's
+    -- own camera ids, or a standalone test rig on a separate tunnel).
+    -- stream_id resolves to `{MEDIAMTX_HLS_URL}/stream/{stream_id}/index.m3u8`;
+    -- hls_url is a fully-qualified playlist URL for a camera on a different
+    -- MediaMTX instance/tunnel, and takes priority over stream_id when both are set.
+    stream_id           TEXT,
+    hls_url             TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
