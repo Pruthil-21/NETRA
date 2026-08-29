@@ -22,6 +22,7 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
     <div className="flex flex-col sm:flex-row bg-panel border-t border-line">
       <div className="w-full sm:w-64 h-36 shrink-0 border-b sm:border-b-0 sm:border-r border-line">
         <CameraLivePlayer
+          key={camera.id}
           camera={camera}
           hlsSrc={stream.url}
           hlsUnavailableReason={stream.reason}

@@ -193,7 +193,7 @@ export default function AddCameraModal({ onClose }: { onClose: () => void }) {
             </button>
             {added && (
               <p className="flex items-center gap-1.5 text-[11px] text-signal-green">
-                <CheckCircle2 size={12} /> Added. It's now on the map and in the list.
+                <CheckCircle2 size={12} /> Added. It&apos;s now on the map and in the list.
               </p>
             )}
           </form>

@@ -122,6 +122,10 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     [cameras, manualCameras, commitManualCameras]
   );
 
+  // Deliberate: this is the initial registry fetch on mount — refreshCameras
+  // sets isLoading/cameras/error as the network call resolves, which is
+  // exactly what an effect is for (synchronizing with an external system).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     refreshCameras();
   }, [refreshCameras]);

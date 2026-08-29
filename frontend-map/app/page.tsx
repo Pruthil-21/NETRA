@@ -27,15 +27,15 @@ const CameraMap = dynamic(() => import('../components/map/CameraMap'), {
 // the whole dashboard (map, video, virtualized list) — a live clock is a
 // control-room staple, but it must not be the thing that costs frame budget.
 function LiveClock() {
-  const [now, setNow] = useState<Date | null>(null);
+  // MainDashboard only ever mounts client-side (gated behind the auth check
+  // below), so there's no server-rendered markup for this to mismatch —
+  // safe to seed the real time directly instead of flashing blank first.
+  const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
-    setNow(new Date());
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
-
-  if (!now) return <span className="font-mono text-slate-500 w-[70px] inline-block" />;
 
   return (
     <span className="font-mono text-slate-400 tabular-nums">
@@ -206,6 +206,12 @@ export default function Page() {
     if (!auth) {
       router.replace('/login');
     } else {
+      // Deliberate: localStorage doesn't exist during SSR, so this can only
+      // be read client-side, after mount — starting authChecked at false and
+      // flipping it here (rather than in a lazy useState initializer) is
+      // what keeps the server-rendered HTML and the first client render
+      // identical and avoids a hydration mismatch.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAuthChecked(true);
     }
   }, [router]);

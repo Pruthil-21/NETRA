@@ -84,6 +84,11 @@ export default function VehicleSearchPage() {
     if (!auth) {
       router.replace('/login');
     } else {
+      // Deliberate: see app/page.tsx's identical auth-check effect — flipping
+      // this here (not in a lazy useState initializer) keeps the SSR and
+      // first-client-render markup identical, since localStorage doesn't
+      // exist server-side.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAuthChecked(true);
     }
   }, [router]);
