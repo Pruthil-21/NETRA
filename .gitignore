@@ -21,3 +21,14 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+# MediaMTX & Streaming binaries/temp files
+streaming/mediamtx
+streaming/mediamtx.yml
+streaming/videos/
+*.mp4
+docker-compose.override.yml
+*.pt
+debug_*.jpg
+
+# Local dev tunnel script (machine-specific)
+scripts/start-tunnels.sh
