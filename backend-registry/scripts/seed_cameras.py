@@ -26,8 +26,8 @@ import certifi
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.db import get_conn  # noqa: E402
-from app.services import cameras_service  # noqa: E402
+from app.db import get_conn
+from app.services import cameras_service
 
 ORGANIZER_API_URL = "https://live.corp8.cloud/api/cameras"
 
