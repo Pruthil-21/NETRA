@@ -22,13 +22,17 @@ from streaming.rtsp_reader import RTSPStreamReader
 sys.path.insert(0, os.path.dirname(__file__))
 
 # ---------------------------------------------------------------------------
-# CONFIRM WITH P6 BEFORE DEMO:
-# 1. Exact endpoint path (/alerts vs /detections)
-# 2. Real value for X-Internal-Key
-# 3. Numeric camera_id mapping (P6's DetectionIn expects an int, but our
+# Endpoint confirmed against contract/API_CONTRACT.md and backend-watchlist's
+# actual routers/detections.py (origin/main @ cee989d): POST /alerts is
+# retired, ml-anpr now calls POST /detections for every confirmed plate
+# read (not just watchlist matches) -- see send_detection_to_watchlist().
+#
+# STILL TO CONFIRM WITH P6 BEFORE DEMO:
+# 1. Real value for X-Internal-Key (dev placeholder below)
+# 2. Numeric camera_id mapping (P6's DetectionIn expects an int, but our
 #    RTSP paths are named "livecam" / "camera1" — map them here)
 # ---------------------------------------------------------------------------
-ALERT_API_URL = "http://192.168.31.11:8001/alerts"
+DETECTION_API_URL = "http://192.168.31.11:8001/detections"
 INTERNAL_KEY = "dev-internal-key"
 CAMERA_ID_MAP = {
     "livecam": 1,
@@ -765,7 +769,14 @@ def detect_plate(image_path):
     return max(results, key=lambda r: (r["box"][2] - r["box"][0]) * (r["box"][3] - r["box"][1]) if r["box"] else 0)
 
 
-def send_detection_to_watchlist(plate_number, camera_id_str):
+def send_detection_to_watchlist(plate_number, camera_id_str, confidence=None):
+    """POSTs one confirmed plate read to backend-watchlist's POST /detections
+    -- the single ingestion endpoint for every confirmed read, not just
+    watchlist matches (contract change, see DETECTION_API_URL comment above).
+    Unlike the retired POST /alerts, this always returns 201 with
+    {detection, alert}; alert is null when the plate isn't on the watchlist,
+    which is the normal/expected case for most detections.
+    """
     camera_id_int = CAMERA_ID_MAP.get(camera_id_str)
     if camera_id_int is None:
         print(f"[WARN] No numeric camera_id mapped for '{camera_id_str}', skipping API call")
@@ -774,14 +785,15 @@ def send_detection_to_watchlist(plate_number, camera_id_str):
     headers = {"X-Internal-Key": INTERNAL_KEY}
     body = {
         "camera_id": camera_id_int,
-        "plate_number": plate_number
+        "plate_number": plate_number,
+        "confidence": confidence,
     }
     try:
-        response = requests.post(ALERT_API_URL, json=body, headers=headers, timeout=3)
+        response = requests.post(DETECTION_API_URL, json=body, headers=headers, timeout=3)
         if response.status_code == 201:
-            print(f"[ALERT] Watchlist match: {response.json()}")
-        elif response.status_code == 204:
-            pass
+            result = response.json()
+            if result.get("alert") is not None:
+                print(f"[ALERT] Watchlist match: {result['alert']}")
         else:
             print(f"[WARN] Unexpected response {response.status_code}: {response.text}")
     except requests.exceptions.RequestException as e:
@@ -822,7 +834,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
                 }
                 print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
                 if confirmed["note"] == "ok - pattern match":
-                    send_detection_to_watchlist(confirmed["plate_number"], camera_id)
+                    send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
                 else:
                     print(f"[SKIPPED WATCHLIST] fallback/unverified plate, not sent: {confirmed['plate_number']}")
 
@@ -943,7 +955,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
                 }
                 print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
                 if confirmed["note"] == "ok - pattern match":
-                    send_detection_to_watchlist(confirmed["plate_number"], camera_id)
+                    send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
