@@ -7,7 +7,7 @@ import { Detection } from '../../types/detection';
 import { createCustomMarkerIcon } from './MapCustomMarker';
 import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
-import { CARTO_DARK_TILES, CARTO_ATTRIBUTION } from '@/lib/constants/mapConfig';
+import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -68,7 +68,8 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       zoom={7}
       className="w-full h-full bg-slate-950"
     >
-      <TileLayer attribution={CARTO_ATTRIBUTION} url={CARTO_DARK_TILES} />
+      <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
+      <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
 
       <MapController selectedCamera={selectedCamera} />
 
