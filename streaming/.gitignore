@@ -10,3 +10,6 @@ valid_cameras.json
 
 logs/
 mediamtx_*.tar.gz
+go2rtc
+go2rtc.zip
+go2rtc.yaml
