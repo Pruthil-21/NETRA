@@ -5,12 +5,15 @@ import { Detection, DetectionSearchParams } from '@/types/detection';
 const WATCHLIST_API_URL =
   process.env.NEXT_PUBLIC_WATCHLIST_API_URL || 'http://localhost:8001';
 
+// GET /detections is officer-role JWT-gated per contract/API_CONTRACT.md.
+// frontend-map still has no real login flow (only a `netra_authenticated`
+// localStorage flag) -- this is a demo-only stand-in until one exists: a
+// pre-issued token dropped in via env, not something frontend-map mints or
+// validates itself. Leave unset and this cleanly no-ops (no Authorization
+// header sent, same as before) rather than send a garbage token.
+const DEMO_OFFICER_JWT = process.env.NEXT_PUBLIC_DEMO_OFFICER_JWT;
+
 export const detectionService = {
-  // GET /detections is officer-role JWT-gated per contract/API_CONTRACT.md,
-  // but frontend-map has no real JWT auth wired up yet (only a
-  // `netra_authenticated` localStorage flag) -- sends no Authorization
-  // header, same as cameraService.ts does today. A 401 here is a real,
-  // pre-existing gap for P2/P6 to close, not something to fake around.
   async search(params: DetectionSearchParams): Promise<Detection[]> {
     const query = new URLSearchParams();
     if (params.plate_number) query.set('plate_number', params.plate_number);
@@ -21,9 +24,16 @@ export const detectionService = {
     const response = await fetch(`${WATCHLIST_API_URL}/detections?${query.toString()}`, {
       headers: {
         'Content-Type': 'application/json',
+        ...(DEMO_OFFICER_JWT ? { Authorization: `Bearer ${DEMO_OFFICER_JWT}` } : {}),
       },
       cache: 'no-store',
     });
+
+    if (response.status === 401 && !DEMO_OFFICER_JWT) {
+      throw new Error(
+        'Failed to search detections: 401 Unauthorized (no demo JWT configured — set NEXT_PUBLIC_DEMO_OFFICER_JWT)'
+      );
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to search detections: ${response.statusText} (${response.status})`);
