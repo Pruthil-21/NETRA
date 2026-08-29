@@ -182,7 +182,22 @@ export default function LiveFeedPlayer({
       if (cancelled || !video) return;
 
       if (HlsLib.isSupported()) {
-        const hls = new HlsLib({ maxBufferLength: 10, liveSyncDurationCount: 3 });
+        const hls = new HlsLib({
+          // Low-latency mode plays from LL-HLS partial segments (if the server
+          // publishes them) instead of waiting for whole segments to finish —
+          // falls back to regular HLS automatically if the source has no parts.
+          lowLatencyMode: true,
+          // Stay close to the live edge rather than buffering deep, and never
+          // retain old segments we'll never play again.
+          backBufferLength: 0,
+          maxBufferLength: 4,
+          maxMaxBufferLength: 6,
+          liveSyncDurationCount: 2,
+          liveMaxLatencyDurationCount: 4,
+          // If playback drifts behind the live edge, gently speed up (up to 1.2x)
+          // to catch back up instead of visibly stalling/skipping.
+          maxLiveSyncPlaybackRate: 1.2,
+        });
         hlsRef.current = hls;
         hls.loadSource(src);
         hls.attachMedia(video);

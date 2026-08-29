@@ -19,15 +19,16 @@ export const MapPopupCard: React.FC<MapPopupCardProps> = ({ camera, onInspect })
         </span>
         <span
           className={`w-2 h-2 rounded-full ${
-            isOnline ? 'bg-emerald-500' : 'bg-red-500'
+            isOnline ? 'bg-signal-green' : 'bg-signal-red'
           }`}
         />
       </div>
+      <p className="text-[11px] font-mono text-command mb-0.5">{camera.id}</p>
       <p className="text-[11px] text-slate-400 mb-2">{displayLocation}</p>
       <button
         type="button"
         onClick={onInspect}
-        className="w-full py-1 px-2 text-[11px] bg-blue-600 hover:bg-blue-500 text-white rounded font-medium transition"
+        className="w-full py-1 px-2 text-[11px] bg-command hover:bg-command-dim text-white rounded font-medium transition"
       >
         Inspect Record
       </button>

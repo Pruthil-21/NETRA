@@ -7,15 +7,26 @@ interface BadgeProps {
 
 export default function Badge({ status, text }: BadgeProps) {
   const styles: Record<string, string> = {
-    online: 'bg-emerald-950/80 text-emerald-400 border-emerald-800',
-    operational: 'bg-emerald-950/80 text-emerald-400 border-emerald-800',
-    degraded: 'bg-amber-950/80 text-amber-400 border-amber-800',
-    offline: 'bg-rose-950/80 text-rose-400 border-rose-800',
-    fault: 'bg-rose-950/80 text-rose-400 border-rose-800',
+    online: 'bg-signal-green/10 text-signal-green border-signal-green/40',
+    operational: 'bg-signal-green/10 text-signal-green border-signal-green/40',
+    degraded: 'bg-signal-amber/10 text-signal-amber border-signal-amber/40',
+    offline: 'bg-signal-red/10 text-signal-red border-signal-red/40',
+    fault: 'bg-signal-red/10 text-signal-red border-signal-red/40',
   };
 
   return (
-    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase ${styles[status] || styles.offline}`}>
+    <span
+      className={`inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded-sm border uppercase tracking-wide ${styles[status] || styles.offline}`}
+    >
+      <span
+        className={`w-1.5 h-1.5 rounded-full ${
+          status === 'online' || status === 'operational'
+            ? 'bg-signal-green'
+            : status === 'degraded'
+              ? 'bg-signal-amber'
+              : 'bg-signal-red'
+        }`}
+      />
       {text}
     </span>
   );

@@ -25,3 +25,17 @@ export function getDirectStreamUrl(hlsUrl: string | null | undefined): StreamUrl
   if (!hlsUrl) return { url: null, reason: 'not-configured' };
   return { url: hlsUrl };
 }
+
+/**
+ * One place that decides which of the two URL builders above applies to a
+ * given camera — hls_url (standalone cameras on their own MediaMTX instance)
+ * takes priority over stream_id (organizer/registry cameras on the shared
+ * relay). Used by both the detail drawer and the background health check so
+ * they always agree on what "this camera's stream" means.
+ */
+export function getCameraStreamUrl(camera: {
+  hls_url?: string | null;
+  stream_id?: number | string | null;
+}): StreamUrlResult {
+  return camera.hls_url ? getDirectStreamUrl(camera.hls_url) : getHlsStreamUrl(camera.stream_id);
+}

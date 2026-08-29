@@ -48,11 +48,11 @@ describe('P2 Frontend Map: Feature Tests', () => {
   it('Feature 1: Badge component renders correct health/status variants', () => {
     const { rerender } = render(<Badge status="online" text="Online" />);
     expect(screen.getByText('Online')).toBeInTheDocument();
-    expect(screen.getByText('Online').className).toContain('text-emerald-400');
+    expect(screen.getByText('Online').className).toContain('text-signal-green');
 
     rerender(<Badge status="offline" text="Offline" />);
     expect(screen.getByText('Offline')).toBeInTheDocument();
-    expect(screen.getByText('Offline').className).toContain('text-rose-400');
+    expect(screen.getByText('Offline').className).toContain('text-signal-red');
   });
 
   it('Feature 2: CameraCard component displays metadata and selection state', () => {
@@ -68,8 +68,8 @@ describe('P2 Frontend Map: Feature Tests', () => {
     expect(handleSelect).toHaveBeenCalledTimes(1);
 
     rerender(<CameraCard camera={MOCK_CAMERAS[0]} isSelected={true} onSelect={handleSelect} />);
-    expect(screen.getByText('Sector 10 CH Road Junction').closest('div')?.className).toContain(
-      'border-l-blue-500'
+    expect(screen.getByRole('button', { name: /Sector 10 CH Road Junction/ }).className).toContain(
+      'border-l-command'
     );
   });
 
