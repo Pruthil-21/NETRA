@@ -12,15 +12,6 @@
   }
 }
 
-/* CartoDB's dark basemap renders roads and place labels at low contrast by
-   design (meant to stay quiet under bright overlays). For a command map that
-   IS the primary surface, that reads as illegible rather than subtle — this
-   pulls roads/labels forward without switching tile providers or touching
-   the tile URL (zero extra requests, pure GPU compositing). */
-.leaflet-tile-pane {
-  filter: contrast(1.22) brightness(1.14) saturate(1.1);
-}
-
 /* Custom GIS Dark Popup Styling */
 .dark-gis-popup .leaflet-popup-content-wrapper {
   background-color: #0e141b;
