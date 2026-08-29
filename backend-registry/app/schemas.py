@@ -19,6 +19,9 @@ class CameraCreate(BaseModel):
     retention_days: int
     health_status: str = "unknown"
     rtsp_url: Optional[str] = None
+    # Playback identity, decoupled from the registry's own `id` — see schema.sql.
+    stream_id: Optional[str] = None
+    hls_url: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -33,6 +36,8 @@ class CameraUpdate(BaseModel):
     retention_days: Optional[int] = None
     health_status: Optional[str] = None
     rtsp_url: Optional[str] = None
+    stream_id: Optional[str] = None
+    hls_url: Optional[str] = None
 
 
 class CameraOut(CameraCreate):

@@ -5,7 +5,17 @@
 ## Model 1 — Registry 
 
 Camera object:
-`{ id, name, dept, lat, long, camera_type, ownership, connectivity_status, storage_type, retention_days, health_status, rtsp_url }`
+`{ id, name, dept, lat, long, camera_type, ownership, connectivity_status, storage_type, retention_days, health_status, rtsp_url, stream_id, hls_url }`
+
+`stream_id`/`hls_url` are the camera's playback identity, decoupled from `id` on
+purpose: `id` is this registry's own auto-assigned key and isn't guaranteed to
+match the id a camera is known by on whatever source publishes its stream (e.g.
+the event organizer's own camera ids, or a standalone test rig on a separate
+tunnel). Resolve playback as `hls_url` if set (fully-qualified playlist URL,
+takes priority — used when a camera publishes to a different MediaMTX
+instance/tunnel than the shared base), else `{MEDIAMTX_HLS_URL}/stream/{stream_id}/index.m3u8`
+if `stream_id` is set, else no live feed is provisioned for that camera. Both
+are optional/nullable.
 
 - `GET /cameras`
 - `GET /cameras/:id`
