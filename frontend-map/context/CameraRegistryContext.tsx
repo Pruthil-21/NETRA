@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useCall
 import { Camera, ConnectivityStatus } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { organizerCameraService } from '@/services/organizerCameraService';
+import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
 
 interface RegistryContextType {
   cameras: Camera[];
@@ -38,7 +39,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     setIsLoading(true);
     try {
       const data = await organizerCameraService.getAll();
-      setCameras(data);
+      setCameras([...data, ...TEST_CCTV_CAMERAS]);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load camera registry');

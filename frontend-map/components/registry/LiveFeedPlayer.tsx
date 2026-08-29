@@ -24,8 +24,11 @@ const RETRY_BASE_DELAY_MS = 1000;
 // MediaMTX's cookieCheck redirect can hang indefinitely on a dead stream
 // (the request never resolves, so hls.js never sees a fatal error to react
 // to). This watchdog guarantees we still reach a terminal state instead of
-// sitting on "Connecting…" forever.
-const CONNECT_WATCHDOG_MS = 12000;
+// sitting on "Connecting…" forever. It only clears on a genuine decoded
+// frame (see onFirstFrame below) — not on MANIFEST_PARSED — because a flaky
+// source can keep re-parsing its manifest successfully forever without ever
+// actually delivering playable media.
+const CONNECT_WATCHDOG_MS = 20000;
 
 // hls.js firing MANIFEST_PARSED only means the playlist was readable — on a
 // flaky LL-HLS source (part requests 503ing) no actual frame data may ever
@@ -167,6 +170,7 @@ export default function LiveFeedPlayer({
     // real media, see PLAYBACK_STALL_MS above), so this is what we report
     // upstream as the camera's real connectivity for the map pin.
     const onFirstFrame = () => {
+      clearWatchdog();
       clearStallTimer();
       onStatusChangeRef.current?.('online');
     };
@@ -186,7 +190,6 @@ export default function LiveFeedPlayer({
           if (cancelled) return;
           attempt = 0;
           clearRetryTimer();
-          clearWatchdog();
           setStatus('live');
           video.play().catch(() => {});
           armStallWatch(() => hls.startLoad());
@@ -212,7 +215,6 @@ export default function LiveFeedPlayer({
           if (!cancelled) {
             attempt = 0;
             clearRetryTimer();
-            clearWatchdog();
             setStatus('live');
             video.play().catch(() => {});
             armStallWatch(() => {

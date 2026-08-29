@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { CameraRegistryProvider, useCameraRegistry } from '../context/CameraRegistryContext';
 import CameraCard from '../components/registry/CameraCard';
 import CameraDetailDrawer from '../components/registry/CameraDetailDrawer';
-import { Shield, RefreshCw, LogOut, AlertTriangle } from 'lucide-react';
+import { Shield, RefreshCw, LogOut, AlertTriangle, Search } from 'lucide-react';
 
 const CameraMap = dynamic(() => import('../components/map/CameraMap'), { ssr: false });
 
@@ -37,6 +37,13 @@ function MainDashboard() {
           <span className="text-slate-400">
             Total Feeds: <strong className="text-white">{filteredCameras.length}</strong>
           </span>
+          <button
+            onClick={() => router.push('/search')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-300 hover:text-white bg-slate-800 rounded border border-slate-700"
+          >
+            <Search size={13} />
+            Vehicle Search
+          </button>
           <button
             onClick={() => refreshCameras()}
             className="p-1.5 text-slate-400 hover:text-white bg-slate-800 rounded border border-slate-700"
