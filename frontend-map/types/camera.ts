@@ -17,9 +17,17 @@ export interface Camera {
   health_status: HealthStatus;
   rtsp_url: string;
   /**
-   * Numeric MediaMTX stream id (`${NEXT_PUBLIC_MEDIAMTX_HLS_URL}/stream/{stream_id}/index.m3u8`).
+   * MediaMTX stream id (`${NEXT_PUBLIC_MEDIAMTX_HLS_URL}/stream/{stream_id}/index.m3u8`) —
+   * numeric for organizer cameras (e.g. `8`), a string path for others (e.g. `pruthil-phone`).
    * Registry camera ids (e.g. `CAM-GJ-001`) are not guaranteed to match a stream id, so this is
    * a separate, explicit field. `null`/absent means no live feed is provisioned for this camera.
    */
-  stream_id?: number | null;
+  stream_id?: number | string | null;
+  /**
+   * Fully-qualified LL-HLS playlist URL for cameras publishing to a different
+   * MediaMTX instance/tunnel than the shared organizer base (e.g. a standalone
+   * test rig). Takes priority over `stream_id` when both are set.
+   * See `lib/testCameras.ts`.
+   */
+  hls_url?: string | null;
 }

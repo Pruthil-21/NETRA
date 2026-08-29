@@ -1,6 +1,6 @@
 import React from 'react';
 import { Camera } from '@/types/camera';
-import { getHlsStreamUrl } from '@/lib/stream';
+import { getHlsStreamUrl, getDirectStreamUrl } from '@/lib/stream';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import LiveFeedPlayer from './LiveFeedPlayer';
 
@@ -14,7 +14,9 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
   // Preliminary connectivity_status (from the organizer's width>0 signal) is
   // not definitive, so every camera with a stream_id gets a real connection
   // attempt — actual HLS playback success/failure is the final status.
-  const stream = getHlsStreamUrl(camera.stream_id);
+  // hls_url (standalone test cameras on their own MediaMTX instance) takes
+  // priority over stream_id (organizer cameras on the shared relay).
+  const stream = camera.hls_url ? getDirectStreamUrl(camera.hls_url) : getHlsStreamUrl(camera.stream_id);
 
   return (
     <div className="flex flex-col sm:flex-row bg-slate-900 border-t border-slate-800">
