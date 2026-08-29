@@ -32,7 +32,7 @@ export const CameraFilterBar: React.FC = () => {
     <div
       role="search"
       aria-label="Camera filters"
-      className="p-3 bg-slate-900 border-b border-slate-800 space-y-3"
+      className="p-3 bg-panel border-b border-line space-y-3"
     >
       {/* Search Input with Keyboard Clear */}
       <div className="relative">
@@ -47,7 +47,7 @@ export const CameraFilterBar: React.FC = () => {
           value={filters.searchQuery || ''}
           onChange={(e) => setFilters({ ...filters, searchQuery: e.target.value })}
           onKeyDown={handleKeyDown}
-          className="w-full bg-slate-950 border border-slate-700 rounded pl-9 pr-8 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
+          className="w-full bg-ink border border-line rounded pl-9 pr-8 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
         />
         {filters.searchQuery && (
           <button
@@ -74,7 +74,7 @@ export const CameraFilterBar: React.FC = () => {
           aria-label="Filter by department"
           value={filters.department || 'All Departments'}
           onChange={(e) => setFilters({ ...filters, department: e.target.value })}
-          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          className="w-full bg-ink border border-line rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-command"
         >
           {distinctDepts.map((dept) => (
             <option key={dept} value={dept} className="bg-slate-900">
@@ -96,7 +96,7 @@ export const CameraFilterBar: React.FC = () => {
           <div
             role="group"
             aria-labelledby="status-toggle-label"
-            className="flex rounded bg-slate-950 p-0.5 border border-slate-800"
+            className="flex rounded bg-ink p-0.5 border border-line"
           >
             {(['all', 'online', 'offline'] as const).map((status) => {
               const isActive = (filters.connectivity || 'all') === status;
@@ -106,9 +106,9 @@ export const CameraFilterBar: React.FC = () => {
                   type="button"
                   aria-pressed={isActive}
                   onClick={() => setFilters({ ...filters, connectivity: status })}
-                  className={`flex-1 py-1 text-[10px] uppercase font-bold rounded transition capitalize focus:outline-none focus:ring-1 focus:ring-blue-400 ${
+                  className={`flex-1 py-1 text-[10px] uppercase font-bold rounded transition capitalize focus:outline-none focus:ring-1 focus:ring-command ${
                     isActive
-                      ? 'bg-blue-600 text-white shadow'
+                      ? 'bg-command text-white shadow'
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
                 >
@@ -131,7 +131,7 @@ export const CameraFilterBar: React.FC = () => {
             aria-label="Filter by health status"
             value={filters.health || 'all'}
             onChange={(e) => setFilters({ ...filters, health: e.target.value as any })}
-            className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 capitalize"
+            className="w-full bg-ink border border-line rounded px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-command capitalize"
           >
             <option value="all">All Health</option>
             <option value="operational">Operational</option>
@@ -146,7 +146,7 @@ export const CameraFilterBar: React.FC = () => {
         type="button"
         onClick={handleReset}
         aria-label="Reset all active filters"
-        className="flex items-center justify-center gap-1.5 w-full py-1 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded transition focus:outline-none focus:ring-1 focus:ring-blue-400"
+        className="flex items-center justify-center gap-1.5 w-full py-1 text-[11px] text-slate-400 hover:text-slate-200 hover:bg-panel-raised rounded transition focus:outline-none focus:ring-1 focus:ring-command"
       >
         <RotateCcw aria-hidden="true" className="h-3 w-3" />
         Reset Filters

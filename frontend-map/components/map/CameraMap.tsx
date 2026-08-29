@@ -72,7 +72,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
 
       <MapController selectedCamera={selectedCamera} />
 
-      <MarkerClusterGroup>
+      <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
         {cameras.map((cam: Camera) => {
           const longitude = cam.long ?? 0;
           const isSelected = selectedCamera?.id === cam.id;

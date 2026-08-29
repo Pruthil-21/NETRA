@@ -29,4 +29,40 @@ export const TEST_CCTV_CAMERAS: Camera[] = [
     stream_id: null,
     hls_url: process.env.NEXT_PUBLIC_PHONE_CAM_HLS_URL || null,
   },
+  {
+    // Reserved id range (9000+) so this can never collide with a registry or
+    // organizer camera id.
+    id: 9002,
+    name: 'iPhone 17 Pro Max',
+    dept: 'Petlad, Gujarat',
+    lat: 22.4768,
+    long: 72.7999,
+    camera_type: 'Bullet',
+    ownership: 'NETRA Test Rig',
+    connectivity_status: 'offline',
+    storage_type: 'Cloud',
+    retention_days: 0,
+    health_status: 'degraded',
+    rtsp_url: '',
+    stream_id: null,
+    hls_url: process.env.NEXT_PUBLIC_IPHONE_CAM_HLS_URL || null,
+  },
+  {
+    // Reserved id range (9000+) so this can never collide with a registry or
+    // organizer camera id.
+    id: 9003,
+    name: 'Xiaomi Camera',
+    dept: 'Petlad, Gujarat',
+    lat: 22.4768,
+    long: 72.7999,
+    camera_type: 'Bullet',
+    ownership: 'NETRA Test Rig',
+    connectivity_status: 'offline',
+    storage_type: 'Cloud',
+    retention_days: 0,
+    health_status: 'degraded',
+    rtsp_url: '',
+    stream_id: null,
+    hls_url: process.env.NEXT_PUBLIC_XIAOMI_CAM_HLS_URL || null,
+  },
 ];
