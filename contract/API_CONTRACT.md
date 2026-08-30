@@ -73,7 +73,11 @@ Detection:
   matches. Always records the sighting; if the plate matches the watchlist,
   also creates the linked `Alert` in the same request (so ml-anpr never
   calls two endpoints for one event).
-  - `plate_number` is normalized server-side (whitespace stripped,
+  - Body field is `plate_number`; `plate` is also accepted as an alias (some
+    scripted callers use the shorter name) but every response still uses
+    `plate_number` — that stays the one canonical name everywhere else in
+    this API (watchlist, alerts, `GET /detections`).
+  - `plate_number`/`plate` is normalized server-side (whitespace stripped,
     upper-cased) before storage/matching/lookup, so `GX15 OGJ` and
     `GX15OGJ` are the same plate everywhere.
   - `detected_at`, `scenario_run_id`, `source` are optional; live ml-anpr
@@ -90,24 +94,29 @@ Detection:
   `alert` is `null` when the plate did not match the watchlist (the normal/
   expected case for most detections).
 
+VehicleTraceResponse:
+`{ scenario_run_id, plate, label, sightings: VehicleTraceSighting[] }`
+
 VehicleTraceSighting:
-`{ id, plate_number, camera_id, camera_name, latitude, longitude, stream_id, detected_at, confidence, scenario_run_id, source }`
+`{ camera_id, camera_name, latitude, longitude, stream_id, detected_at, confidence }`
 
 - `GET /vehicle-traces/{plate_number}?scenario_run_id={runId}` — officer
   role (same JWT as the other officer-only reads here). Reuses the
   `detections` history — not a separate store — filtered to one plate and,
-  when given, one `scenario_run_id`, ordered by `detected_at` ascending.
-  Each sighting is enriched with the camera's name/coordinates/`stream_id`
-  so frontend-map doesn't need a separate registry lookup. `stream_id`,
-  `latitude`, `longitude`, `camera_name` come back `null` for a camera_id
-  with no known metadata.
+  when given, one `scenario_run_id`; `sightings` is ordered by `detected_at`
+  ascending. `scenario_run_id` on the response echoes the query param
+  (`null` if omitted — the trace then spans every run/live detection for
+  that plate). Each sighting is enriched with the camera's
+  name/coordinates/`stream_id` so frontend-map doesn't need a separate
+  registry lookup; those fields come back `null` for a camera_id with no
+  known metadata.
   **Note:** camera metadata for this endpoint is currently a small hardcoded
   table in backend-watchlist covering only the vehicle-trace demo cameras
   (101/102/103) — see `app/services/camera_metadata.py`. Real (registry)
   cameras aren't wired in yet.
-  CORS: enabled for frontend-map's local origin (`FRONTEND_MAP_ORIGIN`,
-  defaults to `http://localhost:3000`) so the browser can call this
-  endpoint directly.
+  CORS: open (`allow_origins=["*"]`, see `fix/cors-preflight-registry-watchlist`)
+  like the rest of backend-watchlist, so any browser client can call this
+  directly.
 
 ### ANPR Detection (P5 → P6)
 

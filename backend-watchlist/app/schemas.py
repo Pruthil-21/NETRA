@@ -6,7 +6,7 @@ frontend-dashboard's mock data and this real API interchangeable.
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 def normalize_plate(value: str) -> str:
@@ -39,11 +39,17 @@ class DetectionIn(BaseModel):
     services.detections_service.record_detection). Live ml-anpr detections
     omit all three and behave exactly as before."""
     camera_id: int
-    plate_number: str
+    # "plate" is accepted as an alias of "plate_number" — some scripted
+    # callers (e.g. the vehicle-trace demo sender) send the shorter name.
+    # plate_number stays the canonical field everywhere else in this API
+    # (watchlist, alerts, GET /detections), including in every response.
+    plate_number: str = Field(validation_alias=AliasChoices("plate_number", "plate"))
     confidence: Optional[float] = None
     detected_at: Optional[datetime] = None
     scenario_run_id: Optional[str] = None
     source: Optional[str] = None
+
+    model_config = {"populate_by_name": True}
 
     @field_validator("plate_number")
     @classmethod
@@ -83,21 +89,28 @@ class AlertStatusUpdate(BaseModel):
 
 
 class VehicleTraceSighting(BaseModel):
-    """One row of GET /vehicle-traces/{plate_number} — a detection enriched
+    """One entry in VehicleTraceResponse.sightings — a detection enriched
     with the camera metadata frontend-map needs to place it on the route
     (camera_name/latitude/longitude/stream_id), so the caller never has to
-    cross-reference backend-registry itself for this view."""
-    id: int
-    plate_number: str
+    cross-reference backend-registry itself for this view. plate_number and
+    scenario_run_id aren't repeated per-sighting since they're already on
+    the parent response."""
     camera_id: int
     camera_name: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    stream_id: Optional[str] = None
+    stream_id: Optional[int] = None
     detected_at: datetime
     confidence: Optional[float] = None
+
+
+class VehicleTraceResponse(BaseModel):
+    """Response for GET /vehicle-traces/{plate_number} — sightings ordered
+    oldest-first for a route/timeline view."""
     scenario_run_id: Optional[str] = None
-    source: Optional[str] = None
+    plate: str
+    label: str = "Inferred route from simulated camera sightings"
+    sightings: list[VehicleTraceSighting]
 
 
 DetectionResult.model_rebuild()
