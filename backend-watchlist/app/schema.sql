@@ -10,17 +10,34 @@ CREATE TABLE watchlist (
 -- Every ANPR plate read, independent of watchlist status — required for
 -- "where has this plate been seen" search regardless of match. Insert-only,
 -- same evidentiary reasoning as alerts.
+--
+-- scenario_run_id / source support scripted/replayed detection sources (e.g.
+-- the prerecorded vehicle-trace demo clip) alongside live ml-anpr detections:
+-- both are NULL for normal live traffic, which is unaffected by either column
+-- or by the dedup index below.
 CREATE TABLE detections (
-    id            SERIAL PRIMARY KEY,
-    plate_number  TEXT NOT NULL,
-    camera_id     INTEGER NOT NULL,
-    detected_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    confidence    REAL
+    id               SERIAL PRIMARY KEY,
+    plate_number     TEXT NOT NULL,
+    camera_id        INTEGER NOT NULL,
+    detected_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    confidence       REAL,
+    scenario_run_id  TEXT,
+    source           TEXT
 );
 
 CREATE INDEX idx_detections_plate ON detections (plate_number);
 CREATE INDEX idx_detections_camera ON detections (camera_id);
 CREATE INDEX idx_detections_detected_at ON detections (detected_at);
+CREATE INDEX idx_detections_scenario_run ON detections (scenario_run_id);
+
+-- One confirmed sighting per camera per scenario run — suppresses repeats
+-- from a looping replay clip without deleting or updating anything (a repeat
+-- POST for the same run/camera/plate is a no-op, not a new row). Only
+-- applies to scripted runs (scenario_run_id IS NOT NULL); live ml-anpr
+-- detections (scenario_run_id NULL) are never deduped by this index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_scenario_dedup
+    ON detections (scenario_run_id, camera_id, plate_number)
+    WHERE scenario_run_id IS NOT NULL;
 
 CREATE TABLE alerts (
     id            SERIAL PRIMARY KEY,
