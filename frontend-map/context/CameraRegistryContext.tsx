@@ -7,6 +7,7 @@ import { OrganizerCamera } from '@/types/organizerCamera';
 import { organizerCameraService } from '@/services/organizerCameraService';
 import { organizerCameraToCamera } from '@/lib/organizerCameras';
 import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
+import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { getCameraStreamUrl } from '@/lib/stream';
 
@@ -67,17 +68,22 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
 
   const refreshCameras = useCallback(async () => {
     setIsLoading(true);
+    // Organizer cameras are fetched separately from everything else --
+    // a dead/rotated tunnel (they're Cloudflare Quick Tunnels, expected to
+    // rotate) shouldn't also take down the manual, test-rig, and
+    // vehicle-trace-demo cameras, none of which need that network call at
+    // all. Previously one failed fetch blanked the entire registry.
+    let data: Awaited<ReturnType<typeof organizerCameraService.getAll>> = [];
     try {
-      const data = await organizerCameraService.getAll();
-      const manual = loadManualCameras();
-      setManualCameras(manual);
-      setCameras([...data, ...manual.map(organizerCameraToCamera), ...TEST_CCTV_CAMERAS]);
+      data = await organizerCameraService.getAll();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load camera registry');
-    } finally {
-      setIsLoading(false);
     }
+    const manual = loadManualCameras();
+    setManualCameras(manual);
+    setCameras([...data, ...manual.map(organizerCameraToCamera), ...TEST_CCTV_CAMERAS, ...VEHICLE_TRACE_DEMO_CAMERAS]);
+    setIsLoading(false);
   }, []);
 
   // Officer-entered cameras (single-add or bulk import) are appended locally

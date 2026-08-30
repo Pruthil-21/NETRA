@@ -1,4 +1,4 @@
-import { Detection, DetectionSearchParams } from '@/types/detection';
+import { Detection, DetectionSearchParams, RawVehicleTraceResponse } from '@/types/detection';
 
 // backend-watchlist, not backend-registry -- a separate service/port, see
 // NEXT_PUBLIC_WATCHLIST_API_URL in .env.example.
@@ -13,8 +13,57 @@ const WATCHLIST_API_URL =
 // header sent, same as before) rather than send a garbage token.
 const DEMO_OFFICER_JWT = process.env.NEXT_PUBLIC_DEMO_OFFICER_JWT;
 
+function authHeaders(): HeadersInit {
+  return {
+    'Content-Type': 'application/json',
+    ...(DEMO_OFFICER_JWT ? { Authorization: `Bearer ${DEMO_OFFICER_JWT}` } : {}),
+  };
+}
+
+function unauthorizedError(label: string): Error {
+  return new Error(
+    `Failed to ${label}: 401 Unauthorized (no demo JWT configured — set NEXT_PUBLIC_DEMO_OFFICER_JWT)`
+  );
+}
+
 export const detectionService = {
   async search(params: DetectionSearchParams): Promise<Detection[]> {
+    // Vehicle-trace demo path: GET /vehicle-traces/{plate}?scenario_run_id=...
+    // (Anushka's contract) scopes results to one replay run instead of a
+    // plate's whole sighting history. Not yet live server-side as of this
+    // writing -- kept as a separate branch so the general /detections path
+    // below (the real, permanent contract) is untouched either way.
+    if (params.scenario_run_id && params.plate_number) {
+      const query = new URLSearchParams({ scenario_run_id: params.scenario_run_id });
+      const response = await fetch(
+        `${WATCHLIST_API_URL}/vehicle-traces/${encodeURIComponent(params.plate_number)}?${query.toString()}`,
+        { headers: authHeaders(), cache: 'no-store' }
+      );
+
+      if (response.status === 401 && !DEMO_OFFICER_JWT) throw unauthorizedError('fetch vehicle trace');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch vehicle trace: ${response.statusText} (${response.status})`);
+      }
+
+      const trace: RawVehicleTraceResponse = await response.json();
+      // No per-sighting `id` in this shape -- camera_id is unique within one
+      // scenario run's sightings (contract: one confirmed detection per
+      // camera per run), so it doubles as a stable React key here.
+      return trace.sightings.map((sighting) => ({
+        id: sighting.camera_id,
+        plate_number: trace.plate,
+        camera_id: sighting.camera_id,
+        camera_name: sighting.camera_name,
+        latitude: sighting.latitude,
+        longitude: sighting.longitude,
+        stream_id: sighting.stream_id,
+        detected_at: sighting.detected_at,
+        confidence: sighting.confidence,
+        scenario_run_id: trace.scenario_run_id,
+        route_label: trace.label,
+      }));
+    }
+
     const query = new URLSearchParams();
     if (params.plate_number) query.set('plate_number', params.plate_number);
     if (params.camera_id != null) query.set('camera_id', String(params.camera_id));
@@ -22,19 +71,11 @@ export const detectionService = {
     if (params.to) query.set('to', params.to);
 
     const response = await fetch(`${WATCHLIST_API_URL}/detections?${query.toString()}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(DEMO_OFFICER_JWT ? { Authorization: `Bearer ${DEMO_OFFICER_JWT}` } : {}),
-      },
+      headers: authHeaders(),
       cache: 'no-store',
     });
 
-    if (response.status === 401 && !DEMO_OFFICER_JWT) {
-      throw new Error(
-        'Failed to search detections: 401 Unauthorized (no demo JWT configured — set NEXT_PUBLIC_DEMO_OFFICER_JWT)'
-      );
-    }
-
+    if (response.status === 401 && !DEMO_OFFICER_JWT) throw unauthorizedError('search detections');
     if (!response.ok) {
       throw new Error(`Failed to search detections: ${response.statusText} (${response.status})`);
     }

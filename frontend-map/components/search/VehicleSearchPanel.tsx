@@ -1,10 +1,17 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Search, MapPin, AlertTriangle } from 'lucide-react';
+import { Search, MapPin, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { Detection } from '@/types/detection';
 import { detectionService } from '@/services/detectionService';
+import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
+
+// How often an active search re-polls for new sightings of the same plate —
+// frequent enough that a demo's next staged camera hit shows up without a
+// manual re-search, cheap enough (single GET) to leave running in the
+// background for the duration of the demo.
+const POLL_INTERVAL_MS = 5000;
 
 interface VehicleSearchPanelProps {
   cameras: Camera[];
@@ -18,6 +25,10 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
   onSelectSighting,
 }) => {
   const [query, setQuery] = useState('');
+  const [scenarioRunId, setScenarioRunId] = useState('');
+  const [showScenarioInput, setShowScenarioInput] = useState(false);
+  const [activePlate, setActivePlate] = useState<string | null>(null);
+  const [activeScenarioRunId, setActiveScenarioRunId] = useState<string | null>(null);
   const [results, setResults] = useState<Detection[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,22 +42,66 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
 
   const cameraById = new Map(cameras.map((cam) => [cam.id, cam]));
 
+  const fetchSightings = async (plate: string, runId: string | null) => {
+    const detections = await detectionService.search({
+      plate_number: plate,
+      ...(runId ? { scenario_run_id: runId } : {}),
+    });
+    // Contract says backend-watchlist already returns these ascending by
+    // detected_at, but the map's route/animation order depends on it —
+    // cheap insurance against a backend that doesn't honor that.
+    return [...detections].sort(
+      (a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime()
+    );
+  };
+
   const runSearch = async () => {
     const plate = query.trim().toUpperCase();
     if (!plate) return;
+    const runId = scenarioRunId.trim() || null;
 
     setIsLoading(true);
     setError(null);
     try {
-      const detections = await detectionService.search({ plate_number: plate });
-      setResults(detections);
+      const ordered = await fetchSightings(plate, runId);
+      setResults(ordered);
+      // Only starts polling once the initial search succeeds — a failed
+      // plate shouldn't spin up a background loop hammering the backend.
+      setActivePlate(plate);
+      setActiveScenarioRunId(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to search vehicle sightings');
       setResults(null);
+      setActivePlate(null);
+      setActiveScenarioRunId(null);
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Poll for new sightings of the currently-searched plate during the demo.
+  // A transient poll failure is swallowed rather than surfaced as `error` —
+  // a momentary network blip shouldn't blank out an otherwise-live route.
+  // Skips the setResults call entirely when nothing actually changed, so
+  // the map's route/animation isn't reset on every tick for no reason.
+  useEffect(() => {
+    if (!activePlate) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const ordered = await fetchSightings(activePlate, activeScenarioRunId);
+        setResults((prev) => {
+          const prevIds = (prev ?? []).map((d) => d.id).join(',');
+          const nextIds = ordered.map((d) => d.id).join(',');
+          return prevIds === nextIds ? prev : ordered;
+        });
+      } catch {
+        // Silent — next tick tries again.
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+  }, [activePlate, activeScenarioRunId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') runSearch();
@@ -77,6 +132,27 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
             className="w-full bg-slate-950 border border-slate-700 rounded pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 uppercase focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
           />
         </div>
+
+        <button
+          type="button"
+          onClick={() => setShowScenarioInput((prev) => !prev)}
+          className="mt-2 flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition"
+        >
+          {showScenarioInput ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Scenario run ID (demo)
+        </button>
+        {showScenarioInput && (
+          <input
+            type="text"
+            aria-label="Scenario run ID"
+            placeholder="Scopes results to one replay run"
+            value={scenarioRunId}
+            onChange={(e) => setScenarioRunId(e.target.value)}
+            onKeyDown={handleKeyDown}
+            className="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
+          />
+        )}
+
         <button
           type="button"
           onClick={runSearch}
@@ -105,7 +181,7 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
         ) : (
           <ul>
             {results.map((detection, index) => {
-              const camera = cameraById.get(detection.camera_id);
+              const camera = resolveSightingCamera(detection, cameraById);
               return (
                 <li
                   key={detection.id}
