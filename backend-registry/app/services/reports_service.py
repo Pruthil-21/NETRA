@@ -24,7 +24,34 @@ def get_summary(conn):
         "cameras_by_health_status": by_health,
         "alerts_last_24h": _count_last_24h(conn, "alerts", "matched_at"),
         "detections_last_24h": _count_last_24h(conn, "detections", "detected_at"),
+        "blacklist_entries_last_24h": _count_last_24h(conn, "watchlist", "date_added"),
+        "avg_alert_response_seconds": _avg_alert_response_seconds(conn),
     }
+
+
+def _avg_alert_response_seconds(conn):
+    """Average time between an alert firing (alerts.matched_at) and the
+    first status change away from 'NEW' (alert_status_history's earliest
+    row for that alert) -- how fast officers actually respond. None if
+    backend-watchlist's schema hasn't been applied yet, or no alert has
+    ever been acknowledged."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT AVG(EXTRACT(EPOCH FROM (first_response.changed_at - a.matched_at)))
+                FROM alerts a
+                JOIN LATERAL (
+                    SELECT changed_at FROM alert_status_history
+                    WHERE alert_id = a.id AND status != 'NEW'
+                    ORDER BY changed_at ASC
+                    LIMIT 1
+                ) first_response ON true
+            """)
+            result = cur.fetchone()[0]
+            return float(result) if result is not None else None
+    except psycopg.Error:
+        conn.rollback()
+        return None
 
 
 def _count_last_24h(conn, table: str, ts_column: str):
