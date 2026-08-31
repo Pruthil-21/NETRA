@@ -2,11 +2,10 @@
 
 Duplicated (not shared) in backend-registry and backend-watchlist by design —
 keeps each service independently owned with zero cross-folder edits.
-See CLAUDE.md, "SECURITY/PRODUCTION DECISIONS".
 """
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import jwt
+from fastapi import Depends, Header, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
 
@@ -26,3 +25,9 @@ def require_role(role: str):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
+
+
+def require_internal_key(x_internal_key: str = Header(...)):
+    if x_internal_key != settings.internal_service_key:
+        raise HTTPException(status_code=401, detail="Invalid internal service key")
+    return True

@@ -1,83 +1,79 @@
-import cv2
-from ultralytics import YOLO
-import easyocr
-import re
+"""
+Thin entry point for the ANPR pipeline -- the actual implementation lives
+in anpr/ (config, ocr, plate_format, tracking, enhancement, detection,
+watchlist_client, streaming). Kept as the stable, flat import surface
+(`import detect_plate; detect_plate.X`) that vehicle_trace_demo.py and
+ocr_gpu_worker.py already assume, and where the __main__ entry point
+still lives.
+
+Note for anyone extending anpr/detection.py: `_ocr_readtext` is looked up
+dynamically through *this* module (`detect_plate._ocr_readtext(...)`) at
+every call site, not imported statically, specifically so
+vehicle_trace_demo.py's `detect_plate._ocr_readtext = <wrapper>`
+monkeypatch continues to work. Don't "clean up" that indirection into a
+plain `from .ocr import _ocr_readtext` without checking that first.
+"""
 import os
+import sys
 
-# Load a pretrained YOLO model (detects general objects, including "car")
-# On first run this auto-downloads the model weights (~6MB), needs internet.
-yolo_model = YOLO("yolov8n.pt")
+# Makes `anpr` importable regardless of caller cwd -- anpr/config.py does
+# the same for the repo root (streaming/) and ml-anpr itself (nafnet/).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Load EasyOCR reader — 'en' works fine for alphanumeric plates
-# On first run this also downloads model weights, needs internet.
-ocr_reader = easyocr.Reader(['en'], gpu=False)
+from anpr.config import DETECTION_API_URL, INTERNAL_KEY, CAMERA_ID_MAP, device, yolo_model  # noqa: E402,F401
+from anpr.ocr import _ocr_readtext  # noqa: E402
+from anpr.plate_format import (  # noqa: E402,F401
+    INDIAN_PLATE_PATTERN, _correct_plate_positions, _edit_similarity,
+    _containment_similarity, _plate_similarity,
+)
+from anpr.tracking import PlateConfirmationTracker, VehicleTracker  # noqa: E402,F401
+from anpr.enhancement import (  # noqa: E402,F401
+    LOW_LIGHT_BRIGHTNESS_THRESHOLD, is_low_light, enhance_low_light,
+    BLUR_LAPLACIAN_VARIANCE_THRESHOLD, is_blurry, enhance_motion_blur,
+)
+from anpr.detection import (  # noqa: E402,F401
+    plate_region_crop, detect_plate_from_frame, detect_plate,
+    MIN_VEHICLE_BOX_AREA_FRACTION, LOW_CONFIDENCE_BOX_THRESHOLD, LOW_CONFIDENCE_BOX_EXPAND_FRACTION,
+    MIN_VEHICLE_BOX_ASPECT_RATIO, MAX_VEHICLE_BOX_ASPECT_RATIO,
+)
+from anpr.watchlist_client import send_detection_to_watchlist  # noqa: E402,F401
+from anpr.streaming import process_stream, process_video_file, process_hls_stream  # noqa: E402,F401
 
-def detect_plate(image_path):
-    """
-    Takes a path to an image, finds a vehicle, crops the lower portion
-    (where the plate usually sits), runs OCR, and returns the result.
-    """
-    img = cv2.imread(image_path)
-    if img is None:
-        return {"error": f"Could not read image at {image_path}"}
+# Repo root is already on sys.path via anpr.config (imported above), so
+# this resolves regardless of caller cwd.
+from streaming.rtsp_reader import RTSPStreamReader  # noqa: E402,F401
 
-    # Step 1: run YOLO to detect objects in the image
-    results = yolo_model(img, verbose=False)
-
-    # COCO class IDs: 2 = car, 3 = motorcycle, 5 = bus, 7 = truck
-    vehicle_classes = {2, 3, 5, 7}
-
-    best_crop = None
-    best_area = 0
-
-    for r in results:
-        for box in r.boxes:
-            cls_id = int(box.cls[0])
-            if cls_id in vehicle_classes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                area = (x2 - x1) * (y2 - y1)
-                if area > best_area:
-                    best_crop = (x1, y1, x2, y2)
-                    best_area = area
-
-    if best_crop is None:
-        return {"plate_number": None, "confidence": 0, "note": "No vehicle detected"}
-
-    x1, y1, x2, y2 = best_crop
-    vehicle_img = img[y1:y2, x1:x2]
-
-    # Step 2: run OCR on the WHOLE vehicle crop, not a guessed sub-region
-    debug_path = f"debug_{os.path.basename(image_path)}"
-    cv2.imwrite(debug_path, vehicle_img)
-
-    ocr_results = ocr_reader.readtext(vehicle_img)
-
-    if not ocr_results:
-        return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read"}
-
-    # Pick the OCR result with the highest confidence
-    # Filter to text that looks like a plate: mostly letters/digits, reasonable length
-    candidates = []
-    for (_, text, conf) in ocr_results:
-        cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
-        if 6 <= len(cleaned) <= 12:
-            candidates.append((cleaned, conf))
-
-    if not candidates:
-        return {"plate_number": None, "confidence": 0, "note": "Text found, none plate-shaped"}
-
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    plate_text, ocr_conf = candidates[0]
-
-    return {
-        "plate_number": plate_text,
-        "confidence": round(ocr_conf, 2),
-        "note": "ok"
-    }
+# Everything above is re-exported for `import detect_plate; detect_plate.X`
+# (vehicle_trace_demo.py and ocr_gpu_worker.py's docstrings both assume
+# this flat surface) -- listed explicitly so static analysis doesn't flag
+# the imports above as unused.
+__all__ = [
+    "DETECTION_API_URL", "INTERNAL_KEY", "CAMERA_ID_MAP", "device", "yolo_model",
+    "_ocr_readtext",
+    "INDIAN_PLATE_PATTERN", "_correct_plate_positions", "_edit_similarity",
+    "_containment_similarity", "_plate_similarity",
+    "PlateConfirmationTracker", "VehicleTracker",
+    "LOW_LIGHT_BRIGHTNESS_THRESHOLD", "is_low_light", "enhance_low_light",
+    "BLUR_LAPLACIAN_VARIANCE_THRESHOLD", "is_blurry", "enhance_motion_blur",
+    "plate_region_crop", "detect_plate_from_frame", "detect_plate",
+    "MIN_VEHICLE_BOX_AREA_FRACTION", "LOW_CONFIDENCE_BOX_THRESHOLD", "LOW_CONFIDENCE_BOX_EXPAND_FRACTION",
+    "MIN_VEHICLE_BOX_ASPECT_RATIO", "MAX_VEHICLE_BOX_ASPECT_RATIO",
+    "send_detection_to_watchlist",
+    "process_stream", "process_video_file", "process_hls_stream",
+    "RTSPStreamReader",
+]
 
 
 if __name__ == "__main__":
-    for fname in os.listdir("test_images"):
-        path = os.path.join("test_images", fname)
-        result = detect_plate(path)
-        print(fname, "->", result)
+    RUN_STATIC_TESTS = False
+
+    if RUN_STATIC_TESTS:
+        for fname in os.listdir("test_images"):
+            path = os.path.join("test_images", fname)
+            result = detect_plate(path)
+            print(fname, "->", result)
+
+    # Live tunnel (P3's Cloudflare quick tunnel) is unreliable due to poor
+    # connectivity at the hackathon venue — testing against a locally stored
+    # dashcam video instead (gitignored, disposable local test material).
+    process_video_file("dashcam_trimmed.mp4", camera_id="camera16", process_every_n_frames=10)
