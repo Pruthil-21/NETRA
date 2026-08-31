@@ -16,6 +16,7 @@ from psycopg2.extras import RealDictCursor
 
 from ..auth import require_internal_key, require_role
 from ..database import get_db
+from ..logging_config import logger
 from ..schemas import DetectionIn, DetectionOut, DetectionResult
 from ..services import alerts_service, audit_service, detections_service
 
@@ -48,5 +49,6 @@ def receive_detection(
     )
     if alert is not None:
         audit_service.log(db, "ml-anpr", "create", "alert", alert["id"])
+        logger.info(f"ALERT: blacklisted plate {detection.plate_number} detected at camera {detection.camera_id}")
 
     return {"detection": recorded, "alert": alert}
