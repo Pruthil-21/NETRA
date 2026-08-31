@@ -20,3 +20,15 @@ def test_reports_summary_shape(client, viewer_headers):
     # int when that schema is applied, null otherwise, but never missing.
     assert "alerts_last_24h" in body
     assert "detections_last_24h" in body
+
+
+def test_summary_includes_blacklist_entries_last_24h(client, viewer_headers):
+    resp = client.get("/reports/summary", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert "blacklist_entries_last_24h" in resp.json()
+
+
+def test_summary_includes_avg_alert_response_seconds(client, viewer_headers):
+    resp = client.get("/reports/summary", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert "avg_alert_response_seconds" in resp.json()
