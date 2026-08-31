@@ -37,7 +37,6 @@ def health():
 def list_cameras(user=Depends(get_current_user)):
     with get_conn() as conn:
         cameras = cameras_service.list_cameras(conn)
-        audit_service.log(conn, user.get("sub"), "view", "camera")
         return cameras
 
 
@@ -47,7 +46,6 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
         camera = cameras_service.get_camera(conn, camera_id)
         if camera is None:
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "view", "camera", camera_id)
         return camera
 
 
@@ -91,7 +89,6 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"
 def reports_summary(user=Depends(get_current_user)):
     with get_conn() as conn:
         summary = reports_service.get_summary(conn)
-        audit_service.log(conn, user.get("sub"), "view", "report")
         return summary
 
 
