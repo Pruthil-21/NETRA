@@ -4,6 +4,7 @@ from psycopg2.extras import RealDictCursor
 
 from ..auth import require_role
 from ..database import get_db
+from ..logging_config import logger
 from ..schemas import WatchlistCreate, WatchlistOut
 from ..services import watchlist_service
 
@@ -24,4 +25,6 @@ def add_watchlist_entry(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    return watchlist_service.create_watchlist_entry(db, entry)
+    created = watchlist_service.create_watchlist_entry(db, entry)
+    logger.info(f"watchlist entry added: {created['plate_number']} ({entry.priority} priority, flagged by {entry.dept_flagged})")
+    return created

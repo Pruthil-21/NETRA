@@ -10,6 +10,7 @@ from psycopg2.extras import RealDictCursor  # type: ignore
 
 from ..auth import require_role
 from ..database import get_db
+from ..logging_config import logger
 from ..schemas import AlertOut, AlertStatusUpdate
 from ..services import alerts_service, audit_service
 
@@ -34,4 +35,5 @@ def update_alert_status(
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     audit_service.log(db, user.get("sub"), "status_change", "alert", alert_id)
+    logger.info(f"alert {alert_id} status changed to {body.status} by {user.get('sub')}")
     return alert
