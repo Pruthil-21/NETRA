@@ -11,6 +11,7 @@ from .schemas import (
     CameraCreate,
     CameraOut,
     CameraUpdate,
+    CameraUptimeReport,
     ReportSummary,
 )
 from .services import audit_service, cameras_service, reports_service
@@ -110,6 +111,20 @@ def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_rol
             logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
 
         return updated
+
+
+@app.get("/cameras/{camera_id}/uptime", response_model=CameraUptimeReport)
+def camera_uptime(camera_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        camera = cameras_service.get_camera(conn, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        windows = cameras_service.get_uptime_windows(conn, camera_id)
+        return {
+            "camera_id": camera_id,
+            "current_status": camera["connectivity_status"],
+            "windows": windows,
+        }
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)
