@@ -3,3 +3,13 @@ auto.crt
 auto.key
 *.m3u8
 *.ts
+.live-proxies.pid
+cookies.txt
+cameras.json
+valid_cameras.json
+
+logs/
+mediamtx_*.tar.gz
+go2rtc
+go2rtc.zip
+go2rtc.yaml
