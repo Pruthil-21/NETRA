@@ -1977,3 +1977,151 @@ detection, motion blur) are done and kept, and the one remaining named
 problem (`DL52GD0882`) now has a conclusive, evidence-backed diagnosis
 rather than an open question. Nothing left that meets this branch's
 own bar for a safe, well-evidenced, unattended change.
+
+---
+
+# Session 17 -- `plate_region_crop()` crop-band widened (branch `feature/plate-region-detector`)
+
+Branch: `feature/plate-region-detector` (created from `main` @ `7e4a823`,
+which already has the `anpr/` package refactor -- Sessions 1-16's logic
+lives there now, reorganized into `anpr/{config,detection,ocr,
+enhancement,tracking,plate_format,watchlist_client,streaming}.py` behind
+a `detect_plate.py` re-export shim; verified line-for-line identical to
+this branch's own prior logic when that refactor first showed up).
+
+Not a scheduled Priority 1/2 firing -- a direct, scoped fix request for
+a bug diagnosed live, in conversation, against two independent real
+datasets: Dhruv's Tailscale training-camera RTSP feeds and a Sentinel
+Gujarat/Kaggle CCTV dataset. Both are elevated, angled camera views --
+structurally different from the close, level, forward-facing dashcam
+footage `plate_region_crop()`'s band was originally tuned against.
+
+## Root cause, confirmed before touching code
+
+`plate_region_crop()` crops a fixed band out of each vehicle box before
+OCR: y 55-92% of the box's own height, x 12-90% of its width. On an
+elevated/angled CCTV view, a vehicle's plate can sit lower in its own
+box than a level dashcam view would put it -- confirmed directly on the
+Sentinel Gujarat/Kaggle bus frame (`13067896_3840_2160_30fps`, ~t=11.2s,
+largest vehicle ~12% of frame): drawing both the old (92%) and a wider
+(98%) band directly on the crop showed the plate sitting **below** the
+old line, inside the new one.
+
+## Fix
+
+Widened the bottom edge only, 92% -> 98%. Left top (55%) and both sides
+(12-90%) alone -- neither diagnosed case implicated them, and this
+project's discipline throughout has been to fix what's measured broken,
+not everything that theoretically could be.
+
+**Considered, and explicitly did NOT change:** whether `plate_region_crop`
+should be a fallback tried only after a whole-crop OCR pass returns
+nothing, instead of both always running and their results combined
+(current behavior). Checked `_read_plate_from_box()`'s actual logic
+before assuming this needed changing -- it's already a deliberate,
+documented design decision (`"Kept additive (not a replacement) so a
+mislocalized crop can't cost us a detection the whole-crop pass would
+still have found"`), not an oversight. Switching to fallback-only would
+be a real regression risk: it would mean any frame where the whole-crop
+pass finds *something* (even something wrong) never gets a chance at the
+region-crop pass finding the *correct* plate. Left this alone.
+
+**Checked for interaction with the already-fixed overlay-band false
+positive** (Session 3: a close/large vehicle box pulling in the
+dashcam's own burned-in timestamp, misread as a sequence of
+valid-shaped plates, e.g. `II22IS3507` -> `II22IS3508` -> ...). That
+protection is a *frame*-relative clip on the vehicle box itself,
+upstream of this function, in `_read_plate_from_box`
+(`y2 = min(y2, int(raw_h * 0.92))`) -- frame coordinates, not vehicle-
+crop coordinates. Widening `plate_region_crop`'s own band (a fraction of
+the already-overlay-excluded `vehicle_img`'s height) only reaches back
+into the overlay band for a vehicle box that already sits right at that
+frame-relative boundary -- a narrow edge case already further
+constrained by the aspect-ratio filter (`MIN/MAX_VEHICLE_BOX_ASPECT_RATIO`)
+that rejects the classic full-width, bottom-pinned overlay-strip shape.
+Not just reasoned about -- re-verified against the real
+`dashcam_trimmed.mp4` regression below, scanning the confirmed set
+specifically for anything sequential/timestamp-shaped. Nothing found.
+
+## Tested directly against both real cases that surfaced this bug
+
+**Sentinel Gujarat/Kaggle bus frame** (the case with the clearest
+evidence): drew both the 92% and 98% band boundaries directly on the
+vehicle crop. Confirmed geometrically: the plate sits below the old
+line, inside the new one -- the widened band now actually contains the
+plate. **But OCR on the widened band still returned `'DUNNY'` (0.64
+conf) -- not the real plate text.** Correctly rejected by the existing
+candidate filters regardless (5 characters, below the 6-character
+fallback-tier floor, and no digit present). Honest result: the
+crop-band bug is real and now fixed geometrically on this frame, but
+that alone does not recover a legible read here -- consistent with the
+diagnostic conversation's own conclusion that the crop band was *a*
+contributing factor on this footage, not *the* limiting factor. The
+underlying image quality (20fps re-encode, motion blur, compression) is
+still the ceiling.
+
+**Tailscale training-camera frame (camera 222)** -- re-examined more
+carefully this session, and correcting an earlier imprecise
+characterization: drawing both band boundaries directly on this crop
+showed the plate was **already fully inside both the old and new
+bands** -- it was never actually being clipped by the 92% cutoff. The
+"plate sat right at the cutoff" description from the earlier diagnostic
+conversation doesn't hold up under direct re-inspection with the actual
+boundary drawn; that was an eyeballing error, corrected here rather than
+left standing. This fix doesn't apply to this specific frame's failure
+mode, which -- like the bus -- looks like a resolution/OCR-engine limit
+the crop band can't address. Flagging this correction explicitly rather
+than quietly reporting only the case that worked in the fix's favor.
+
+## Full regression
+
+- **Static images:** 3/3, unchanged (`MH48AW4023`, `HR20AG3739`,
+  `MH20DV2366`), via `tests/test_pipeline_smoke.py`.
+- **Degraded set:** `lowlight` 3/3, `motionblur` 1/3, `glare` 3/3, `fog`
+  3/3 -- all identical to the established baseline.
+- **Dashcam video:** confirmed set is `{HR26EO6477, OL52OO0882,
+  RJ45OK2913, HR98E4959, HR38AC7748, DL52GD4935, UP16DN8010, UP16ON8010,
+  OL52GO0882, FRJ45CK2913}` -- same 10 plates as the documented
+  baseline except one already-known-unstable `DL52GD0882`-cluster
+  variant (`OL52GO0882` here vs. `DL52OO0882` in the baseline doc).
+  Every named hard-stop plate present and correct. Given this session's
+  own change touches OCR-crop logic more directly than Session 15's did
+  (which only touched the watchlist-POST layer), didn't just cite the
+  old stash/rerun precedent -- re-ran it fresh: `git stash`ed this
+  session's fix, reran the identical video on unchanged code, got the
+  exact same `OL52GO0882` (not `DL52OO0882`) with the fix absent too.
+  Confirms this is the same pre-existing nondeterminism already
+  documented, not something this change introduced. `git stash pop`
+  restored the fix afterward. No new or timestamp-shaped false positive
+  anywhere in the confirmed set.
+- `send_detection_to_watchlist()`: untouched -- confirmed via `git diff`
+  on `anpr/watchlist_client.py` directly (empty), not just "didn't
+  intend to."
+
+### Verdict: **kept, with an honest limitation stated plainly**
+
+The crop-band bug itself is real, confirmed on two independent
+datasets, and now fixed -- geometrically verified, not just asserted,
+by drawing the actual band boundaries on both real crops that surfaced
+it. Zero regression across every benchmark, including a same-day fresh
+stash/rerun proving the one observed dashcam-set difference is
+pre-existing noise, not caused by this change. **But per the explicit
+instruction to report honestly either way: this fix did not recover a
+legible plate read on either of the two real frames that motivated it.**
+One (camera 222) turned out not to be a crop-band case at all on closer
+inspection. The other (the bus) is now geometrically correct but still
+blocked by underlying image quality. This is worth keeping -- it
+removes one real, confirmed source of clipped plates for whatever
+frames it does help, and costs nothing measurable -- but it should not
+be reported as "the fix" for either diagnosed dataset's low read rate.
+`main` untouched. Nothing pushed or merged, per instructions.
+
+## Next
+
+If Sentinel Gujarat/Kaggle footage remains the actual demo target
+despite its measured limitations (per the diagnostic conversation
+preceding this session), the realistic next levers are the same ones
+already named there: real OCR-accuracy work (fine-tuning or ensembling,
+not a quick change) or accepting a lower read rate on that footage as a
+known constraint. The crop-band fix here is a real, kept, but
+supporting improvement, not a substitute for either.
