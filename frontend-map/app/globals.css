@@ -1,0 +1,68 @@
+@import "leaflet/dist/leaflet.css";
+@import "leaflet.markercluster/dist/MarkerCluster.css";
+@import "leaflet.markercluster/dist/MarkerCluster.Default.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-ink text-slate-100;
+  }
+}
+
+/* Custom GIS Dark Popup Styling */
+.dark-gis-popup .leaflet-popup-content-wrapper {
+  background-color: #0e141b;
+  color: #e7ecf1;
+  border: 1px solid #1f2a35;
+  border-radius: 0.375rem;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.6);
+}
+
+.dark-gis-popup .leaflet-popup-tip {
+  background-color: #0e141b;
+  border: 1px solid #1f2a35;
+}
+
+/* Leaflet Cluster Counter Customizations */
+.marker-cluster-small,
+.marker-cluster-medium,
+.marker-cluster-large {
+  background-color: rgba(14, 20, 27, 0.7) !important;
+}
+
+.marker-cluster-small div,
+.marker-cluster-medium div,
+.marker-cluster-large div {
+  background-color: #141b24 !important;
+  color: #2f6fed !important;
+  font-weight: 700;
+  font-family: var(--font-mono), ui-monospace, monospace;
+  border: 1px solid #2f6fed;
+}
+
+/* Signature: a slow radar sweep ring on live/online markers only — the one
+   piece of ambient motion in the whole app, gated behind reduced-motion. */
+@media (prefers-reduced-motion: no-preference) {
+  .radar-sweep::before {
+    content: '';
+    position: absolute;
+    inset: -6px;
+    border-radius: 9999px;
+    border: 1.5px solid rgba(34, 197, 94, 0.55);
+    animation: radar-sweep 2.4s ease-out infinite;
+  }
+}
+
+@keyframes radar-sweep {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
