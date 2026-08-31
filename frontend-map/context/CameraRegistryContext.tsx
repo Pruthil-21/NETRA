@@ -11,6 +11,7 @@ import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { getCameraStreamUrl } from '@/lib/stream';
 import { getWebRtcWhepUrl } from '@/lib/webrtc';
+import { authHeaders } from '@/lib/apiAuth';
 
 // How often every camera (not just the one an officer has open) gets a real
 // reachability check, and how long each check can take before it's counted
@@ -195,7 +196,20 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // reflects reality instead of staying stuck on the preliminary guess.
   const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
     setCameras((prev) =>
-      prev.map((c) => (c.id === id && c.connectivity_status !== status ? { ...c, connectivity_status: status } : c))
+      prev.map((c) => {
+        if (c.id === id && c.connectivity_status !== status) {
+          // Fire-and-forget: the backend's own dedup is the real safety net
+          // if this fires more than once for the same transition; a failed
+          // report here shouldn't block the UI from updating.
+          fetch(`${process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000'}/cameras/${id}`, {
+            method: 'PUT',
+            headers: authHeaders(),
+            body: JSON.stringify({ connectivity_status: status }),
+          }).catch(() => {});
+          return { ...c, connectivity_status: status };
+        }
+        return c;
+      })
     );
     setSelectedCamera((prev) =>
       prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
