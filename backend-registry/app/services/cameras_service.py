@@ -1,4 +1,5 @@
 """Business logic for cameras — raw SQL via psycopg, no ORM."""
+from datetime import datetime, timezone
 
 
 def list_cameras(conn):
@@ -97,6 +98,36 @@ def update_camera(conn, camera_id: int, data: dict):
         conn.commit()
 
     return get_camera(conn, camera_id), connectivity_changed
+
+
+def get_uptime_windows(conn, camera_id: int) -> list[dict] | None:
+    """Pairs consecutive camera_status_history rows into windows: each row's
+    status holds from its own changed_at until the next row's changed_at
+    (or until now, for the most recent row -- that window is still open)."""
+    camera = get_camera(conn, camera_id)
+    if camera is None:
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT connectivity_status, changed_at FROM camera_status_history "
+            "WHERE camera_id = %s ORDER BY changed_at",
+            (camera_id,),
+        )
+        rows = cur.fetchall()
+
+    windows = []
+    now = datetime.now(timezone.utc)
+    for i, (status, changed_at) in enumerate(rows):
+        window_end = rows[i + 1][1] if i + 1 < len(rows) else None
+        end_for_duration = window_end if window_end is not None else now
+        windows.append({
+            "status": status,
+            "from": changed_at,
+            "to": window_end,
+            "duration_seconds": (end_for_duration - changed_at).total_seconds(),
+        })
+    return windows
 
 
 def delete_camera(conn, camera_id: int) -> bool:
