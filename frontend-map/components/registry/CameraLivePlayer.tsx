@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { Camera, ConnectivityStatus } from '@/types/camera';
 import type { StreamUnavailableReason } from '@/lib/stream';
-import { getWebRtcStreamPath } from '@/lib/webrtc';
+import { getWebRtcWhepUrl } from '@/lib/webrtc';
 import WebRTCPlayer from './WebRTCPlayer';
 import LiveFeedPlayer from './LiveFeedPlayer';
 
@@ -25,16 +25,16 @@ export default function CameraLivePlayer({
   onStatusChange?: (status: ConnectivityStatus) => void;
 }) {
   const webrtcBase = process.env.NEXT_PUBLIC_MEDIAMTX_WEBRTC_URL;
-  const streamPath = getWebRtcStreamPath(camera);
+  const whepUrl = getWebRtcWhepUrl(camera, webrtcBase);
   const [webrtcFailed, setWebrtcFailed] = useState(false);
 
-  const canTryWebRtc = Boolean(webrtcBase && streamPath) && !webrtcFailed;
+  const canTryWebRtc = Boolean(whepUrl) && !webrtcFailed;
 
   if (canTryWebRtc) {
     return (
       <WebRTCPlayer
         key={camera.id}
-        whepUrl={`${webrtcBase!.replace(/\/+$/, '')}/stream/${streamPath}/whep`}
+        whepUrl={whepUrl!}
         preliminaryStatus={camera.connectivity_status}
         onStatusChange={onStatusChange}
         onFatalError={() => setWebrtcFailed(true)}
