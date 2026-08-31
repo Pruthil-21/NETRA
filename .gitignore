@@ -3,12 +3,14 @@ node_modules/
 .next/
 dist/
 build/
+*.tsbuildinfo
 
 # Python
 __pycache__/
 *.pyc
 venv/
 .venv/
+.venv-ocr/
 
 # Env
 .env
@@ -21,6 +23,24 @@ Thumbs.db
 # Editor
 .vscode/
 .idea/
+# MediaMTX & Streaming binaries/temp files
+streaming/mediamtx
+streaming/mediamtx.yml
+streaming/videos/
+*.mp4
 docker-compose.override.yml
 *.pt
 debug_*.jpg
+
+# Local dev tunnel script (machine-specific)
+scripts/start-tunnels.sh
+
+# ml-anpr demo run output (local test artifacts, not source)
+ml-anpr/logs/
+ml-anpr/test_images/before/
+ml-anpr/test_images/vehicle_boxes/
+ml-anpr/test_images/plate_boxes/
+ml-anpr/test_images/after/
+
+# Local cloudflared tunnel logs (machine-specific)
+cf-tunnel-*.log

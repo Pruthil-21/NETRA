@@ -1,3 +1,4 @@
+
 # Backend Registry
 
 FastAPI service exposing CRUD APIs for the camera registry. Backed by PostgreSQL + PostGIS for geo-queries.
