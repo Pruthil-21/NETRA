@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from .auth import get_current_user, require_role
 from .db import get_conn
-from .logging_config import configure_logging
+from .logging_config import configure_logging, logger
 from .schemas import (
     CameraBulkResult,
     CameraCreate,
@@ -98,10 +98,17 @@ def reports_summary(user=Depends(get_current_user)):
 @app.put("/cameras/{camera_id}", response_model=CameraOut)
 def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_role("officer"))):
     with get_conn() as conn:
-        updated = cameras_service.update_camera(conn, camera_id, camera.model_dump(exclude_unset=True))
+        fields = camera.model_dump(exclude_unset=True)
+        updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+
+        non_connectivity_fields = {k for k in fields if k != "connectivity_status"}
+        if non_connectivity_fields:
+            audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+        if connectivity_changed:
+            logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
+
         return updated
 
 
