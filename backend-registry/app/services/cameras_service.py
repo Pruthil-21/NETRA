@@ -56,25 +56,47 @@ def create_camera(conn, data: dict):
 
 
 def update_camera(conn, camera_id: int, data: dict):
+    """Returns (updated_camera, connectivity_changed: bool) -- the router
+    uses connectivity_changed to decide whether to also write an audit_logs
+    entry (skipped for connectivity-only changes; camera_status_history
+    covers that case instead)."""
     fields = {k: v for k, v in data.items() if v is not None}
     if not fields:
-        return get_camera(conn, camera_id)
+        return get_camera(conn, camera_id), False
 
-    set_clauses = [f"{key} = %({key})s" for key in fields if key not in ("lat", "long")]
-    if "lat" in fields and "long" in fields:
-        set_clauses.append("location = ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326)")
-
+    connectivity_changed = False
     with conn.cursor() as cur:
+        if "connectivity_status" in fields:
+            cur.execute("SELECT connectivity_status FROM cameras WHERE id = %s", (camera_id,))
+            row = cur.fetchone()
+            if row is None:
+                return None, False
+            current_status = row[0]
+            if fields["connectivity_status"] != current_status:
+                connectivity_changed = True
+
+        set_clauses = [f"{key} = %({key})s" for key in fields if key not in ("lat", "long")]
+        if "lat" in fields and "long" in fields:
+            set_clauses.append("location = ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326)")
+
         cur.execute(f"""
             UPDATE cameras SET {', '.join(set_clauses)}
             WHERE id = %(camera_id)s
             RETURNING id
         """, {**fields, "camera_id": camera_id})
         row = cur.fetchone()
-        conn.commit()
         if row is None:
-            return None
-    return get_camera(conn, camera_id)
+            conn.commit()
+            return None, False
+
+        if connectivity_changed:
+            cur.execute(
+                "INSERT INTO camera_status_history (camera_id, connectivity_status) VALUES (%s, %s)",
+                (camera_id, fields["connectivity_status"]),
+            )
+        conn.commit()
+
+    return get_camera(conn, camera_id), connectivity_changed
 
 
 def delete_camera(conn, camera_id: int) -> bool:
