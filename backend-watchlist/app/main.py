@@ -5,7 +5,7 @@ Run locally: uvicorn app.main:app --reload --port 8001
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import alerts, detections, watchlist
+from .routers import alerts, detections, traces, watchlist
 
 app = FastAPI(title="NETRA Watchlist & Alerts Service")
 
@@ -23,6 +23,7 @@ app.add_middleware(
 app.include_router(watchlist.router)
 app.include_router(alerts.router)
 app.include_router(detections.router)
+app.include_router(traces.router)
 
 
 @app.get("/health")

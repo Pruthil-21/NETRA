@@ -60,7 +60,7 @@ Alert:
   draft below: ANPR used to post detections here directly.
 
 Detection:
-`{ id, plate_number, camera_id, detected_at, confidence }`
+`{ id, plate_number, camera_id, detected_at, confidence, scenario_run_id, source }`
 
 - `GET /detections` — officer role. Search the full vehicle-sighting
   history, independent of watchlist status.
@@ -68,13 +68,55 @@ Detection:
   `from` (ISO datetime, inclusive), `to` (ISO datetime, inclusive). Results
   ordered by `detected_at` ascending — for a timeline/route view.
 - `POST /detections` — internal-service only (`X-Internal-Key`). The single
-  endpoint ml-anpr calls for **every** confirmed plate read, not just
-  watchlist matches. Always records the sighting; if the plate matches the
-  watchlist, also creates the linked `Alert` in the same request (so ml-anpr
-  never calls two endpoints for one event).
+  endpoint ml-anpr (and any scripted/replayed source, e.g. the vehicle-trace
+  demo clip) calls for **every** confirmed plate read, not just watchlist
+  matches. Always records the sighting; if the plate matches the watchlist,
+  also creates the linked `Alert` in the same request (so ml-anpr never
+  calls two endpoints for one event).
+  - Body field is `plate_number`; `plate` is also accepted as an alias (some
+    scripted callers use the shorter name) but every response still uses
+    `plate_number` — that stays the one canonical name everywhere else in
+    this API (watchlist, alerts, `GET /detections`).
+  - `plate_number`/`plate` is normalized server-side (whitespace stripped,
+    upper-cased) before storage/matching/lookup, so `GX15 OGJ` and
+    `GX15OGJ` are the same plate everywhere.
+  - `detected_at`, `scenario_run_id`, `source` are optional; live ml-anpr
+    detections omit all three (server timestamps with `now()`, no dedup).
+    A scripted replay sends its own `detected_at` and tags itself with a
+    `scenario_run_id` — repeat POSTs for the same
+    `(scenario_run_id, camera_id, plate_number)` are a no-op (returns the
+    already-recorded sighting instead of inserting a duplicate), so a
+    looping demo clip produces one confirmed sighting per camera per run.
+    Nothing is ever deleted or updated; a new replay uses a new
+    `scenario_run_id` and simply adds another set of rows alongside the old
+    ones.
   Response `201`: `{ detection: Detection, alert: Alert | null }` —
   `alert` is `null` when the plate did not match the watchlist (the normal/
   expected case for most detections).
+
+VehicleTraceResponse:
+`{ scenario_run_id, plate, label, sightings: VehicleTraceSighting[] }`
+
+VehicleTraceSighting:
+`{ camera_id, camera_name, latitude, longitude, stream_id, detected_at, confidence }`
+
+- `GET /vehicle-traces/{plate_number}?scenario_run_id={runId}` — officer
+  role (same JWT as the other officer-only reads here). Reuses the
+  `detections` history — not a separate store — filtered to one plate and,
+  when given, one `scenario_run_id`; `sightings` is ordered by `detected_at`
+  ascending. `scenario_run_id` on the response echoes the query param
+  (`null` if omitted — the trace then spans every run/live detection for
+  that plate). Each sighting is enriched with the camera's
+  name/coordinates/`stream_id` so frontend-map doesn't need a separate
+  registry lookup; those fields come back `null` for a camera_id with no
+  known metadata.
+  **Note:** camera metadata for this endpoint is currently a small hardcoded
+  table in backend-watchlist covering only the vehicle-trace demo cameras
+  (101/102/103) — see `app/services/camera_metadata.py`. Real (registry)
+  cameras aren't wired in yet.
+  CORS: open (`allow_origins=["*"]`, see `fix/cors-preflight-registry-watchlist`)
+  like the rest of backend-watchlist, so any browser client can call this
+  directly.
 
 ### ANPR Detection (P5 → P6)
 
