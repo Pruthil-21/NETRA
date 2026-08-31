@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from .auth import get_current_user, require_role
 from .db import get_conn
+from .logging_config import configure_logging
 from .schemas import (
     CameraBulkResult,
     CameraCreate,
@@ -13,6 +14,8 @@ from .schemas import (
     ReportSummary,
 )
 from .services import audit_service, cameras_service, reports_service
+
+configure_logging()
 
 app = FastAPI()
 
