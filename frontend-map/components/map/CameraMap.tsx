@@ -1,19 +1,22 @@
 'use client';
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
-import { createCustomMarkerIcon } from './MapCustomMarker';
+import { createCustomMarkerIcon, createVehicleTraceIcon } from './MapCustomMarker';
 import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
+import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
+  routePositions: [number, number][];
 }
 
-const MapController: React.FC<MapControllerProps> = ({ selectedCamera }) => {
+const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePositions }) => {
   const map = useMap();
 
   useEffect(() => {
@@ -25,7 +28,73 @@ const MapController: React.FC<MapControllerProps> = ({ selectedCamera }) => {
     }
   }, [selectedCamera, map]);
 
+  // Frames the whole inferred route as soon as sightings come in, so a
+  // freshly searched plate's cameras are visible without the user having to
+  // hunt for them first. Runs independently of the selectedCamera effect
+  // above, so clicking one sighting afterwards still flies straight to it.
+  useEffect(() => {
+    if (routePositions.length === 0) return;
+    if (routePositions.length === 1) {
+      map.flyTo(routePositions[0], Math.max(map.getZoom(), 14), { duration: 1 });
+    } else {
+      map.flyToBounds(L.latLngBounds(routePositions), { padding: [64, 64], duration: 1 });
+    }
+  }, [routePositions, map]);
+
   return null;
+};
+
+const VEHICLE_TRACE_ICON = createVehicleTraceIcon();
+
+/** Interpolated marker position for the animated vehicle-trace dot: sweeps
+ * leg-by-leg through `positions` in order, pauses at the last point, then
+ * loops. Purely a visual read of "movement follows this sequence" — the
+ * dot's position between camera points is not a real vehicle location. */
+function useTracePosition(positions: [number, number][], legMs = 2500, pauseMs = 1500): [number, number] | null {
+  const [animatedPos, setPos] = useState<[number, number] | null>(positions[0] ?? null);
+
+  useEffect(() => {
+    // A single (or no) point isn't animated -- rendered straight from
+    // `positions` below, no setState needed here.
+    if (positions.length < 2) return;
+
+    let raf = 0;
+    const legs = positions.length - 1;
+    const travelMs = legs * legMs;
+    const cycleMs = travelMs + pauseMs;
+    const start = performance.now();
+
+    const tick = (now: number) => {
+      const elapsed = (now - start) % cycleMs;
+      if (elapsed >= travelMs) {
+        setPos(positions[positions.length - 1]);
+      } else {
+        const legIndex = Math.max(0, Math.min(legs - 1, Math.floor(elapsed / legMs)));
+        const legProgress = (elapsed - legIndex * legMs) / legMs;
+        const from = positions[legIndex];
+        const to = positions[legIndex + 1];
+        // Defensive: positions is fixed for the lifetime of this effect run,
+        // so this should always be in bounds -- but a stale rAF tick landing
+        // just after a re-render swaps in a shorter array is cheaper to no-op
+        // than to let crash the whole map.
+        if (from && to) {
+          setPos([from[0] + (to[0] - from[0]) * legProgress, from[1] + (to[1] - from[1]) * legProgress]);
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    return () => cancelAnimationFrame(raf);
+  }, [positions, legMs, pauseMs]);
+
+  return positions.length < 2 ? (positions[0] ?? null) : animatedPos;
+}
+
+const VehicleTraceMarker: React.FC<{ positions: [number, number][] }> = ({ positions }) => {
+  const pos = useTracePosition(positions);
+  if (!pos) return null;
+  return <Marker position={pos} icon={VEHICLE_TRACE_ICON} interactive={false} />;
 };
 
 interface CameraMapProps {
@@ -49,82 +118,114 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   const sightingPoints = useMemo(() => {
     if (!sightings || sightings.length === 0) return [];
     const cameraById = new Map(cameras.map((cam) => [cam.id, cam]));
-    return sightings
+    // Defensive re-sort: this component only trusts detected_at order, not
+    // caller order, since the route/animation direction depends on it.
+    return [...sightings]
+      .sort((a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime())
       .map((sighting) => {
-        const camera = cameraById.get(sighting.camera_id);
+        const camera = resolveSightingCamera(sighting, cameraById);
         if (!camera) return null;
         return { sighting, camera };
       })
       .filter((point): point is { sighting: Detection; camera: Camera } => point !== null);
   }, [sightings, cameras]);
 
-  const routePositions = sightingPoints.map(
-    ({ camera }) => [camera.lat, camera.long ?? 0] as [number, number]
+  const routePositions = useMemo(
+    () => sightingPoints.map(({ camera }) => [camera.lat, camera.long ?? 0] as [number, number]),
+    [sightingPoints]
+  );
+
+  const routeCameraIds = useMemo(
+    () => new Set(sightingPoints.map(({ camera }) => camera.id)),
+    [sightingPoints]
   );
 
   return (
-    <MapContainer
-      center={[22.2587, 71.1924]}
-      zoom={7}
-      className="w-full h-full bg-slate-950"
-    >
-      <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
-      <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
-
-      <MapController selectedCamera={selectedCamera} />
-
-      <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
-        {cameras.map((cam: Camera) => {
-          const longitude = cam.long ?? 0;
-          const isSelected = selectedCamera?.id === cam.id;
-          return (
-            <Marker
-              key={cam.id}
-              position={[cam.lat, longitude]}
-              icon={createCustomMarkerIcon(cam, isSelected)}
-              eventHandlers={{
-                click: () => onSelectCamera(cam),
-              }}
-            >
-              <Popup className="dark-gis-popup">
-                <MapPopupCard camera={cam} onInspect={() => onSelectCamera(cam)} />
-              </Popup>
-            </Marker>
-          );
-        })}
-      </MarkerClusterGroup>
-
-      {routePositions.length > 1 && (
-        <Polyline
-          positions={routePositions}
-          pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.8 }}
-        />
+    <div className="relative w-full h-full">
+      {sightingPoints.length > 0 && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] px-3 py-1.5 rounded bg-panel/90 border border-blue-500/40 shadow-lg text-center pointer-events-none">
+          <p className="text-[11px] font-semibold tracking-wide text-blue-300 uppercase">
+            {/* Scenario-run searches (GET /vehicle-traces) carry their own
+                caption -- e.g. "...from simulated camera sightings" -- so a
+                demo replay is never confused for the general feature's real
+                detection history. Falls back to the generic wording for a
+                normal plate search. */}
+            {sightingPoints[0].sighting.route_label || 'Inferred route from camera sightings'}
+          </p>
+          <p className="text-[10px] text-slate-400">Not GPS tracking — derived from camera detections only</p>
+        </div>
       )}
 
-      {sightingPoints.map(({ sighting, camera }, index) => (
-        <CircleMarker
-          key={sighting.id}
-          center={[camera.lat, camera.long ?? 0]}
-          radius={7}
-          pathOptions={{ color: '#3B82F6', fillColor: '#60A5FA', fillOpacity: 0.9, weight: 2 }}
-        >
-          <Tooltip permanent direction="top" offset={[0, -6]} className="sighting-order-tooltip">
-            {index + 1}
-          </Tooltip>
-          <Popup className="dark-gis-popup">
-            <div className="p-1 min-w-[160px] text-slate-100 text-xs">
-              <p className="font-semibold text-white mb-1">{camera.name || `Camera #${camera.id}`}</p>
-              <p className="text-slate-400">{new Date(sighting.detected_at).toLocaleString()}</p>
-              {sighting.confidence != null && (
-                <p className="text-slate-500 mt-1">
-                  Confidence: {(sighting.confidence * 100).toFixed(0)}%
-                </p>
-              )}
-            </div>
-          </Popup>
-        </CircleMarker>
-      ))}
-    </MapContainer>
+      <MapContainer
+        center={[22.2587, 71.1924]}
+        zoom={7}
+        className="w-full h-full bg-slate-950"
+      >
+        <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
+        <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
+
+        <MapController selectedCamera={selectedCamera} routePositions={routePositions} />
+
+        <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
+          {cameras.map((cam: Camera) => {
+            const longitude = cam.long ?? 0;
+            const isSelected = selectedCamera?.id === cam.id;
+            const isOnRoute = routeCameraIds.has(cam.id);
+            return (
+              <Marker
+                key={cam.id}
+                position={[cam.lat, longitude]}
+                icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
+                eventHandlers={{
+                  click: () => onSelectCamera(cam),
+                }}
+              >
+                <Popup className="dark-gis-popup">
+                  <MapPopupCard camera={cam} onInspect={() => onSelectCamera(cam)} />
+                </Popup>
+              </Marker>
+            );
+          })}
+        </MarkerClusterGroup>
+
+        {routePositions.length > 1 && (
+          <Polyline
+            positions={routePositions}
+            pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.8 }}
+          />
+        )}
+
+        {routePositions.length > 1 && <VehicleTraceMarker positions={routePositions} />}
+
+        {sightingPoints.map(({ sighting, camera }, index) => (
+          <CircleMarker
+            key={sighting.id}
+            center={[camera.lat, camera.long ?? 0]}
+            radius={7}
+            pathOptions={{ color: '#3B82F6', fillColor: '#60A5FA', fillOpacity: 0.9, weight: 2 }}
+            eventHandlers={{
+              click: () => onSelectCamera(camera),
+            }}
+          >
+            <Tooltip permanent direction="top" offset={[0, -6]} className="sighting-order-tooltip">
+              {index + 1}
+            </Tooltip>
+            <Popup className="dark-gis-popup">
+              <div className="p-1 min-w-[160px] text-slate-100 text-xs">
+                <p className="font-semibold text-white mb-1">{camera.name || `Camera #${camera.id}`}</p>
+                <p className="text-slate-400">{new Date(sighting.detected_at).toLocaleString()}</p>
+                {sighting.confidence != null && (
+                  <p className="text-slate-500 mt-1">
+                    Confidence: {(sighting.confidence * 100).toFixed(0)}%
+                  </p>
+                )}
+                <p className="text-slate-600 mt-1.5 text-[10px]">Click marker to open live feed</p>
+              </div>
+            </Popup>
+          </CircleMarker>
+        ))}
+      </MapContainer>
+    </div>
   );
 };
 
