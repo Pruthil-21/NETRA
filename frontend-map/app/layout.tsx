@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google';
 import { CameraRegistryProvider } from '@/context/CameraRegistryContext';
+import { ShellGate } from '@/components/shell/ShellGate';
 import './globals.css';
 
 // Two roles, one contract: Plex Sans carries every label a dispatcher reads
@@ -22,8 +23,8 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'NETRA - Camera Registry & GIS Map',
-  description: 'Real-time CCTV Monitoring & GIS Map',
+  title: 'NETRA - Unified Video & GIS Command',
+  description: 'Real-time CCTV monitoring, GIS camera registry, and vehicle-trace command center',
 };
 
 export default function RootLayout({
@@ -35,7 +36,7 @@ export default function RootLayout({
     <html lang="en" className={`${plexSans.variable} ${plexMono.variable}`}>
       <body className="bg-ink text-slate-100 antialiased font-sans">
         <CameraRegistryProvider>
-          {children}
+          <ShellGate>{children}</ShellGate>
         </CameraRegistryProvider>
       </body>
     </html>

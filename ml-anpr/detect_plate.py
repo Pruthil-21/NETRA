@@ -34,6 +34,7 @@ from anpr.enhancement import (  # noqa: E402,F401
 from anpr.detection import (  # noqa: E402,F401
     plate_region_crop, detect_plate_from_frame, detect_plate,
     MIN_VEHICLE_BOX_AREA_FRACTION, LOW_CONFIDENCE_BOX_THRESHOLD, LOW_CONFIDENCE_BOX_EXPAND_FRACTION,
+    MIN_VEHICLE_BOX_ASPECT_RATIO, MAX_VEHICLE_BOX_ASPECT_RATIO,
 )
 from anpr.watchlist_client import send_detection_to_watchlist  # noqa: E402,F401
 from anpr.streaming import process_stream, process_video_file, process_hls_stream  # noqa: E402,F401
@@ -56,6 +57,7 @@ __all__ = [
     "BLUR_LAPLACIAN_VARIANCE_THRESHOLD", "is_blurry", "enhance_motion_blur",
     "plate_region_crop", "detect_plate_from_frame", "detect_plate",
     "MIN_VEHICLE_BOX_AREA_FRACTION", "LOW_CONFIDENCE_BOX_THRESHOLD", "LOW_CONFIDENCE_BOX_EXPAND_FRACTION",
+    "MIN_VEHICLE_BOX_ASPECT_RATIO", "MAX_VEHICLE_BOX_ASPECT_RATIO",
     "send_detection_to_watchlist",
     "process_stream", "process_video_file", "process_hls_stream",
     "RTSPStreamReader",

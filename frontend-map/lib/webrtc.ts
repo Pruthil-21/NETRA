@@ -12,6 +12,17 @@ export function getWebRtcStreamPath(camera: Camera): string | null {
   return null;
 }
 
+/** Full WHEP endpoint for a camera, or null if WebRTC isn't configured/
+ * viable for it -- same construction CameraLivePlayer uses to decide
+ * whether to attempt WebRTC at all, shared here so the connectivity
+ * health-check probes the same transport the player actually uses instead
+ * of only ever checking HLS. */
+export function getWebRtcWhepUrl(camera: Camera, webrtcBase: string | undefined): string | null {
+  const streamPath = getWebRtcStreamPath(camera);
+  if (!webrtcBase || !streamPath) return null;
+  return `${webrtcBase.replace(/\/+$/, '')}/stream/${streamPath}/whep`;
+}
+
 export interface WhepSession {
   pc: RTCPeerConnection;
   close: () => void;

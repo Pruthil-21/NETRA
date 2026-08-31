@@ -31,6 +31,22 @@ MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
 LOW_CONFIDENCE_BOX_THRESHOLD = 0.4
 LOW_CONFIDENCE_BOX_EXPAND_FRACTION = 0.4
 
+# Session (dashcam pipeline-stage audit): the area floor above doesn't
+# catch the single most common dashcam false positive -- the recording
+# car's OWN bonnet/dashboard, which YOLO frequently misclassifies as a
+# vehicle. It's large enough to clear MIN_VEHICLE_BOX_AREA_FRACTION easily,
+# but has a giveaway shape no real vehicle box has: measured directly
+# across a real dashcam clip, these boxes spanned 98-99% of the frame
+# width at only 18-22% of its height (aspect ratio 8.4-14.8), because
+# they're a near-full-width strip pinned to the bottom edge. The opposite
+# extreme showed up too -- a vehicle clipped by the left/right frame edge
+# (e.g. a bus mostly out-of-frame, only its door/mirror visible) measured
+# 0.25-0.26, a tall sliver with essentially no chance of containing a
+# readable plate. Real vehicle boxes (car/bike/bus/truck, any angle) sit
+# comfortably inside both bounds; only these two failure shapes don't.
+MIN_VEHICLE_BOX_ASPECT_RATIO = 0.35
+MAX_VEHICLE_BOX_ASPECT_RATIO = 5.0
+
 
 def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     """
@@ -200,8 +216,11 @@ def detect_plate_from_frame(infer_frame, raw_frame):
                         raw_box[0], raw_box[1], raw_box[2],
                         min(raw_h, int(raw_box[3] + LOW_CONFIDENCE_BOX_EXPAND_FRACTION * box_h)),
                     )
-                area = (raw_box[2] - raw_box[0]) * (raw_box[3] - raw_box[1])
-                if area >= min_area:
+                box_w = raw_box[2] - raw_box[0]
+                box_h = raw_box[3] - raw_box[1]
+                area = box_w * box_h
+                aspect_ratio = box_w / max(1, box_h)
+                if area >= min_area and MIN_VEHICLE_BOX_ASPECT_RATIO <= aspect_ratio <= MAX_VEHICLE_BOX_ASPECT_RATIO:
                     boxes.append(raw_box)
 
     if not boxes:

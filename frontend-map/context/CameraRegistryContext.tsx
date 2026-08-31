@@ -10,6 +10,7 @@ import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
 import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { getCameraStreamUrl } from '@/lib/stream';
+import { getWebRtcWhepUrl } from '@/lib/webrtc';
 
 // How often every camera (not just the one an officer has open) gets a real
 // reachability check, and how long each check can take before it's counted
@@ -24,6 +25,26 @@ async function probeStreamReachable(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
     return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// WHEP endpoints are cross-origin here (MediaMTX on the Tailscale host, app
+// on localhost) and typically only implement POST, so a plain GET can both
+// CORS-fail and 405 even when the server is fully reachable -- neither is a
+// real "offline" signal. `no-cors` sidesteps both: the response is opaque
+// (we can't and don't need to read it), but fetch() only throws on an
+// actual network-level failure (refused/timeout/DNS), which is exactly the
+// "is this host:port up" signal we want.
+async function probeWebRtcReachable(whepUrl: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+  try {
+    await fetch(whepUrl, { method: 'GET', mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    return true;
   } catch {
     return false;
   } finally {
@@ -195,13 +216,25 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   useEffect(() => {
     let cancelled = false;
 
+    const webrtcBase = process.env.NEXT_PUBLIC_MEDIAMTX_WEBRTC_URL;
+
     const checkAll = async () => {
       const snapshot = camerasRef.current;
       await Promise.allSettled(
         snapshot.map(async (cam) => {
+          // Same transport priority as CameraLivePlayer (WebRTC first, HLS
+          // fallback) -- previously this always checked HLS only, so a
+          // camera playing fine over WebRTC (e.g. Tailscale-only, no
+          // Cloudflare tunnel for HLS) still got flipped to "offline" by
+          // this poller every 20s.
+          const whepUrl = getWebRtcWhepUrl(cam, webrtcBase);
           const stream = getCameraStreamUrl(cam);
-          if (!stream.url) return;
-          const reachable = await probeStreamReachable(stream.url);
+          if (!whepUrl && !stream.url) return;
+
+          const reachable = whepUrl
+            ? (await probeWebRtcReachable(whepUrl)) || (stream.url ? await probeStreamReachable(stream.url) : false)
+            : await probeStreamReachable(stream.url!);
+
           if (!cancelled) updateCameraConnectivity(cam.id, reachable ? 'online' : 'offline');
         })
       );

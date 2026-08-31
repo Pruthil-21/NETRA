@@ -295,7 +295,7 @@ def main():
         default=os.environ.get("VEHICLE_TRACE_RTSP_HOST", "100.105.88.26"),
         help="RTSP host: 100.105.88.26 over Tailscale (default), or 127.0.0.1 if running on Dhruv's Mac directly.",
     )
-    parser.add_argument("--scenario-run-id", default="a76e7ecc-91bd-4d57-b7d1-ba8127c7fb4b")
+    parser.add_argument("--scenario-run-id", default="49881ca6-2e18-4f4b-90e4-bbeaee2c7663")
     parser.add_argument("--process-every-n-frames", type=int, default=10)
     parser.add_argument(
         "--send-to-backend",

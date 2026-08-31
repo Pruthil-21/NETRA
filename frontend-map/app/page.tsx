@@ -1,225 +1,56 @@
 'use client';
 
-import React, { useEffect, useState, useMemo } from 'react';
-import dynamic from 'next/dynamic';
-import { useRouter } from 'next/navigation';
-import { useCameraRegistry } from '../context/CameraRegistryContext';
-import CameraDetailDrawer from '../components/registry/CameraDetailDrawer';
-import CameraFilterBar from '../components/registry/CameraFilterBar';
-import CameraListSkeleton from '../components/registry/CameraListSkeleton';
-import VirtualizedCameraList from '../components/registry/VirtualizedCameraList';
-import AddCameraModal from '../components/registry/AddCameraModal';
-import { Shield, RefreshCw, LogOut, AlertTriangle, Search, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { useCameraRegistry } from '@/context/CameraRegistryContext';
+import { WallControls } from '@/components/wall/WallControls';
+import { WallGrid, WallLayout } from '@/components/wall/WallGrid';
 
-const CameraMap = dynamic(() => import('../components/map/CameraMap'), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-ink text-slate-500 text-xs">
-      <div className="flex flex-col items-center gap-2">
-        <div className="w-6 h-6 border-2 border-command border-t-transparent rounded-full animate-spin" />
-        <span className="font-mono">LOADING GIS ENGINE…</span>
-      </div>
-    </div>
-  ),
-});
+/** The app's home page: continuous multi-feed monitoring, what a dispatcher
+ * actually watches for most of a shift -- the camera inventory/map (asset
+ * lookup, used far less often) lives at /map instead of here. Sources the
+ * same CameraRegistryContext the map uses, so Wall and Map always agree on
+ * what cameras exist; only the presentation differs. */
+export default function VideoWallPage() {
+  const { filteredCameras, isLoading, error } = useCameraRegistry();
+  const [layout, setLayout] = useState<WallLayout>('grid-9');
+  const [searchTerm, setSearchTerm] = useState('');
 
-// Isolated so the once-a-second tick only re-renders this small readout, not
-// the whole dashboard (map, video, virtualized list) — a live clock is a
-// control-room staple, but it must not be the thing that costs frame budget.
-function LiveClock() {
-  // MainDashboard only ever mounts client-side (gated behind the auth check
-  // below), so there's no server-rendered markup for this to mismatch —
-  // safe to seed the real time directly instead of flashing blank first.
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(id);
-  }, []);
+  const visibleCameras = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return filteredCameras;
+    return filteredCameras.filter(
+      (cam) =>
+        cam.name?.toLowerCase().includes(term) ||
+        cam.dept?.toLowerCase().includes(term) ||
+        String(cam.id).toLowerCase().includes(term)
+    );
+  }, [filteredCameras, searchTerm]);
 
   return (
-    <span className="font-mono text-slate-400 tabular-nums">
-      {now.toLocaleTimeString('en-IN', { hour12: false })} IST
-    </span>
-  );
-}
-
-function StatusTicker() {
-  const { cameras } = useCameraRegistry();
-  const counts = useMemo(() => {
-    let online = 0;
-    let offline = 0;
-    for (const cam of cameras) {
-      if ((cam.connectivity_status || 'offline').toLowerCase() === 'online') online++;
-      else offline++;
-    }
-    return { online, offline };
-  }, [cameras]);
-
-  return (
-    <div className="flex items-center gap-3 font-mono">
-      <span className="flex items-center gap-1.5 text-slate-400">
-        <span className="w-1.5 h-1.5 rounded-full bg-signal-green" />
-        {counts.online} ONLINE
-      </span>
-      <span className="flex items-center gap-1.5 text-slate-500">
-        <span className="w-1.5 h-1.5 rounded-full bg-signal-red" />
-        {counts.offline} OFFLINE
-      </span>
-    </div>
-  );
-}
-
-function MainDashboard() {
-  const router = useRouter();
-  const {
-    filteredCameras,
-    selectedCamera,
-    setSelectedCamera,
-    refreshCameras,
-    isLoading,
-    error,
-  } = useCameraRegistry();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [showAddCamera, setShowAddCamera] = useState(false);
-
-  const handleLogout = () => {
-    localStorage.removeItem('netra_authenticated');
-    router.push('/login');
-  };
-
-  return (
-    <div className="h-screen w-screen flex flex-col bg-ink text-slate-100 overflow-hidden">
-      <header className="h-14 border-b border-line px-4 sm:px-6 flex items-center justify-between bg-panel shrink-0">
-        <div className="flex items-center gap-3 min-w-0">
-          <button
-            type="button"
-            aria-label={sidebarOpen ? 'Collapse camera list' : 'Expand camera list'}
-            onClick={() => setSidebarOpen((v) => !v)}
-            className="text-slate-400 hover:text-white p-1.5 rounded hover:bg-panel-raised shrink-0"
-          >
-            {sidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
-          </button>
-          <Shield className="text-command shrink-0" size={20} />
-          <h1 className="font-bold text-sm tracking-wider uppercase text-white truncate">NETRA Command</h1>
+    <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-0 w-full">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-sm font-semibold text-white uppercase tracking-wide">Video Wall</h1>
+          <p className="text-xs text-slate-500">
+            {isLoading ? 'Connecting to camera registry…' : `${filteredCameras.length} camera${filteredCameras.length === 1 ? '' : 's'} registered`}
+          </p>
         </div>
-        <div className="flex items-center gap-4 text-xs shrink-0">
-          <LiveClock />
-          <div className="hidden md:block h-4 w-px bg-line" />
-          <div className="hidden md:block">
-            <StatusTicker />
-          </div>
-          <div className="hidden lg:block h-4 w-px bg-line" />
-          <button
-            onClick={() => setShowAddCamera(true)}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-300 hover:text-white bg-panel-raised rounded border border-line"
-          >
-            <Plus size={13} />
-            <span className="hidden sm:inline">Add Camera</span>
-          </button>
-          <button
-            onClick={() => router.push('/search')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-300 hover:text-white bg-panel-raised rounded border border-line"
-          >
-            <Search size={13} />
-            <span className="hidden sm:inline">Vehicle Search</span>
-          </button>
-          <button
-            onClick={() => refreshCameras()}
-            aria-label="Refresh camera registry"
-            className="p-1.5 text-slate-400 hover:text-white bg-panel-raised rounded border border-line"
-          >
-            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
-          </button>
-          <button
-            onClick={handleLogout}
-            aria-label="Log out"
-            className="p-1.5 text-slate-400 hover:text-signal-red bg-panel-raised rounded border border-line"
-          >
-            <LogOut size={14} />
-          </button>
-        </div>
-      </header>
-
-      <div className="flex-1 flex overflow-hidden relative">
-        <aside
-          className={`shrink-0 h-full flex flex-col bg-panel border-r border-line overflow-hidden transition-[width] duration-200 ${
-            sidebarOpen ? 'w-80' : 'w-0 border-r-0'
-          }`}
-        >
-          <div className="w-80 h-full flex flex-col">
-            <div className="px-3.5 py-3 border-b border-line flex items-center justify-between">
-              <h2 className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">
-                {isLoading ? 'Syncing feeds…' : `${filteredCameras.length} Feeds`}
-              </h2>
-            </div>
-            <CameraFilterBar />
-            {error ? (
-              <div className="flex flex-col items-center text-center gap-2 p-6 text-signal-red">
-                <AlertTriangle size={20} />
-                <p className="text-xs font-semibold">Failed to load camera registry</p>
-                <p className="text-[11px] text-slate-500">{error}</p>
-                <button
-                  onClick={() => refreshCameras()}
-                  className="mt-1 text-[11px] px-2.5 py-1 rounded bg-panel-raised border border-line text-slate-200 hover:text-white"
-                >
-                  Retry
-                </button>
-              </div>
-            ) : isLoading ? (
-              <CameraListSkeleton />
-            ) : filteredCameras.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500">No cameras match the active filters.</div>
-            ) : (
-              <VirtualizedCameraList
-                cameras={filteredCameras}
-                selectedCamera={selectedCamera}
-                onSelect={setSelectedCamera}
-              />
-            )}
-          </div>
-        </aside>
-
-        <section className="flex-1 flex flex-col h-full overflow-hidden">
-          <div className="flex-1 relative">
-            <CameraMap
-              cameras={filteredCameras}
-              selectedCamera={selectedCamera}
-              onSelectCamera={setSelectedCamera}
-            />
-          </div>
-          <CameraDetailDrawer camera={selectedCamera} />
-        </section>
       </div>
 
-      {showAddCamera && <AddCameraModal onClose={() => setShowAddCamera(false)} />}
-    </div>
+      <WallControls layout={layout} setLayout={setLayout} searchTerm={searchTerm} setSearchTerm={setSearchTerm} />
+
+      {isLoading && (
+        <div className="flex items-center justify-center p-16 text-slate-500 text-xs">Loading camera feeds…</div>
+      )}
+
+      {!isLoading && error && (
+        <div className="bg-panel border border-signal-red/40 text-signal-red p-4 rounded mb-4 text-xs">
+          <p className="font-semibold">Organizer registry unavailable</p>
+          <p className="text-slate-500 mt-1">{error} — showing {filteredCameras.length} other camera{filteredCameras.length === 1 ? '' : 's'}.</p>
+        </div>
+      )}
+
+      {!isLoading && <WallGrid cameras={visibleCameras} layout={layout} />}
+    </main>
   );
-}
-
-export default function Page() {
-  const router = useRouter();
-  const [authChecked, setAuthChecked] = useState(false);
-
-  useEffect(() => {
-    const auth = localStorage.getItem('netra_authenticated');
-    if (!auth) {
-      router.replace('/login');
-    } else {
-      // Deliberate: localStorage doesn't exist during SSR, so this can only
-      // be read client-side, after mount — starting authChecked at false and
-      // flipping it here (rather than in a lazy useState initializer) is
-      // what keeps the server-rendered HTML and the first client render
-      // identical and avoids a hydration mismatch.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAuthChecked(true);
-    }
-  }, [router]);
-
-  if (!authChecked) return null;
-
-  // CameraRegistryProvider already wraps the whole app in app/layout.tsx —
-  // nesting a second instance here used to spin up a fresh fetch (and lose
-  // filter/selection state) on every navigation to/from this route.
-  return <MainDashboard />;
 }
