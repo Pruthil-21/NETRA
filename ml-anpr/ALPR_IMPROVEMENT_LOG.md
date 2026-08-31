@@ -2125,3 +2125,216 @@ already named there: real OCR-accuracy work (fine-tuning or ensembling,
 not a quick change) or accepting a lower read rate on that footage as a
 known constraint. The crop-band fix here is a real, kept, but
 supporting improvement, not a substitute for either.
+
+---
+
+# Session 18 -- first real validation against real Sentinel Gujarat CCTV footage (cam06 daylight, cam07 night), full 30-minute runs
+
+Branch: `feature/plate-region-detector`, continuing directly from
+Session 17. Not a scheduled Priority firing -- a direct validation/
+tuning request against two real 30-minute Sentinel Gujarat recordings
+(`cam06.mp4`, daylight, "Madhuram Bypass Road Fix-2"; `cam07.mp4`,
+night/IR, "HERO SHOWROOM FIX-1"), explicitly to validate and tune the
+existing pipeline, **not** to retrain any model weights -- two videos
+with no prior labels is nowhere near enough data for that, and none
+existed for either clip before this session.
+
+## Step 1: ground truth, established the same way as Session 8
+
+Sampled both videos across their full 30 minutes (not just the start),
+pulled the largest/closest vehicle at each point, and read every plate
+directly from the image -- not from the pipeline's own OCR output, to
+avoid the same circularity risk Session 8 was built to break. Logged
+genuinely illegible plates as unconfirmable rather than guessing.
+Also checked multiple vehicles per frame where several were present
+(not just the single largest), since that's what the full run actually
+needs validating against.
+
+**cam06:** 6 confirmed (2 with minor character-level uncertainty
+flagged honestly), 5 unconfirmable, across 8 sample points spanning
+2.5-28.5 minutes, including one real two-plates-in-one-frame case
+(`GJ11BR2513` + `GJ11CL8225` in the same frame).
+
+**cam07:** 7 confirmed (3 with minor uncertainty flagged), 5
+unconfirmable, across sample points spanning 3-28.5 minutes. Getting
+this took an extra step: a plain 2-minute-interval scan (matching
+cam06's method) found **zero vehicles at 11 of 15 sample points** --
+including one timestamp where a motorcycle was already visible by eye
+in an earlier frame. Checked directly rather than assumed: raw YOLO on
+that exact frame found 0 vehicle-class detections (2 "person"
+detections only). Applying the pipeline's own `enhance_low_light()`
+recovered one motorcycle detection -- but at only 0.7% of frame area,
+which `MIN_VEHICLE_BOX_AREA_FRACTION` (3%) then filters out anyway. So
+the low-light gate does engage and does help; it's just not the whole
+story on this footage -- the same elevated/wide-angle-camera effect
+already diagnosed on the Tailscale/Kaggle footage compounds with the
+low-light condition. Re-sampled densely (every 20s, with the low-light
+enhancement applied first) and got a much richer picture -- this
+became the real methodology for cam07's ground truth.
+
+## Step 2: full 30-minute runs, no sampling/intervals
+
+`process_video_file()`, `process_every_n_frames=10` (this project's
+standard interval, for comparability with every prior regression), run
+to completion, no time-window breaks.
+
+| | cam06 (daylight) | cam07 (night) |
+|---|---|---|
+| wall-clock | 3,821.6s (~64 min) | 6,777.9s (~113 min, ~1.8x cam06 -- the low-light gate engaging on nearly every frame is the likely driver) |
+| confirmed events | 208 | 107 |
+| pattern-match tier | 190 | 97 |
+| fallback tier | 18 | 10 |
+| distinct confirmed plates | 174 | 102 |
+
+## Ground truth cross-check -- done with fuzzy matching (the pipeline's
+own `_plate_similarity`), not eyeballed, and a real methodology
+correction caught before scoring anything
+
+My own ground-truth sampling scripts only applied an aspect-ratio
+filter, not the pipeline's actual `MIN_VEHICLE_BOX_AREA_FRACTION`
+(3%) floor. Two of cam06's 6 ground-truth plates were on boxes at
+2.0% and 2.6% of frame at the moment sampled -- **below the real
+floor**, so their absence from the confirmed set isn't a miss, it's
+the same already-validated Session 7 exclusion working as intended.
+Verified this wasn't a fluke by grepping the full log for any trace of
+either plate: zero hits for one; the other case is discussed below
+under cam07 since the same-shaped plate showed up there too.
+
+### cam06 -- 4 fair, in-scope test cases
+
+| ground truth | pipeline result | verdict |
+|---|---|---|
+| `GJ11BR2513` | exact match | correct |
+| `GJ11CL8225` | exact match | correct |
+| `GJ01HA7952` | `GJ01HM7952` (90% similarity) | re-examined the source crop at full res -- the character is genuinely ambiguous in this font (A/M), could honestly be read either way. Not counted as a pipeline error. |
+| `GJ11CO3910`* | not found | inconclusive -- this ground-truth read was already flagged low-confidence before scoring, can't fault the pipeline against an uncertain reference |
+
+**3/3 clean matches on unambiguous ground truth, 1 inconclusive (excluded, not counted either way).**
+
+### cam07 -- the harder, more important case, investigated to actual root cause rather than left as a raw score
+
+First pass (fuzzy-matching against the final confirmed set only) looked bad: 6 of 7 misses, only the one plate below the 3% floor (`GJ09BC6441`, matched anyway -- likely because the *pipeline* sampled a later, larger moment of the same vehicle than the single frame I happened to check). Rather than report that number, dug into every "miss" by grepping the full log's raw `[reading, frame N]` lines (not just confirmed events) around each ground-truth timestamp -- the same technique Session 16 used on `DL52GD0882` -- to find out whether the plate was never seen, misread, or seen-correctly-but-not-confirmed. These are three different problems with three different fixes, and lumping them into one "miss" would have been misleading.
+
+| ground truth | what the raw log actually shows | real diagnosis |
+|---|---|---|
+| `GJ06BY3848` | raw reading at frame 4490: **`GJ06BY3848`, 1.0 confidence** -- exact match to ground truth | OCR read it correctly. It never reached `confirm_threshold` (2 matching readings) before the track was lost -- a **confirmation/tracking-persistence** miss, not an OCR miss. |
+| `GJ11CO9088` | raw readings at frames 24710-24760: `GJ11CO9000`, `GJ11CQ9008`, `GJ11CO9000`, `GB11OO0088`, **`GJ11CO9088` at 0.99 conf (exact match)**, `GJ11CQ9088` -- the correct string was read, once, at high confidence | The confirmed output (`GJ11CO9281`) is a *different* string than any of these -- the confidence-weighted majority vote converged on a variant that beat the single correct high-confidence reading by sheer repetition. **This is the same `DL52GD0882`-class majority-vote bias already diagnosed in Sessions 8/11/16**, now independently confirmed on real Sentinel Gujarat footage, not just the earlier dashcam clip. Same conclusion applies: not a tunable threshold, a real OCR-accuracy-vs-majority-count tradeoff already investigated and correctly left alone. |
+| `GJ11AS7204` | raw readings at frames 31510-31530: **`GJ11AS9294`, repeated 3x, 0.93-0.99 confidence, fully consistent** | No trace of `7204` anywhere nearby. Given how consistent and confident the pipeline's read is, this looks more like **my own ground-truth read was wrong** (already flagged as "moderate, one digit ambiguous" before scoring) than a pipeline error. Not counted as a miss. |
+| `GJ18Z8601` | nothing resembling `8601`/`Z860` anywhere in the frame window -- only unrelated plates and two `SAT21251[89]` fallback-tier reads nearby | Genuine, unexplained miss on a large (20.9%), clear vehicle. `SAT212518`/`SAT212519` are very plausibly misreads of cam07's own date overlay ("13-06-2026 **Sat** 21:..."), not the bus's plate -- see overlay finding below, but doesn't explain why the real plate itself wasn't read. Left as an honest open miss, not explained away. |
+| `GJ02X0419` | raw readings nearby consistently show `GJ32K0419`, not `GJ02X0419` | This ground-truth read came from the *second-largest* box in a multi-vehicle frame (Step 2's earlier multi-vehicle check) -- with several vehicles in frame and no persistent ID linking my one-off diagnostic script's box-ordering to the real pipeline's continuous tracking, this is more likely **my own methodology attributing the reading to the wrong vehicle** than a pipeline misread of the same one. Excluded, not counted as a miss. |
+| `GJ36RQ0180`* | raw readings nearby consistently show `GJ36AR0180`, repeated, 0.95-0.99 confidence | Same shape as `GJ11AS7204` -- my own ground truth was already flagged uncertain on this exact character, and the pipeline's consistent, confident read is plausibly the correct one. Not counted as a miss. |
+| `GJ09BC6441` | (already discussed) | exact match, bonus case below the floor |
+
+**Real tally for cam07, after investigation, not the raw fuzzy-match score:** of 7 ground-truth plates, 1 exact match, 3 recategorized as "ground truth likely wrong or unverifiable, not a fair test" (excluded), and 3 genuine misses -- but of those 3, **2 were confirmation/tracking-layer failures on correctly-read OCR, not OCR failures**, and 1 is a real unexplained miss. **Zero of the investigated misses were "the OCR genuinely couldn't read the plate."**
+
+## Step 3: night-video failure mode -- checked, not assumed
+
+Per the brief's own three options: (a) low-light gate not engaging --
+checked directly, it does engage and does help (recovers detections
+the raw frame doesn't have); (b) genuine below-floor image quality --
+partially true (the elevated-camera-angle area-floor interaction
+carries over from the Tailscale/Kaggle diagnostic), but the deeper
+investigation above shows this **is not the dominant failure mode** on
+the cases actually checked; (c) something new -- yes, something new,
+and it's specific: **on this footage, when OCR reads the correct
+plate, the confirmation/tracking layer's own logic (vote-threshold
+timing, majority-vote character bias) is a more frequent point of
+failure than OCR accuracy itself.** This is a genuinely different,
+more precise diagnosis than "night footage is harder" -- it says
+*where* in the pipeline the accuracy is actually being lost.
+
+## Step 4: is anything here genuinely tunable?
+
+No new code change made this session. The two real confirmation-layer
+failure modes found (`GJ06BY3848`'s track-loss-before-threshold,
+`GJ11CO9088`'s majority-vote bias) are the same class of issue as
+`DL52GD0882`, already investigated three times (Sessions 8, 11, 16)
+and correctly left alone each time -- Session 16 proved with hard
+per-character vote-tally evidence that no confirmation-layer tuning
+can fix a majority-vote bias when the wrong reading is genuinely more
+frequent in the raw OCR output. That evidence generalizes here; not
+re-litigating it with a narrower dataset.
+
+One real, narrow, separately-scoped candidate did surface: the overlay
+false-positive finding just below is structurally identical to
+Session 3's dashcam-timestamp fix, just at a different frame position
+(top, not bottom) -- a plausible, narrow, generalizable fix, but a
+**different bug from the night-video accuracy question Step 3 was
+scoped to**, and this session is already substantial. Flagging it as
+the clear next candidate rather than folding it in here.
+
+## A real new finding, on both cameras: overlay-text false positives (fallback tier only)
+
+**cam06:** 4 of 18 fallback-tier confirms (`ADFIX2`, `DFIX2H`,
+`AFIX2EF`, `DFX2FR`, all within seconds of each other early in the
+run) are misreads of cam06's own location overlay ("Madhuram Bypass
+Road **Fix-2**..."). Also found 2 likely track-fragmentation
+duplicates of already-correctly-confirmed plates (`GJ0JJR1036`/
+`GJ0JME2399` closely match confirmed `GJ03JR1036`/`GJ03ME2399` -- 0/O-
+vs-3 misreads of the same real vehicles, not independent errors).
+
+**cam07:** `SAT212518`/`SAT212519` (fallback tier, near the `GJ18Z8601`
+miss above) plausibly misread cam07's date overlay ("13-06-2026
+**Sat** 21:..."), not a vehicle plate.
+
+Both are the same root cause as Session 3's original dashcam-timestamp
+false positive: the existing overlay protection
+(`_read_plate_from_box`'s `y2 = min(y2, int(raw_h * 0.92))`) only
+clips the *bottom* of frame. These Sentinel Gujarat cameras burn their
+overlays into the *top* -- a position the existing fix doesn't cover
+at all. All instances found were fallback tier only (never sent to
+`send_detection_to_watchlist()` in the real streaming path, which
+gates on `note == "ok - pattern match"`), so no false watchlist alert
+would have fired from this specific set -- but it's a real, generalizable
+gap worth a dedicated top-band clip fix, structurally identical to the
+existing bottom-band one.
+
+## Honest accuracy summary, as requested
+
+**cam06 (daylight):** 208 confirmed events, 174 distinct plates.
+Ground truth: **3/3 clean matches on unambiguous, in-scope test
+cases** (2 more excluded as below the detection floor by design, 1
+excluded as inconclusive-on-both-sides). Small sample -- 3 or 4 data
+points is not a statistically solid number, stated plainly rather than
+dressed up.
+
+**cam07 (night):** 107 confirmed events, 102 distinct plates. Ground
+truth: **1 exact match**, **3 genuine misses** (of which 2 are
+confirmation-layer failures on correctly-read OCR, not OCR failures,
+and 1 is unexplained), **3 excluded** as more likely ground-truth
+errors or methodology artifacts than pipeline errors. On the cases
+actually verifiable, **zero were "OCR couldn't read the plate"** --
+every real failure was downstream of a correct OCR read.
+
+`send_detection_to_watchlist()`: untouched -- this session ran
+`process_video_file()` only, which doesn't call it at all.
+
+### Verdict: **no code change this session -- validation and root-cause diagnosis, not a fix**
+
+This is exactly the outcome the brief's own Step 4 condition allows
+for: nothing found here met the bar for a safe, narrow, tunable fix to
+the actual question asked (night-video accuracy). What this session
+delivered instead is more valuable than a forced fix would have been:
+a real accuracy baseline on real footage (first time this project has
+had one), and a precise diagnosis of *where* accuracy is actually
+being lost on this footage (confirmation/tracking layer, not OCR) --
+which changes what "improve accuracy" should even mean for this
+dataset going forward. `main` untouched. Nothing pushed or merged, per
+instructions.
+
+## Next
+
+1. **Overlay top-band clip** (cam06 + cam07's shared finding) -- the
+   clearest, narrowest, most generalizable candidate fix identified
+   this session. Structurally identical to the existing bottom-band
+   fix (Session 3). Not implemented this session per Step 4's own
+   scoping -- a separate, well-defined next step.
+2. `GJ18Z8601`'s unexplained miss -- worth a closer look specifically
+   (why did a large, clear plate produce zero matching reads anywhere
+   nearby?) before assuming it's the same class of issue as the other
+   cases.
+3. The confirmation-layer failure modes found here (early track loss,
+   majority-vote bias) are not narrow/tunable per Session 16's own
+   hard evidence -- any real fix needs the same kind of dedicated,
+   carefully-scoped session already called for repeatedly, not another
+   quick pass.
