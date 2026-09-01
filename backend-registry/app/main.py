@@ -5,19 +5,23 @@ from pydantic import ValidationError
 
 from .auth import get_current_user, require_role
 from .db import get_conn
+from .logging_config import configure_logging, logger
 from .schemas import (
     CameraBulkResult,
     CameraCreate,
     CameraOut,
     CameraUpdate,
+    CameraUptimeReport,
     ReportSummary,
 )
 from .services import audit_service, cameras_service, reports_service
 
+configure_logging()
+
 app = FastAPI()
 
 # Browser clients (frontend-dashboard, frontend-map) send an Authorization
-# header cross-origin, which forces a CORS preflight (OPTIONS) — without this,
+# header cross-origin, which forces a CORS preflight (OPTIONS) -- without this,
 # FastAPI has no route for OPTIONS and rejects it with 405 before the real
 # request is ever sent.
 app.add_middleware(
@@ -59,7 +63,7 @@ def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
 
 @app.post("/cameras/bulk", response_model=list[CameraBulkResult])
 def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"))):
-    """Validates and inserts each row independently — one bad row reports an
+    """Validates and inserts each row independently -- one bad row reports an
     error for its own index instead of failing the whole batch."""
     results = []
     with get_conn() as conn:
@@ -95,11 +99,32 @@ def reports_summary(user=Depends(get_current_user)):
 @app.put("/cameras/{camera_id}", response_model=CameraOut)
 def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_role("officer"))):
     with get_conn() as conn:
-        updated = cameras_service.update_camera(conn, camera_id, camera.model_dump(exclude_unset=True))
+        fields = camera.model_dump(exclude_unset=True)
+        updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+
+        non_connectivity_fields = {k for k in fields if k != "connectivity_status"}
+        if non_connectivity_fields:
+            audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+        if connectivity_changed:
+            logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
+
         return updated
+
+
+@app.get("/cameras/{camera_id}/uptime", response_model=CameraUptimeReport)
+def camera_uptime(camera_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        camera = cameras_service.get_camera(conn, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        windows = cameras_service.get_uptime_windows(conn, camera_id)
+        return {
+            "camera_id": camera_id,
+            "current_status": camera["connectivity_status"],
+            "windows": windows,
+        }
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)
