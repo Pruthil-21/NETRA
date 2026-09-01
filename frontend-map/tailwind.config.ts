@@ -21,6 +21,15 @@ const config: Config = {
           green: '#22C55E',
           red: '#EF4444',
         },
+        // Ported 1:1 from frontend-dashboard/tailwind.config.js -- the
+        // Dashboard page's components (components/dashboard/*, AlertBanner,
+        // AlertLog, HlsPlayer) reference these class names directly, so they
+        // need to exist for that page to render as designed.
+        brand: {
+          dark: '#0b0f19',
+          card: '#111827',
+          border: '#1f2937',
+        },
       },
       fontFamily: {
         sans: ['var(--font-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
