@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-psycopg[binary]
+psycopg[binary,pool]
 python-dotenv
 pyjwt
 certifi
