@@ -25,7 +25,7 @@ const CameraMap = dynamic(
 );
 
 /** Investigative tool: "where has this plate been seen" -- reached
- * on-demand (a lead comes in), unlike the Video Wall's continuous
+ * on-demand (a lead comes in), unlike the Dashboard's continuous
  * monitoring. Nav/auth/header live in the shared AppShell. */
 export default function VehicleSearchPage() {
   const { cameras, isLoading, error } = useCameraRegistry();

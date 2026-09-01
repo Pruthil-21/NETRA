@@ -11,12 +11,11 @@ import { TEST_FEEDS } from "@/config/streams";
 
 type StatusFilter = CameraFeed["status"] | "all";
 
-// Ported from frontend-dashboard (previously its own app on :3001) as the
-// literal page an officer actually preferred over the newer Video Wall (now
-// at /wall) -- same components, same behavior, just running inside this
-// app/port instead of a second one. The only deliberate change: no page-own
-// <Header> here, since AppShell already renders one persistent top bar
-// (branding, live clock, online/offline ticker, alerts bell) for every
+// Ported from frontend-dashboard (previously its own app on :3001), now this
+// app's home page -- same components, same behavior, just running inside
+// this app/port instead of a second one. The only deliberate change: no
+// page-own <Header> here, since AppShell already renders one persistent top
+// bar (branding, live clock, online/offline ticker, alerts bell) for every
 // route -- stacking a second one under it would just be a duplicate banner.
 export default function DashboardPage() {
   const { feeds, loading, error, refetch } = useCameraFeeds();
