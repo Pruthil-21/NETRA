@@ -247,7 +247,14 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
           // this poller every 20s.
           const whepUrl = getWebRtcWhepUrl(cam, webrtcBase);
           const stream = getCameraStreamUrl(cam);
-          if (!whepUrl && !stream.url) return;
+          // No stream_id/hls_url provisioned at all means there is nothing that could
+          // ever be live -- report offline instead of leaving the registry's possibly
+          // stale/manually-set connectivity_status in place forever (this poller
+          // otherwise never touches these cameras again).
+          if (!whepUrl && !stream.url) {
+            if (!cancelled) updateCameraConnectivity(cam.id, 'offline');
+            return;
+          }
 
           const reachable = whepUrl
             ? (await probeWebRtcReachable(whepUrl)) || (stream.url ? await probeStreamReachable(stream.url) : false)
