@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
@@ -10,6 +10,11 @@ import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
 import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
+import { getCameraStreamUrl } from '@/lib/stream';
+
+// Hold the hover this long before the popup grows into a live preview — long
+// enough that scanning past several markers doesn't spin up a decoder per pin.
+const HOVER_PREVIEW_DELAY_MS = 2000;
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -140,6 +145,41 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     [sightingPoints]
   );
 
+  // Which marker's popup should render the live preview -- only ever one at a
+  // time, since only one marker can be hovered. The Leaflet marker instances
+  // themselves are refs (not React state) so opening/closing a popup on hover
+  // doesn't need a re-render just to call .openPopup()/.closePopup().
+  const [previewingCameraId, setPreviewingCameraId] = useState<number | null>(null);
+  const markerRefs = useRef<Map<number, L.Marker>>(new Map());
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimerRef.current) {
+      clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = null;
+    }
+  }, []);
+
+  const handleMarkerHoverStart = useCallback(
+    (camId: number) => {
+      markerRefs.current.get(camId)?.openPopup();
+      clearHoverTimer();
+      hoverTimerRef.current = setTimeout(() => setPreviewingCameraId(camId), HOVER_PREVIEW_DELAY_MS);
+    },
+    [clearHoverTimer]
+  );
+
+  const handleMarkerHoverEnd = useCallback(
+    (camId: number) => {
+      clearHoverTimer();
+      setPreviewingCameraId((current) => (current === camId ? null : current));
+      markerRefs.current.get(camId)?.closePopup();
+    },
+    [clearHoverTimer]
+  );
+
+  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+
   return (
     <div className="relative w-full h-full">
       {sightingPoints.length > 0 && (
@@ -174,14 +214,25 @@ export const CameraMap: React.FC<CameraMapProps> = ({
             return (
               <Marker
                 key={cam.id}
+                ref={(marker) => {
+                  if (marker) markerRefs.current.set(cam.id, marker);
+                  else markerRefs.current.delete(cam.id);
+                }}
                 position={[cam.lat, longitude]}
                 icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
                 eventHandlers={{
                   click: () => onSelectCamera(cam),
+                  mouseover: () => handleMarkerHoverStart(cam.id),
+                  mouseout: () => handleMarkerHoverEnd(cam.id),
                 }}
               >
                 <Popup className="dark-gis-popup">
-                  <MapPopupCard camera={cam} onInspect={() => onSelectCamera(cam)} />
+                  <MapPopupCard
+                    camera={cam}
+                    onInspect={() => onSelectCamera(cam)}
+                    isPreviewing={previewingCameraId === cam.id}
+                    previewSrc={previewingCameraId === cam.id ? getCameraStreamUrl(cam).url : null}
+                  />
                 </Popup>
               </Marker>
             );

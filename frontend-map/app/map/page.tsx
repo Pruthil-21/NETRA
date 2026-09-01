@@ -24,7 +24,7 @@ const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
 
 /** Camera inventory + coverage map -- "where are my assets and what shape
  * are they in," an on-demand lookup rather than something an officer stares
- * at continuously (that's the Video Wall, now the app's home page). Nav,
+ * at continuously (that's the Dashboard, the app's home page). Nav,
  * auth, and the global header live in the shared AppShell; this page owns
  * only what's specific to it: the sidebar toggle, filters, and Add Camera. */
 export default function MapPage() {
