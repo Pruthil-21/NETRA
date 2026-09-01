@@ -9,6 +9,7 @@ import Badge from '@/components/common/Badge';
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
   const { updateCameraConnectivity } = useCameraRegistry();
+  const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera?.id ?? null);
 
   if (!camera) {
     return <div className="p-4 text-xs text-slate-500">No camera selected. Pick one from the list or the map.</div>;
@@ -19,7 +20,6 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
   // with a resolvable stream gets a real connection attempt when selected.
   const stream = getCameraStreamUrl(camera);
   const isOnline = (camera.connectivity_status || 'offline').toLowerCase() === 'online';
-  const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera.id);
 
   return (
     <div className="flex flex-col sm:flex-row bg-panel border-t border-line">

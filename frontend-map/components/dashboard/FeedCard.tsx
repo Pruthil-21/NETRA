@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
 import { useInView } from "@/hooks/useInView";
-import { createHoverGraceController } from "@/lib/hoverGrace";
+import { createHoverGraceController, HoverGraceController } from "@/lib/hoverGrace";
 import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
 
 // hls.js is a large dependency only needed once a tile actually starts playing
@@ -68,8 +68,9 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = f
     startPlayingRef.current = startPlaying;
   }, [startPlaying]);
 
-  const hoverController = useRef(
-    createHoverGraceController(
+  const hoverControllerRef = useRef<HoverGraceController | null>(null);
+  if (!hoverControllerRef.current) {
+    hoverControllerRef.current = createHoverGraceController(
       HOVER_PLAY_DELAY_MS,
       HOVER_LEAVE_GRACE_MS,
       () => setIsPlaying(true),
@@ -79,8 +80,9 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = f
         // tear down on mouse-leave.
         if (!startPlayingRef.current) setIsPlaying(false);
       }
-    )
-  ).current;
+    );
+  }
+  const hoverController = hoverControllerRef.current;
 
   const handleMouseEnter = useCallback(() => hoverController.hoverStart(), [hoverController]);
   const handleMouseLeave = useCallback(() => hoverController.hoverEnd(), [hoverController]);
