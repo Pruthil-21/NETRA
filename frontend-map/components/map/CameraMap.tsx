@@ -11,10 +11,15 @@ import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
 import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
 import { getCameraStreamUrl } from '@/lib/stream';
+import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
 const HOVER_PREVIEW_DELAY_MS = 2000;
+// Once previewing, keep the decoder alive this long after the mouse leaves the
+// marker before actually tearing it down -- panning across the map often clips
+// past a marker's icon briefly on the way to another one.
+const HOVER_PREVIEW_GRACE_MS = 1200;
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -169,34 +174,49 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     }
     return cb;
   }, []);
-  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const clearHoverTimer = useCallback(() => {
-    if (hoverTimerRef.current) {
-      clearTimeout(hoverTimerRef.current);
-      hoverTimerRef.current = null;
+  // One hover-grace controller per camera id, created lazily on first hover and
+  // reused after -- mirrors the per-marker-ref cache above for the same reason
+  // (this component manages every marker from one instance, so per-marker state
+  // lives in a Map rather than one-hook-per-marker).
+  const hoverControllers = useRef<Map<number, HoverGraceController>>(new Map());
+  const getHoverController = useCallback((camId: number) => {
+    let controller = hoverControllers.current.get(camId);
+    if (!controller) {
+      controller = createHoverGraceController(
+        HOVER_PREVIEW_DELAY_MS,
+        HOVER_PREVIEW_GRACE_MS,
+        () => setPreviewingCameraId(camId),
+        () => {
+          setPreviewingCameraId((current) => (current === camId ? null : current));
+          markerRefs.current.get(camId)?.closePopup();
+        }
+      );
+      hoverControllers.current.set(camId, controller);
     }
+    return controller;
   }, []);
 
   const handleMarkerHoverStart = useCallback(
     (camId: number) => {
       markerRefs.current.get(camId)?.openPopup();
-      clearHoverTimer();
-      hoverTimerRef.current = setTimeout(() => setPreviewingCameraId(camId), HOVER_PREVIEW_DELAY_MS);
+      getHoverController(camId).hoverStart();
     },
-    [clearHoverTimer]
+    [getHoverController]
   );
 
   const handleMarkerHoverEnd = useCallback(
     (camId: number) => {
-      clearHoverTimer();
-      setPreviewingCameraId((current) => (current === camId ? null : current));
-      markerRefs.current.get(camId)?.closePopup();
+      getHoverController(camId).hoverEnd();
     },
-    [clearHoverTimer]
+    [getHoverController]
   );
 
-  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+  useEffect(
+    () => () => {
+      hoverControllers.current.forEach((controller) => controller.cancel());
+    },
+    []
+  );
 
   return (
     <div className="relative w-full h-full">
