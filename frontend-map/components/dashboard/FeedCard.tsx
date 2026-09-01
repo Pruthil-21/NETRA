@@ -1,9 +1,17 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
-import { HlsPlayer } from "@/components/player/HlsPlayer";
 import { useInView } from "@/hooks/useInView";
 import { createHoverGraceController } from "@/lib/hoverGrace";
 import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
+
+// hls.js is a large dependency only needed once a tile actually starts playing
+// (hover-hold or click) -- code-split it out of the Dashboard's initial bundle
+// the same way CameraMap is already split out of /map and /search for leaflet.
+const HlsPlayer = dynamic(
+  () => import("@/components/player/HlsPlayer").then((mod) => mod.HlsPlayer),
+  { ssr: false, loading: () => <div className="w-full h-full bg-black" /> }
+);
 
 // Hover this long before a preview starts -- a quick mouse pass-over
 // shouldn't spin up a decoder. Click always skips the wait.
