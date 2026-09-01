@@ -151,6 +151,24 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // doesn't need a re-render just to call .openPopup()/.closePopup().
   const [previewingCameraId, setPreviewingCameraId] = useState<number | null>(null);
   const markerRefs = useRef<Map<number, L.Marker>>(new Map());
+  // One stable ref-callback per camera id, reused across renders -- without this,
+  // the inline arrow passed to each <Marker ref={...}> below is a brand-new function
+  // every render, which makes React detach-then-reattach every marker's ref on every
+  // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
+  // background connectivity poller in CameraRegistryContext, whether or not this
+  // specific camera's own data changed).
+  const markerRefCallbacks = useRef<Map<number, (marker: L.Marker | null) => void>>(new Map());
+  const getMarkerRefCallback = useCallback((camId: number) => {
+    let cb = markerRefCallbacks.current.get(camId);
+    if (!cb) {
+      cb = (marker) => {
+        if (marker) markerRefs.current.set(camId, marker);
+        else markerRefs.current.delete(camId);
+      };
+      markerRefCallbacks.current.set(camId, cb);
+    }
+    return cb;
+  }, []);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearHoverTimer = useCallback(() => {
@@ -214,10 +232,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
             return (
               <Marker
                 key={cam.id}
-                ref={(marker) => {
-                  if (marker) markerRefs.current.set(cam.id, marker);
-                  else markerRefs.current.delete(cam.id);
-                }}
+                ref={getMarkerRefCallback(cam.id)}
                 position={[cam.lat, longitude]}
                 icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
                 eventHandlers={{
