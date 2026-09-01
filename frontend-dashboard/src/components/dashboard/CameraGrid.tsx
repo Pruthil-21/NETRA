@@ -43,6 +43,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectF
           key={feed.id}
           feed={feed}
           onFocus={onSelectFocus && layout !== "focus" ? () => onSelectFocus(feed.id) : undefined}
+          startPlaying={layout === "focus"}
         />
       ))}
     </div>

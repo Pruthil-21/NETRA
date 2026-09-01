@@ -1,13 +1,20 @@
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CameraFeed } from "@/types/stream";
 import { HlsPlayer } from "@/components/player/HlsPlayer";
 import { useInView } from "@/hooks/useInView";
-import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, LucideIcon } from "lucide-react";
+import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
+
+// Hover this long before a preview starts -- a quick mouse pass-over
+// shouldn't spin up a decoder. Click always skips the wait.
+const HOVER_PLAY_DELAY_MS = 2000;
 
 interface FeedCardProps {
   feed: CameraFeed;
   /** Present only when this card should offer a "focus this camera" affordance. */
   onFocus?: () => void;
+  /** True when this card is the single camera an officer explicitly selected (focus
+   * layout) -- that click already is the "play this" action, so skip the hover gate. */
+  startPlaying?: boolean;
 }
 
 const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: string; icon: LucideIcon }> = {
@@ -17,7 +24,7 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
   OFFLINE: { label: "OFFLINE", className: "bg-gray-900 border-gray-700 text-gray-400", icon: VideoOff },
 };
 
-export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus }) => {
+export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
   // UNKNOWN cameras aren't confirmed dead — still worth attempting playback; useHls's
   // own error handling covers the case where there's genuinely nothing there.
   const isPlayable = feed.status !== "OFFLINE";
@@ -30,8 +37,47 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus }) => {
   // laptops or constrained connections.
   const [containerRef, inView] = useInView<HTMLDivElement>();
 
+  // The streaming relay can only hold ~6 concurrent HLS decoders reliably (per the
+  // streaming engineer -- more than that and playlists start taking 25s+ to load).
+  // So playback is opt-in per tile: hover 3s or click to start, mouse-leave tears the
+  // player down again. Badges/status still update on their own via the registry poll
+  // in useCameraFeeds regardless of whether a tile is actively playing.
+  const [isPlaying, setIsPlaying] = useState(startPlaying);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearHoverTimer = useCallback(() => {
+    if (hoverTimer.current) {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    clearHoverTimer();
+    hoverTimer.current = setTimeout(() => setIsPlaying(true), HOVER_PLAY_DELAY_MS);
+  }, [clearHoverTimer]);
+
+  const handleMouseLeave = useCallback(() => {
+    clearHoverTimer();
+    // A deliberately-focused single camera stays playing when the mouse wanders off
+    // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
+    // tear down on mouse-leave.
+    if (!startPlaying) setIsPlaying(false);
+  }, [clearHoverTimer, startPlaying]);
+
+  const handleClick = useCallback(() => {
+    clearHoverTimer();
+    setIsPlaying(true);
+  }, [clearHoverTimer]);
+
+  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+
   return (
-    <div className="bg-brand-card border border-brand-border rounded-lg overflow-hidden flex flex-col shadow-lg">
+    <div
+      className={`bg-brand-card border border-brand-border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
+        isPlaying ? 'scale-[1.06] shadow-2xl relative z-10' : 'scale-100'
+      }`}
+    >
       <div className="p-3 border-b border-brand-border flex items-center justify-between bg-gray-900/40">
         <div>
           <h3 className="font-semibold text-sm text-gray-100">{feed.name}</h3>
@@ -70,17 +116,28 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus }) => {
           )}
         </div>
       </div>
-      <div ref={containerRef} className="relative aspect-video w-full bg-black">
+      <div
+        ref={containerRef}
+        className="relative aspect-video w-full bg-black cursor-pointer"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onClick={handleClick}
+      >
         {!isPlayable ? (
           <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
             <VideoOff className="w-8 h-8" />
             <span className="text-xs text-gray-500">Feed unavailable</span>
           </div>
-        ) : inView ? (
-          <HlsPlayer src={feed.hlsUrl} />
-        ) : (
+        ) : !inView ? (
           <div className="w-full h-full flex items-center justify-center text-gray-700 text-xs">
             Scroll into view to load feed…
+          </div>
+        ) : isPlaying ? (
+          <HlsPlayer src={feed.hlsUrl} />
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
+            <Play className="w-8 h-8" />
+            <span className="text-xs text-gray-500">Hover or click to play live feed</span>
           </div>
         )}
       </div>

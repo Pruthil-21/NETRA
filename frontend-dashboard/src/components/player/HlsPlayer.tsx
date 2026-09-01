@@ -27,7 +27,6 @@ export const HlsPlayer: React.FC<HlsPlayerProps> = ({ src, autoPlay = true, mute
       <video
         ref={videoRef}
         className="w-full h-full object-cover"
-        controls
         playsInline
         autoPlay={autoPlay}
         muted={muted}
