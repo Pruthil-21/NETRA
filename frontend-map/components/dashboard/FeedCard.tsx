@@ -2,11 +2,17 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CameraFeed } from "@/types/stream";
 import { HlsPlayer } from "@/components/player/HlsPlayer";
 import { useInView } from "@/hooks/useInView";
+import { createHoverGraceController } from "@/lib/hoverGrace";
 import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
 
 // Hover this long before a preview starts -- a quick mouse pass-over
 // shouldn't spin up a decoder. Click always skips the wait.
 const HOVER_PLAY_DELAY_MS = 2000;
+// Once playing, keep playing this long after the mouse leaves before actually
+// tearing the decoder down -- a quick re-hover (scanning across the grid, briefly
+// crossing back onto this tile) shouldn't restart Hls.js from a cold manifest
+// fetch every time.
+const HOVER_LEAVE_GRACE_MS = 1200;
 
 interface FeedCardProps {
   feed: CameraFeed;
@@ -46,34 +52,33 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = f
   // player down again. Badges/status still update on their own via the registry poll
   // in useCameraFeeds regardless of whether a tile is actively playing.
   const [isPlaying, setIsPlaying] = useState(startPlaying);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // startPlaying can flip while this controller is alive (an officer double-clicking
+  // into focus mode) -- read via a ref inside onEnd so that closure always sees the
+  // current value instead of the one captured when the controller was created.
+  const startPlayingRef = useRef(startPlaying);
+  useEffect(() => {
+    startPlayingRef.current = startPlaying;
+  }, [startPlaying]);
 
-  const clearHoverTimer = useCallback(() => {
-    if (hoverTimer.current) {
-      clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-  }, []);
+  const hoverController = useRef(
+    createHoverGraceController(
+      HOVER_PLAY_DELAY_MS,
+      HOVER_LEAVE_GRACE_MS,
+      () => setIsPlaying(true),
+      () => {
+        // A deliberately-focused single camera stays playing when the mouse wanders off
+        // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
+        // tear down on mouse-leave.
+        if (!startPlayingRef.current) setIsPlaying(false);
+      }
+    )
+  ).current;
 
-  const handleMouseEnter = useCallback(() => {
-    clearHoverTimer();
-    hoverTimer.current = setTimeout(() => setIsPlaying(true), HOVER_PLAY_DELAY_MS);
-  }, [clearHoverTimer]);
+  const handleMouseEnter = useCallback(() => hoverController.hoverStart(), [hoverController]);
+  const handleMouseLeave = useCallback(() => hoverController.hoverEnd(), [hoverController]);
+  const handleClick = useCallback(() => hoverController.forceStart(), [hoverController]);
 
-  const handleMouseLeave = useCallback(() => {
-    clearHoverTimer();
-    // A deliberately-focused single camera stays playing when the mouse wanders off
-    // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
-    // tear down on mouse-leave.
-    if (!startPlaying) setIsPlaying(false);
-  }, [clearHoverTimer, startPlaying]);
-
-  const handleClick = useCallback(() => {
-    clearHoverTimer();
-    setIsPlaying(true);
-  }, [clearHoverTimer]);
-
-  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+  useEffect(() => hoverController.cancel, [hoverController]);
 
   return (
     <div
