@@ -20,6 +20,30 @@ import { authHeaders } from '@/lib/apiAuth';
 // `organizer-cam01`..`organizer-cam30`). GET /cameras always requires a bearer
 // token (any role), same as the rest of the registry API -- see
 // backend-registry/app/auth.py.
+// The cameras array is assembled from four independent sources (registry API,
+// manually-entered, the fixed test rig, the fixed vehicle-trace demo) that don't
+// know about each other's ids. TEST_CCTV_CAMERAS (9000+) and VEHICLE_TRACE_DEMO_CAMERAS
+// (101-103) are *reserved* ranges by convention, but nothing enforced that against
+// the registry's own auto-incrementing ids -- which is exactly how registry cameras
+// landed on 101/102/103 once already, producing a duplicate React key crash on every
+// map/marker render. This dedupes by id, keeping the *last* occurrence -- callers
+// list the reserved/fixed arrays last specifically so they always win a collision
+// over a same-id registry/manual entry, never the other way around.
+function mergeCameraSources(...sources: Camera[][]): Camera[] {
+  const byId = new Map<number, Camera>();
+  for (const source of sources) {
+    for (const cam of source) {
+      if (byId.has(cam.id) && process.env.NODE_ENV !== 'production') {
+        console.warn(
+          `[CameraRegistryContext] duplicate camera id ${cam.id} ("${byId.get(cam.id)!.name}" vs "${cam.name}") -- keeping the latter, dropping the former`
+        );
+      }
+      byId.set(cam.id, cam);
+    }
+  }
+  return Array.from(byId.values());
+}
+
 async function fetchRegistryCameras(): Promise<Camera[]> {
   const base = process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000';
   const res = await fetch(`${base}/cameras`, { headers: authHeaders(), cache: 'no-store' });
@@ -120,12 +144,14 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     }
     const manual = loadManualCameras();
     setManualCameras(manual);
-    setCameras([
-      ...registryCameras,
-      ...manual.map(organizerCameraToCamera),
-      ...TEST_CCTV_CAMERAS,
-      ...VEHICLE_TRACE_DEMO_CAMERAS,
-    ]);
+    setCameras(
+      mergeCameraSources(
+        registryCameras,
+        manual.map(organizerCameraToCamera),
+        TEST_CCTV_CAMERAS,
+        VEHICLE_TRACE_DEMO_CAMERAS
+      )
+    );
     setIsLoading(false);
   }, []);
 
@@ -138,7 +164,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     saveManualCameras(updatedManual);
     setCameras((prev) => {
       const withoutOldManual = prev.filter((c) => c.id < 8000 || c.id > 8999);
-      return [...withoutOldManual, ...updatedManual.map(organizerCameraToCamera)];
+      return mergeCameraSources(withoutOldManual, updatedManual.map(organizerCameraToCamera));
     });
   }, []);
 
