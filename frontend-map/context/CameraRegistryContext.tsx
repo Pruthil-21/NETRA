@@ -10,6 +10,7 @@ import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { getCameraStreamUrl } from '@/lib/stream';
 import { getWebRtcWhepUrl } from '@/lib/webrtc';
+import { authHeaders } from '@/lib/apiAuth';
 
 // backend-registry is the only live camera source now — the organizer's direct
 // live.corp8.cloud API (previously fetched via /api/organizer-cameras) has been

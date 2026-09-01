@@ -14,8 +14,9 @@ export default function VideoWallPage() {
   const { filteredCameras, isLoading, error } = useCameraRegistry();
   const [layout, setLayout] = useState<WallLayout>('grid-9');
   const [searchTerm, setSearchTerm] = useState('');
+  const [focusedId, setFocusedId] = useState<number | null>(null);
 
-  const visibleCameras = useMemo(() => {
+  const searchedCameras = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
     if (!term) return filteredCameras;
     return filteredCameras.filter(
@@ -25,6 +26,20 @@ export default function VideoWallPage() {
         String(cam.id).toLowerCase().includes(term)
     );
   }, [filteredCameras, searchTerm]);
+
+  // Focus mode shows exactly one camera -- the one explicitly picked via a
+  // tile's "Focus this camera" button, or the first result if none was
+  // picked yet (e.g. switching to Focus straight from the layout toggle).
+  const visibleCameras = useMemo(() => {
+    if (layout !== 'focus') return searchedCameras;
+    const focused = searchedCameras.find((c) => c.id === focusedId);
+    return focused ? [focused] : searchedCameras.slice(0, 1);
+  }, [layout, searchedCameras, focusedId]);
+
+  const handleFocus = (id: number) => {
+    setFocusedId(id);
+    setLayout('focus');
+  };
 
   return (
     <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-0 w-full">
@@ -50,7 +65,7 @@ export default function VideoWallPage() {
         </div>
       )}
 
-      {!isLoading && <WallGrid cameras={visibleCameras} layout={layout} />}
+      {!isLoading && <WallGrid cameras={visibleCameras} layout={layout} onFocus={handleFocus} />}
     </main>
   );
 }
