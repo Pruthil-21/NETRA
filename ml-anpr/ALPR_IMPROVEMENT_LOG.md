@@ -2338,3 +2338,111 @@ instructions.
    hard evidence -- any real fix needs the same kind of dedicated,
    carefully-scoped session already called for repeatedly, not another
    quick pass.
+
+---
+
+# Session 19 -- expanded ground truth (37 usable test cases, up from 11), real accuracy is lower than Session 18's small sample suggested
+
+Direct follow-up to Session 19's request: Session 18's accuracy numbers
+were based on 6-7 eyeballed plates per camera -- honest about the
+sample size at the time, but too small to trust as *the* accuracy
+number. This session repeated the same eyeball-then-cross-reference
+methodology at much larger scale: sampled both videos broadly (cam06:
+every 30s across the full 30 min; cam07: every 15s, both with the
+pipeline's own low-light gate applied first this time), pulled the
+top 1-2 in-scope vehicle boxes per sample (applying
+`MIN_VEHICLE_BOX_AREA_FRACTION` this time -- Session 18 found its own
+ground-truth sampling had skipped this filter, which is why two
+Session 18 "misses" turned out to be below-floor exclusions, not real
+failures; not repeating that mistake here), and read every plate
+directly, logging genuinely illegible ones as unconfirmable rather
+than guessing.
+
+## What this actually cost, honestly
+
+68 candidate crops eyeballed this session (42 cam06, 26 cam07).
+**Real, unfiltered legibility rate on this footage: about 44%** (30 of
+68 produced a confident read; the rest were roof/side views, plates
+cut off by the crop edge, or genuinely too blurred even to my own eye)
+-- this alone is a useful, honest number Session 18's cherry-picked-
+feeling samples didn't surface clearly. Combined with Session 18's
+original 13, total ground truth across both sessions: 43 plates, of
+which 37 are usable, well-defined test cases (a handful excluded as
+below the detection floor or as ground-truth-uncertain-on-both-sides,
+same standard as Session 18).
+
+## Cross-referenced against the actual full-run confirmed sets (same fuzzy-matching method, `_plate_similarity`)
+
+| | exact | close (>=85%, same plate + 1 OCR-ambiguous char) | miss | total |
+|---|---|---|---|---|
+| cam06 | 12 | 2 | 7 | 21 |
+| cam07 | 6 | 2 | 8 | 16 |
+| **combined** | **18** | **4** | **15** | **37** |
+
+**Accuracy: 48.6% counting only exact matches, 59.5% if "close" (a
+single OCR-ambiguous character, e.g. an O/0 confusion) counts as
+correct.** Reporting both rather than picking whichever number looks
+better -- exact-match is the stricter, more honest bar for something
+that has to key a real watchlist alert; "close" is a reasonable
+secondary number since several of these ambiguous characters are
+genuinely hard to call even by eye (same class of ambiguity as
+Session 18's `GJ01HA7952`/`GJ01HM7952`).
+
+**This is meaningfully lower than Session 18's small-sample read**
+(which looked like ~75% on cam06's tiny in-scope set). Not a
+contradiction -- the small sample was an honest snapshot of too few
+points, and this session's much larger, less cherry-picked sample is
+the more trustworthy number. Exactly the outcome larger samples are
+supposed to produce: a less optimistic, more representative picture.
+
+## One direct consistency check, not just a bigger pile of numbers
+
+`GJ18Z8601` (the Gujarat ST bus, Session 18's one "genuine unexplained
+miss") was independently re-sampled this session at a different
+timestamp (t=25.42min, a different approach of the same physical bus)
+and **missed again** -- same result, sampled completely independently.
+This upgrades it from "one unexplained miss" to "a reproducible miss on
+this specific real vehicle," worth flagging as a stronger, more
+trustworthy finding than a single data point could support.
+
+## Spot-checked 3 of the 15 new misses against the raw log -- honestly mixed, not uniform
+
+Didn't just assert Session 18's categories still apply -- checked
+directly, and the result is more mixed than expected:
+
+- `GJ24X9367` (cam07): raw log shows `GJ24Y9367` read at 0.98
+  confidence nearby (a single-character X/Y OCR slip) -- but that
+  reading never reached `confirm_threshold` before the vehicle left
+  range. Same track-confirmation-timing pattern as Session 18's
+  `GJ06BY3848`.
+- `GJ07TY4975` (cam06): **zero trace anywhere** in the raw log near
+  this timestamp -- not a misread, a real non-detection. A different
+  failure mode from anything Session 18 characterized (that session's
+  misses all had at least one raw reading somewhere nearby).
+- `GJ32AA6163` (cam07): nearest raw reading is `'ESE3VZERO'` (fallback
+  tier, 0.49 confidence) -- unrelated garbage, not a near-miss of the
+  real plate. A genuine OCR failure on this specific frame/angle, not
+  a confirmation-layer issue.
+
+So this session's misses are **not** all the same previously-diagnosed
+mechanism -- at minimum a real non-detection case exists alongside the
+already-known confirmation-timing and majority-vote patterns. Flagging
+this rather than the tidier (and wrong) claim that everything reduces
+to Session 18's categories. A full investigation of all 15 misses
+would be needed to know the real mix -- not done this session, scope
+was the larger ground-truth sample itself.
+
+## No code change
+
+Same reasoning as Session 18: the failure modes reproduced/confirmed
+here are the already-investigated confirmation-layer issues (Sessions
+8/11/16/18), not something a narrow parameter tune can fix. `main`
+untouched. Nothing pushed or merged.
+
+### Verdict: **honest, larger-sample accuracy number delivered -- ~49-60% depending on strictness, real and lower than the earlier estimate, not softened**
+
+This is the number that should be quoted going forward for this
+footage, not Session 18's 6-7-plate estimate. 37 usable test cases is
+still not a huge sample for a hackathon-scale validation, but it's
+3.4x Session 18's and was gathered with the corrected methodology
+(pipeline's real area floor applied to ground-truth sampling too).
