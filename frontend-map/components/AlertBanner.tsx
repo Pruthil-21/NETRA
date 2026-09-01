@@ -1,0 +1,167 @@
+"use client";
+
+import React, { useState, useEffect } from "react";
+import { WATCHLIST_API_URL } from "@/config/streams";
+import { authorizedFetch, describeFetchError } from "@/lib/apiClient";
+
+// ids/camera_id/watchlist_id come back as JSON numbers from backend-watchlist (see
+// contract/API_CONTRACT.md's Alert shape) — a prior version of this file typed them as
+// strings, which happened to still render fine but would have broken a strict `===`
+// comparison against a camera's numeric-looking id.
+export interface Alert {
+  id: number;
+  camera_id: number;
+  plate_number: string;
+  watchlist_id: number;
+  matched_at: string;
+  status: "NEW" | "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED" | string;
+}
+
+type ActionStatus = "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED";
+
+interface AlertBannerProps {
+  /** Reported after every poll so the page header can reflect real alerts-API health. */
+  onConnectionChange?: (ok: boolean) => void;
+  /** Every successful poll's full alert list (all statuses) — feeds a persistent log view. */
+  onAlertsUpdate?: (alerts: Alert[]) => void;
+  /** Called with a camera id when the officer wants to jump straight to its live feed. */
+  onJumpToCamera?: (cameraId: string) => void;
+}
+
+function timeAgo(iso: string): string {
+  const sec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (sec < 5) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  return `${Math.floor(min / 60)}h ago`;
+}
+
+export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera }: AlertBannerProps = {}) {
+  // A queue, not a single slot — two alerts firing within one poll window used to mean
+  // the second silently overwrote the first before anyone saw it.
+  const [alertQueue, setAlertQueue] = useState<Alert[]>([]);
+  const [seenIds, setSeenIds] = useState<Set<number>>(new Set());
+  const [actionPending, setActionPending] = useState(false);
+
+  useEffect(() => {
+    const fetchAlerts = async () => {
+      try {
+        const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts`);
+
+        if (!res.ok) {
+          console.warn(`Alerts API returned ${res.status} — check NEXT_PUBLIC_DEMO_OFFICER_JWT is a valid officer token.`);
+          onConnectionChange?.(false);
+          return;
+        }
+
+        const alerts: Alert[] = await res.json();
+        onConnectionChange?.(true);
+        onAlertsUpdate?.(alerts);
+
+        setSeenIds((prevSeen) => {
+          const newAlerts = alerts.filter((a) => a.status === "NEW" && !prevSeen.has(a.id));
+          if (newAlerts.length === 0) return prevSeen;
+
+          setAlertQueue((prevQueue) => [...prevQueue, ...newAlerts]);
+
+          const nextSeen = new Set(prevSeen);
+          newAlerts.forEach((a) => nextSeen.add(a.id));
+          return nextSeen;
+        });
+      } catch (err) {
+        console.error("Failed to poll alerts:", describeFetchError(err, "unknown error"));
+        onConnectionChange?.(false);
+      }
+    };
+
+    fetchAlerts();
+    const interval = setInterval(fetchAlerts, 3000);
+    return () => clearInterval(interval);
+    // onConnectionChange/onAlertsUpdate are expected to be stable setters from the
+    // parent; re-running this poll loop on every parent render would restart it pointlessly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const activeAlert = alertQueue[0] ?? null;
+  const queuedCount = alertQueue.length - 1;
+
+  // Previously "Dismiss" only removed the alert from local browser state — it never
+  // told backend-watchlist anything happened. That meant the append-only audit trail
+  // (alert_status_history) this system is designed around never actually got written
+  // from here: an officer "handling" a match left no record anywhere but their own tab.
+  const handleAction = async (status: ActionStatus) => {
+    if (!activeAlert || actionPending) return;
+    setActionPending(true);
+    try {
+      const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts/${activeAlert.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      if (!res.ok) {
+        console.warn(`Failed to update alert ${activeAlert.id}: HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.error(`Failed to update alert ${activeAlert.id}:`, describeFetchError(err, "unknown error"));
+    } finally {
+      setActionPending(false);
+      setAlertQueue((prev) => prev.slice(1));
+    }
+  };
+
+  if (!activeAlert) return null;
+
+  return (
+    <div className="bg-red-600 text-white px-4 py-3 flex flex-wrap justify-between items-center gap-3 shadow-lg w-full">
+      <div className="flex-1 min-w-[260px]">
+        <span className="font-bold">🚨 ALERT: </span>
+        Plate <span className="underline font-mono">{activeAlert.plate_number}</span> matched watchlist at Camera{" "}
+        <button
+          onClick={() => onJumpToCamera?.(String(activeAlert.camera_id))}
+          className="font-semibold underline decoration-dotted hover:text-red-100"
+        >
+          {activeAlert.camera_id}
+        </button>
+        <span className="ml-2 text-red-100 text-xs">{timeAgo(activeAlert.matched_at)}</span>
+        {queuedCount > 0 && (
+          <span className="ml-2 text-red-100 text-xs font-medium">
+            (+{queuedCount} more alert{queuedCount === 1 ? "" : "s"} pending)
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={() => onJumpToCamera?.(String(activeAlert.camera_id))}
+          className="bg-red-950/60 hover:bg-red-950 px-3 py-1 rounded text-xs font-semibold transition-colors"
+        >
+          View Camera
+        </button>
+        <button
+          disabled={actionPending}
+          onClick={() => handleAction("ACKNOWLEDGED")}
+          title="Seen — I'm handling this"
+          className="bg-emerald-800 hover:bg-emerald-900 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
+        >
+          Acknowledge
+        </button>
+        <button
+          disabled={actionPending}
+          onClick={() => handleAction("ESCALATED")}
+          title="Needs backup / higher priority"
+          className="bg-amber-700 hover:bg-amber-800 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
+        >
+          Escalate
+        </button>
+        <button
+          disabled={actionPending}
+          onClick={() => handleAction("DISMISSED")}
+          title="False positive / not actionable"
+          className="bg-red-800 hover:bg-red-900 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  );
+}

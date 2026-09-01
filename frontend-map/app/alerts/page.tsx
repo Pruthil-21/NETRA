@@ -2,12 +2,21 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronDown, ChevronRight, Plus, Navigation, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Navigation, Search, Check, ArrowUpCircle, X } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { alertsService } from '@/services/alertsService';
-import { Alert } from '@/types/alert';
+import { Alert, AlertStatus } from '@/types/alert';
 import { AddToWatchlistModal } from '@/components/alerts/AddToWatchlistModal';
 import { getCameraCity } from '@/lib/cameraCity';
+
+// Every alert starts NEW and needs an officer to act on it -- these are the
+// only forward transitions the backend accepts (append-only history, see
+// alertsService.updateStatus); there's no path back to NEW.
+const ACTIONS: { status: AlertStatus; label: string; icon: typeof Check }[] = [
+  { status: 'ACKNOWLEDGED', label: 'Acknowledge', icon: Check },
+  { status: 'ESCALATED', label: 'Escalate', icon: ArrowUpCircle },
+  { status: 'DISMISSED', label: 'Dismiss', icon: X },
+];
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -26,6 +35,27 @@ export default function AlertsPage() {
   const [expandedCities, setExpandedCities] = useState<Set<string>>(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [citySearch, setCitySearch] = useState('');
+  const [updatingIds, setUpdatingIds] = useState<Set<number>>(new Set());
+
+  const handleUpdateStatus = async (alertId: number, status: AlertStatus) => {
+    const previous = alerts;
+    setUpdatingIds((prev) => new Set(prev).add(alertId));
+    // Optimistic: the officer's click should feel immediate, not wait on a
+    // round trip -- reverted below if the PATCH actually fails.
+    setAlerts((prev) => prev.map((a) => (a.id === alertId ? { ...a, status } : a)));
+    try {
+      await alertsService.updateStatus(alertId, status);
+    } catch (err) {
+      setAlerts(previous);
+      setError(err instanceof Error ? err.message : 'Failed to update alert');
+    } finally {
+      setUpdatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+    }
+  };
 
   const camerasById = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras]);
 
@@ -155,6 +185,20 @@ export default function AlertsPage() {
                             <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${STATUS_STYLES[alert.status] || STATUS_STYLES.DISMISSED}`}>
                               {alert.status}
                             </span>
+                            {(alert.status === 'NEW' || alert.status === 'ACKNOWLEDGED') &&
+                              ACTIONS.filter((a) => a.status !== alert.status).map(({ status, label, icon: Icon }) => (
+                                <button
+                                  key={status}
+                                  type="button"
+                                  onClick={() => handleUpdateStatus(alert.id, status)}
+                                  disabled={updatingIds.has(alert.id)}
+                                  aria-label={`${label} alert for ${alert.plate_number}`}
+                                  title={label}
+                                  className="flex items-center gap-1 px-1.5 py-1 bg-panel-raised border border-line rounded text-slate-300 hover:text-white disabled:opacity-50 disabled:cursor-wait focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
+                                >
+                                  <Icon size={12} />
+                                </button>
+                              ))}
                             <button
                               type="button"
                               onClick={() => router.push(`/alerts/track/${encodeURIComponent(alert.plate_number)}`)}

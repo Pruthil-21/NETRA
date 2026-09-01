@@ -4,13 +4,28 @@ import React, { createContext, useContext, useState, useEffect, useMemo, useCall
 import { Camera, ConnectivityStatus } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { OrganizerCamera } from '@/types/organizerCamera';
-import { organizerCameraService } from '@/services/organizerCameraService';
 import { organizerCameraToCamera } from '@/lib/organizerCameras';
 import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
 import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { getCameraStreamUrl } from '@/lib/stream';
 import { getWebRtcWhepUrl } from '@/lib/webrtc';
+import { authHeaders } from '@/lib/apiAuth';
+
+// backend-registry is the only live camera source now — the organizer's direct
+// live.corp8.cloud API (previously fetched via /api/organizer-cameras) has been
+// retired: it 502s permanently, and the organizer's 30 cameras are relayed
+// through our own Cloudflare tunnel and registered in backend-registry instead
+// (see backend-registry/scripts/seed_cameras.py history / stream_id
+// `organizer-cam01`..`organizer-cam30`). GET /cameras always requires a bearer
+// token (any role), same as the rest of the registry API -- see
+// backend-registry/app/auth.py.
+async function fetchRegistryCameras(): Promise<Camera[]> {
+  const base = process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000';
+  const res = await fetch(`${base}/cameras`, { headers: authHeaders(), cache: 'no-store' });
+  if (!res.ok) throw new Error(`Registry API returned ${res.status}`);
+  return res.json();
+}
 
 // How often every camera (not just the one an officer has open) gets a real
 // reachability check, and how long each check can take before it's counted
@@ -89,21 +104,24 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
 
   const refreshCameras = useCallback(async () => {
     setIsLoading(true);
-    // Organizer cameras are fetched separately from everything else --
-    // a dead/rotated tunnel (they're Cloudflare Quick Tunnels, expected to
-    // rotate) shouldn't also take down the manual, test-rig, and
-    // vehicle-trace-demo cameras, none of which need that network call at
-    // all. Previously one failed fetch blanked the entire registry.
-    let data: Awaited<ReturnType<typeof organizerCameraService.getAll>> = [];
+    // backend-registry being unreachable shouldn't blank the manual, test-rig,
+    // and vehicle-trace-demo cameras, none of which need that network call --
+    // same "one source failing doesn't blank the others" rule as before.
+    let registryCameras: Camera[] = [];
     try {
-      data = await organizerCameraService.getAll();
+      registryCameras = await fetchRegistryCameras();
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load camera registry');
     }
     const manual = loadManualCameras();
     setManualCameras(manual);
-    setCameras([...data, ...manual.map(organizerCameraToCamera), ...TEST_CCTV_CAMERAS, ...VEHICLE_TRACE_DEMO_CAMERAS]);
+    setCameras([
+      ...registryCameras,
+      ...manual.map(organizerCameraToCamera),
+      ...TEST_CCTV_CAMERAS,
+      ...VEHICLE_TRACE_DEMO_CAMERAS,
+    ]);
     setIsLoading(false);
   }, []);
 
