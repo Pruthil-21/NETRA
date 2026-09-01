@@ -94,6 +94,23 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     # Real plates aren't mounted in the dashcam's own UI overlay band,
     # so clip the crop's bottom edge to exclude it.
     y2 = min(y2, int(raw_h * 0.92))
+
+    # Real Sentinel Gujarat CCTV footage (cam06/cam07) burns its own
+    # overlay into the *top* of frame instead (date/time + location
+    # label, e.g. "17-06-2026 18:00:27  Madhuram Bypass Road Fix-2..."),
+    # a position the bottom-band clip above doesn't cover at all --
+    # confirmed as a real false-positive source: cam06 misread its own
+    # "Fix-2" label as plate-shaped text (ADFIX2/DFIX2H/AFIX2EF/DFX2FR,
+    # all fallback-tier) and cam07 misread its date overlay's "Sat"
+    # weekday as SAT212518/SAT212519. Measured the actual overlay extent
+    # directly on saved cam06/cam07 frames rather than guessing: the text
+    # sits within the top ~5% of a 1080px frame on both cameras (same
+    # overlay style/position), so 8% gives real margin without eating
+    # meaningfully into genuine vehicle crops. Same reasoning as the
+    # bottom clip -- real plates aren't mounted in a camera's own UI
+    # overlay band.
+    y1 = max(y1, int(raw_h * 0.08))
+
     if y2 <= y1:
         return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band", "box": box}
 
