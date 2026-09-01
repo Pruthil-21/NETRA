@@ -103,9 +103,14 @@ relay_camera() {
     echo "[$camera_id] publishing to $target_url"
 
     ffmpeg -nostdin -hide_banner -loglevel warning \
-      -re \
       -user_agent "Mozilla/5.0" \
       -headers "Cookie: $cookie_header"$'\r\n'"Referer: $PORTAL_URL/"$'\r\n' \
+      -reconnect 1 \
+      -reconnect_at_eof 1 \
+      -reconnect_on_network_error 1 \
+      -reconnect_on_http_error "4xx,5xx" \
+      -reconnect_streamed 1 \
+      -reconnect_delay_max 5 \
       -i "$source_url" \
       -map 0:v:0 \
       -an \
