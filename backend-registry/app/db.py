@@ -10,7 +10,7 @@ load_dotenv()
 # per-service concurrency budget. Opened at import time (psycopg_pool's
 # default): the first request after container startup pays a one-time
 # warmup, not a per-request one.
-_pool = ConnectionPool(conninfo=os.environ["DATABASE_URL"], min_size=1, max_size=10)
+_pool = ConnectionPool(conninfo=os.environ["DATABASE_URL"], min_size=1, max_size=10, open=True)
 
 
 def get_conn():
