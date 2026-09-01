@@ -71,6 +71,29 @@ interface UseCameraFeedsResult {
   lastUpdated: Date | null;
 }
 
+// Reachability truth (once known) overrides the registry's DB hint entirely for
+// ONLINE/OFFLINE; DEGRADED stays a DB-only signal (the stream can be reachable but
+// still flagged degraded by whoever's monitoring the camera hardware itself).
+// A pure function (not inlined in the useMemo) so it's directly unit-testable, and
+// so its one deliberate performance property -- returning the SAME feed object
+// when the resolved status didn't change -- is explicit and easy to verify without
+// rendering anything. That reference stability is what lets React.memo on FeedCard
+// (see components/dashboard/FeedCard.tsx) actually skip re-rendering tiles whose
+// status hasn't moved on this poll tick.
+export function mergeFeedStatus(
+  rawFeeds: CameraFeed[],
+  reachability: Record<string, boolean>
+): CameraFeed[] {
+  return rawFeeds.map((feed) => {
+    if (feed.status === "DEGRADED") return feed;
+    const reachable = reachability[feed.id];
+    if (reachable === undefined) return feed;
+    const resolvedStatus = reachable ? ("ONLINE" as const) : ("OFFLINE" as const);
+    if (feed.status === resolvedStatus) return feed;
+    return { ...feed, status: resolvedStatus };
+  });
+}
+
 /** Fetches the live camera registry and maps it into this app's CameraFeed shape. */
 export function useCameraFeeds(): UseCameraFeedsResult {
   const [rawFeeds, setRawFeeds] = useState<CameraFeed[]>([]);
@@ -158,18 +181,7 @@ export function useCameraFeeds(): UseCameraFeedsResult {
     };
   }, []);
 
-  // Reachability truth (once known) overrides the registry's DB hint entirely for
-  // ONLINE/OFFLINE; DEGRADED stays a DB-only signal (the stream can be reachable but
-  // still flagged degraded by whoever's monitoring the camera hardware itself).
-  const feeds = useMemo(
-    () =>
-      rawFeeds.map((feed) => {
-        const reachable = reachability[feed.id];
-        if (feed.status === "DEGRADED" || reachable === undefined) return feed;
-        return { ...feed, status: reachable ? ("ONLINE" as const) : ("OFFLINE" as const) };
-      }),
-    [rawFeeds, reachability]
-  );
+  const feeds = useMemo(() => mergeFeedStatus(rawFeeds, reachability), [rawFeeds, reachability]);
 
   return { feeds, loading, error, refetch: fetchCameras, lastUpdated };
 }

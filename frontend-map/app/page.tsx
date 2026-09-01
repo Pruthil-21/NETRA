@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { GridControls } from "@/components/dashboard/GridControls";
 import { AlertLog } from "@/components/dashboard/AlertLog";
@@ -62,7 +62,7 @@ export default function DashboardPage() {
     return focused ? [focused] : filteredFeeds.slice(0, 1);
   }, [layout, filteredFeeds, focusedId]);
 
-  const handleSelectFocus = (id: string) => {
+  const handleSelectFocus = useCallback((id: string) => {
     setFocusedId(id);
     setLayout("focus");
     // Clear filters so jumping to a camera from an alert always works, even if the
@@ -71,7 +71,7 @@ export default function DashboardPage() {
     setDepartmentFilter("all");
     setStatusFilter("all");
     setSearchTerm("");
-  };
+  }, []);
 
   return (
     <main className="flex-1 overflow-y-auto min-h-0 w-full flex flex-col">

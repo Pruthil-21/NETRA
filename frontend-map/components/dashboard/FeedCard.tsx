@@ -10,8 +10,11 @@ const HOVER_PLAY_DELAY_MS = 2000;
 
 interface FeedCardProps {
   feed: CameraFeed;
-  /** Present only when this card should offer a "focus this camera" affordance. */
-  onFocus?: () => void;
+  /** Present only when this card should offer a "focus this camera" affordance.
+   * Takes the feed's own id -- CameraGrid passes this straight through instead of
+   * pre-binding a per-tile closure, so the same onFocus reference works for every
+   * tile and doesn't defeat React.memo below. */
+  onFocus?: (id: string) => void;
   /** True when this card is the single camera an officer explicitly selected (focus
    * layout) -- that click already is the "play this" action, so skip the hover gate. */
   startPlaying?: boolean;
@@ -24,7 +27,7 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
   OFFLINE: { label: "OFFLINE", className: "bg-gray-900 border-gray-700 text-gray-400", icon: VideoOff },
 };
 
-export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
+const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
   // UNKNOWN cameras aren't confirmed dead — still worth attempting playback; useHls's
   // own error handling covers the case where there's genuinely nothing there.
   const isPlayable = feed.status !== "OFFLINE";
@@ -106,7 +109,7 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying 
           </div>
           {onFocus && (
             <button
-              onClick={onFocus}
+              onClick={() => onFocus?.(feed.id)}
               aria-label={`Focus on ${feed.name}`}
               title="Focus this camera"
               className="p-1 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
@@ -150,3 +153,9 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying 
     </div>
   );
 };
+
+// Wrapped so a poll tick that leaves this tile's feed object reference unchanged
+// (see mergeFeedStatus in hooks/useCameraFeeds.ts) skips re-rendering it entirely --
+// including tiles with a live HlsPlayer mounted, which is the expensive case this
+// is actually for.
+export const FeedCard = React.memo(FeedCardImpl);
