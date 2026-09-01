@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraFeed } from "@/types/stream";
 import { REGISTRY_API_URL, buildHlsUrl } from "@/config/streams";
 import { authorizedFetch, describeFetchError } from "@/lib/apiClient";
@@ -24,20 +24,38 @@ interface RegistryCamera {
   hls_url: string | null;
 }
 
-// Only a confirmed "online" + "healthy" pair earns a confident ONLINE badge. Anything
-// else that isn't explicitly offline/degraded/down — including the DB's own "unknown"
-// default — is UNKNOWN rather than assumed live.
-function mapStatus(connectivityStatus: string, healthStatus: string): CameraFeed["status"] {
+// The registry's own connectivity/health fields are set by hand (or default to
+// "unknown"/"operational" placeholders) and go stale the moment a stream is
+// swapped out — they're only used as a pre-probe hint (DEGRADED, and the
+// immediate paint before the first reachability check resolves). The actual
+// ONLINE/OFFLINE badge is decided by really fetching each camera's HLS
+// manifest below, the same "trust a live check over a database column"
+// approach CameraRegistryContext already uses for the map.
+function hintStatus(connectivityStatus: string, healthStatus: string): CameraFeed["status"] {
   const connectivity = (connectivityStatus || "").toLowerCase();
   const health = (healthStatus || "").toLowerCase();
 
-  if (connectivity === "offline") return "OFFLINE";
   if (health === "degraded" || health === "down") return "DEGRADED";
-  if (connectivity === "online" && health === "healthy") return "ONLINE";
+  if (connectivity === "offline") return "OFFLINE";
   return "UNKNOWN";
 }
 
 const POLL_INTERVAL_MS = 20_000;
+const HEALTH_CHECK_INTERVAL_MS = 15_000;
+const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+
+async function probeStreamReachable(url: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { method: "GET", cache: "no-store", signal: controller.signal });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 interface UseCameraFeedsResult {
   feeds: CameraFeed[];
@@ -49,10 +67,12 @@ interface UseCameraFeedsResult {
 
 /** Fetches the live camera registry and maps it into this app's CameraFeed shape. */
 export function useCameraFeeds(): UseCameraFeedsResult {
-  const [feeds, setFeeds] = useState<CameraFeed[]>([]);
+  const [rawFeeds, setRawFeeds] = useState<CameraFeed[]>([]);
+  const [reachability, setReachability] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const cancelledRef = useRef(false);
+  const rawFeedsRef = useRef<CameraFeed[]>([]);
 
   const fetchCameras = useCallback(async () => {
     try {
@@ -62,7 +82,7 @@ export function useCameraFeeds(): UseCameraFeedsResult {
       const data: RegistryCamera[] = await res.json();
       if (cancelledRef.current) return;
 
-      setFeeds(
+      setRawFeeds(
         data.map((cam) => ({
           id: String(cam.id),
           name: cam.name,
@@ -71,7 +91,7 @@ export function useCameraFeeds(): UseCameraFeedsResult {
           lat: cam.lat,
           long: cam.long,
           hlsUrl: buildHlsUrl(cam.id, cam.stream_id, cam.hls_url),
-          status: mapStatus(cam.connectivity_status, cam.health_status),
+          status: hintStatus(cam.connectivity_status, cam.health_status),
         }))
       );
       setError(null);
@@ -96,6 +116,52 @@ export function useCameraFeeds(): UseCameraFeedsResult {
       clearInterval(interval);
     };
   }, [fetchCameras]);
+
+  useEffect(() => {
+    rawFeedsRef.current = rawFeeds;
+  }, [rawFeeds]);
+
+  // Real reachability check, independent of the registry poll above — a camera's
+  // manifest can start/stop responding between registry syncs, so this runs on its
+  // own faster interval and keeps checking every camera currently on screen.
+  useEffect(() => {
+    let cancelled = false;
+
+    const checkAll = async () => {
+      const snapshot = rawFeedsRef.current;
+      const results = await Promise.allSettled(
+        snapshot.map(async (feed) => [feed.id, await probeStreamReachable(feed.hlsUrl)] as const)
+      );
+      if (cancelled) return;
+      setReachability((prev) => {
+        const next = { ...prev };
+        for (const r of results) {
+          if (r.status === "fulfilled") next[r.value[0]] = r.value[1];
+        }
+        return next;
+      });
+    };
+
+    checkAll();
+    const interval = setInterval(checkAll, HEALTH_CHECK_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // Reachability truth (once known) overrides the registry's DB hint entirely for
+  // ONLINE/OFFLINE; DEGRADED stays a DB-only signal (the stream can be reachable but
+  // still flagged degraded by whoever's monitoring the camera hardware itself).
+  const feeds = useMemo(
+    () =>
+      rawFeeds.map((feed) => {
+        const reachable = reachability[feed.id];
+        if (feed.status === "DEGRADED" || reachable === undefined) return feed;
+        return { ...feed, status: reachable ? ("ONLINE" as const) : ("OFFLINE" as const) };
+      }),
+    [rawFeeds, reachability]
+  );
 
   return { feeds, loading, error, refetch: fetchCameras };
 }
