@@ -43,6 +43,9 @@ function hintStatus(connectivityStatus: string, healthStatus: string): CameraFee
 const POLL_INTERVAL_MS = 20_000;
 const HEALTH_CHECK_INTERVAL_MS = 15_000;
 const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+// The reachability probe is what actually drives ONLINE/OFFLINE, so it's the
+// cadence a "how fresh is this badge" indicator should be measured against.
+export const FEED_STALE_THRESHOLD_MS = HEALTH_CHECK_INTERVAL_MS;
 
 async function probeStreamReachable(url: string): Promise<boolean> {
   const controller = new AbortController();
@@ -63,6 +66,9 @@ interface UseCameraFeedsResult {
   error: string | null;
   /** Re-runs the fetch immediately, independent of the poll interval — for a manual "Retry" button. */
   refetch: () => void;
+  /** When the reachability probe last completed a full pass — pair with FEED_STALE_THRESHOLD_MS
+   * to know whether what's on screen is still trustworthy. */
+  lastUpdated: Date | null;
 }
 
 /** Fetches the live camera registry and maps it into this app's CameraFeed shape. */
@@ -71,6 +77,7 @@ export function useCameraFeeds(): UseCameraFeedsResult {
   const [reachability, setReachability] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const cancelledRef = useRef(false);
   const rawFeedsRef = useRef<CameraFeed[]>([]);
 
@@ -140,6 +147,7 @@ export function useCameraFeeds(): UseCameraFeedsResult {
         }
         return next;
       });
+      setLastUpdated(new Date());
     };
 
     checkAll();
@@ -163,5 +171,5 @@ export function useCameraFeeds(): UseCameraFeedsResult {
     [rawFeeds, reachability]
   );
 
-  return { feeds, loading, error, refetch: fetchCameras };
+  return { feeds, loading, error, refetch: fetchCameras, lastUpdated };
 }

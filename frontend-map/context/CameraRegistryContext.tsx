@@ -31,7 +31,7 @@ async function fetchRegistryCameras(): Promise<Camera[]> {
 // reachability check, and how long each check can take before it's counted
 // as offline. A plain GET on the manifest/playlist URL — no video decode —
 // so checking dozens of cameras in parallel stays cheap.
-const HEALTH_CHECK_INTERVAL_MS = 20000;
+export const HEALTH_CHECK_INTERVAL_MS = 20000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
 
 async function probeStreamReachable(url: string): Promise<boolean> {
@@ -74,6 +74,9 @@ interface RegistryContextType {
   filters: CameraFilters;
   isLoading: boolean;
   error: string | null;
+  /** When the reachability health-check last completed a full pass over every camera --
+   * pair with HEALTH_CHECK_INTERVAL_MS to know whether connectivity_status is still fresh. */
+  lastUpdated: Date | null;
   setSelectedCamera: (cam: Camera | null) => void;
   setFilters: React.Dispatch<React.SetStateAction<CameraFilters>>;
   refreshCameras: () => Promise<void>;
@@ -101,6 +104,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   const [filters, setFilters] = useState<CameraFilters>(initialFilters);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const refreshCameras = useCallback(async () => {
     setIsLoading(true);
@@ -263,6 +267,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
           if (!cancelled) updateCameraConnectivity(cam.id, reachable ? 'online' : 'offline');
         })
       );
+      if (!cancelled) setLastUpdated(new Date());
     };
 
     checkAll();
@@ -282,6 +287,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         filters,
         isLoading,
         error,
+        lastUpdated,
         setSelectedCamera,
         setFilters,
         refreshCameras,
