@@ -3,18 +3,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, LayoutDashboard, LayoutGrid, Map as MapIcon, Search, ShieldAlert, LogOut } from 'lucide-react';
+import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, LogOut } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
 
 // Ordered by how often an officer actually reaches for each one during a
 // shift: Dashboard (continuous monitoring, the default landing page) first,
-// Wall (an alternate grid view sourced from the same registry) second, Map
-// (asset/coverage lookup) third, Search and Alerts (on-demand,
+// Map (asset/coverage lookup) second, Search and Alerts (on-demand,
 // investigative/reactive) last -- not alphabetical, not build order.
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/wall', label: 'Video Wall', icon: LayoutGrid },
   { href: '/map', label: 'Map', icon: MapIcon },
   { href: '/search', label: 'Search', icon: Search },
   { href: '/alerts', label: 'Alerts', icon: ShieldAlert },
