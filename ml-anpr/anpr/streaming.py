@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import uuid
+from concurrent.futures import wait as _wait_futures
 from datetime import datetime, timezone
 
 import cv2
@@ -47,7 +48,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
 
             results = detect_plate_from_frame(infer_frame, raw_frame)
 
-            for confirmed in tracker.update(results):
+            for confirmed in tracker.update(results, raw_frame=raw_frame) + tracker.pop_ready_vlm_confirmations():
                 event = {
                     "event_id": str(uuid.uuid4()),
                     "camera_id": camera_id,
@@ -56,10 +57,15 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
-                if confirmed["note"] == "ok - pattern match":
-                    send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
-                else:
-                    print(f"[SKIPPED WATCHLIST] fallback/unverified plate, not sent: {confirmed['plate_number']}")
+                # Contract (see contract/API_CONTRACT.md, confirmed directly
+                # with P6): POST /detections is the single ingestion
+                # endpoint for every confirmed plate read, not just
+                # pattern-match-tier ones -- backend-watchlist itself
+                # decides whether it's a watchlist hit server-side, so
+                # gating client-side on note type here was under-reporting
+                # real confirmed sightings (fallback-tier and vlm-fallback
+                # reads were never being sent at all).
+                send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
@@ -104,7 +110,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
             if result.get("plate_number"):
                 print(f"[reading, frame {frame_count}] {result}")
 
-        for confirmed in tracker.update(results):
+        for confirmed in tracker.update(results, raw_frame=frame) + tracker.pop_ready_vlm_confirmations():
             event = {
                 "event_id": str(uuid.uuid4()),
                 "camera_id": camera_id,
@@ -114,6 +120,26 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
             }
             print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
     cap.release()
+
+    # The video ends here, but a VLM fallback dispatched on one of the
+    # last few frames may still be running in the background (see
+    # tracking.VehicleTracker) -- give any still-pending calls a bounded
+    # window to finish rather than silently dropping them from the final
+    # count. 25s covers the measured worst case (6.7s cold-start) with
+    # margin for a couple still in flight at once (max_workers=2).
+    pending = tracker.pending_vlm_futures()
+    if pending:
+        _wait_futures(pending, timeout=25)
+        for confirmed in tracker.pop_ready_vlm_confirmations():
+            event = {
+                "event_id": str(uuid.uuid4()),
+                "camera_id": camera_id,
+                "plate_number": confirmed["plate_number"],
+                "confidence": confirmed["confidence"],
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
+
     print(f"\nTotal confirmed plates: {tracker.confirmed}")
 
 
@@ -170,7 +196,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
 
             results = detect_plate_from_frame(frame, frame)
 
-            for confirmed in tracker.update(results):
+            for confirmed in tracker.update(results, raw_frame=frame) + tracker.pop_ready_vlm_confirmations():
                 event = {
                     "event_id": str(uuid.uuid4()),
                     "camera_id": camera_id,
@@ -179,8 +205,10 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
-                if confirmed["note"] == "ok - pattern match":
-                    send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
+                # See process_stream()'s matching comment: send every
+                # confirmed read, not just pattern-match tier -- that's
+                # what the contract actually asks for.
+                send_detection_to_watchlist(confirmed["plate_number"], camera_id, confirmed["confidence"])
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
