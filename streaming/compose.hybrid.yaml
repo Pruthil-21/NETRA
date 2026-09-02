@@ -1,0 +1,17 @@
+services:
+  replay:
+    entrypoint: ["/usr/local/bin/hybrid-entrypoint"]
+    environment:
+      PORTAL_URL: "${PORTAL_URL:-https://cctv.corp8.cloud}"
+      ORGANIZER_PASSWORD_FILE: /run/secrets/organizer_password
+      LIVE_CHECK_INTERVAL: "${LIVE_CHECK_INTERVAL:-20}"
+      LIVE_REQUIRED_SUCCESSES: "${LIVE_REQUIRED_SUCCESSES:-3}"
+      LIVE_PROBE_TIMEOUT: "${LIVE_PROBE_TIMEOUT:-12}"
+      AUTH_REFRESH_SECONDS: "${AUTH_REFRESH_SECONDS:-600}"
+      AUTH_RETRY_SECONDS: "${AUTH_RETRY_SECONDS:-30}"
+    secrets:
+      - organizer_password
+
+secrets:
+  organizer_password:
+    file: ./.organizer-password
