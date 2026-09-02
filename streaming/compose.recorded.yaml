@@ -1,0 +1,48 @@
+name: netra-recorded
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+    container_name: netra-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+      - "8888:8888"
+      - "8889:8889"
+      - "8189:8189/udp"
+      - "8890:8890/udp"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+
+  replay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.replay
+    container_name: netra-replay
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      - mediamtx
+    environment:
+      ARCHIVE_DIR: /recordings
+      MEDIAMTX_HOST: mediamtx
+      STREAM_PREFIX: direct
+      CAMERA_LIMIT: "${CAMERA_LIMIT:-30}"
+    volumes:
+      - "${HOME}/Downloads/NETRA-organizer-archive:/recordings:ro"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: netra-cloudflared
+    restart: unless-stopped
+    depends_on:
+      - mediamtx
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --url
+      - http://mediamtx:8888
