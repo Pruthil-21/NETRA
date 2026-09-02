@@ -50,6 +50,7 @@ export default function AdminPage() {
 
   const load = () => {
     setLoading(true);
+    setError(null);
     adminService
       .listOfficers()
       .then(setOfficers)
