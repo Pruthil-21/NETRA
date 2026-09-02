@@ -2,16 +2,27 @@
 from datetime import datetime, timezone
 
 
-def list_cameras(conn):
+def list_cameras(conn, dept: str | None = None):
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, name, dept, ST_Y(location::geometry) AS lat,
-                   ST_X(location::geometry) AS long, camera_type, ownership,
-                   connectivity_status, storage_type, retention_days,
-                   health_status, rtsp_url, stream_id, hls_url
-            FROM cameras
-            ORDER BY id
-        """)
+        if dept is None:
+            cur.execute("""
+                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
+                       ST_X(location::geometry) AS long, camera_type, ownership,
+                       connectivity_status, storage_type, retention_days,
+                       health_status, rtsp_url, stream_id, hls_url
+                FROM cameras
+                ORDER BY id
+            """)
+        else:
+            cur.execute("""
+                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
+                       ST_X(location::geometry) AS long, camera_type, ownership,
+                       connectivity_status, storage_type, retention_days,
+                       health_status, rtsp_url, stream_id, hls_url
+                FROM cameras
+                WHERE dept = %s
+                ORDER BY id
+            """, (dept,))
         cols = [c.name for c in cur.description]
         rows = cur.fetchall()
         return [dict(zip(cols, row)) for row in rows]

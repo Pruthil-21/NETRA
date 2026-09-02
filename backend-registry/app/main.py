@@ -3,7 +3,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_role
+from .auth import get_current_user, require_permission, require_role
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
@@ -12,9 +12,17 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    LoginRequest,
+    LoginResponse,
+    MeResponse,
+    OfficerOut,
+    PostingCreate,
+    PostingOut,
     ReportSummary,
+    RolePermissionsOut,
+    RolePermissionsUpdate,
 )
-from .services import audit_service, cameras_service, reports_service
+from .services import admin_service, audit_service, auth_service, cameras_service, rbac_service, reports_service
 
 configure_logging()
 
@@ -37,10 +45,114 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/auth/login", response_model=LoginResponse)
+def login(body: LoginRequest):
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_badge(conn, body.badge_number)
+        password_hash = officer["password_hash"] if officer else auth_service.DUMMY_PASSWORD_HASH
+        password_ok = auth_service.verify_password(body.password, password_hash)
+        if officer is None or not password_ok:
+            raise HTTPException(status_code=401, detail="Invalid badge number or password")
+
+        posting = auth_service.get_active_posting(conn, officer["id"])
+        if posting is None:
+            raise HTTPException(status_code=401, detail="Officer has no active posting")
+
+        token = auth_service.issue_token(conn, officer, posting)
+        audit_service.log(conn, officer["badge_number"], "login", "officer", officer["id"], badge_number=officer["badge_number"])
+        return {"token": token}
+
+
+@app.get("/auth/me", response_model=MeResponse)
+def me(user=Depends(get_current_user)):
+    return {
+        "badge_number": user.get("badge_number", user.get("sub", "")),
+        "name": user.get("name", ""),
+        "role": user.get("role", ""),
+        "scope_type": user.get("scope_type", "platform"),
+        "scope_value": user.get("scope_value"),
+        "permissions": user.get("permissions", []),
+    }
+
+
+@app.get("/admin/officers", response_model=list[OfficerOut])
+def list_officers(user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        return admin_service.list_officers(conn)
+
+
+@app.get("/admin/postings", response_model=list[PostingOut])
+def list_postings(user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        return admin_service.list_postings(conn)
+
+
+@app.post("/admin/postings", response_model=PostingOut, status_code=201)
+def create_posting(body: PostingCreate, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        role = rbac_service.get_role_by_name(conn, body.role_name)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Unknown role '{body.role_name}'")
+
+        # Delegated admin (spec Section 6): a platform-wide actor (Super Admin)
+        # can assign anything. A district-scoped actor with can_delegate_admin
+        # (District Command) can only assign roles below their own level, and
+        # only within their own scope_value -- never Super Admin's platform-wide
+        # reach, and never another district's.
+        actor_scope_type = user.get("scope_type")
+        actor_scope_value = user.get("scope_value")
+        if actor_scope_type != "platform":
+            if body.scope_type != "district" or body.scope_value != actor_scope_value:
+                raise HTTPException(status_code=403, detail="Cannot assign outside your own jurisdiction")
+            if role["name"] in ("super_admin", "district_command"):
+                raise HTTPException(status_code=403, detail="Cannot assign a role at or above your own")
+
+        posting = admin_service.reassign_posting(
+            conn, body.officer_id, role["id"], body.scope_type, body.scope_value,
+            assigned_by=user.get("badge_number", user.get("sub", "")),
+        )
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reassign_posting", "posting", posting["id"])
+        return posting
+
+
+@app.get("/admin/roles", response_model=list[RolePermissionsOut])
+def list_roles(user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        return rbac_service.list_roles_with_permissions(conn)
+
+
+@app.put("/admin/roles/{role_name}/permissions", response_model=RolePermissionsOut)
+def update_role_permissions(
+    role_name: str, body: RolePermissionsUpdate, user=Depends(require_permission("manage_roles"))
+):
+    with get_conn() as conn:
+        role = rbac_service.get_role_by_name(conn, role_name)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Unknown role '{role_name}'")
+
+        unknown = set(body.permissions) - rbac_service.VALID_PERMISSIONS
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown permission(s): {', '.join(sorted(unknown))}")
+
+        if role["name"] == "super_admin" and "manage_roles" not in body.permissions:
+            raise HTTPException(status_code=400, detail="Cannot remove manage_roles from super_admin")
+
+        permissions = rbac_service.set_role_permissions(conn, role["id"], body.permissions)
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "edit_role_permissions",
+            "role", role["id"], reason_code=body.reason_code,
+        )
+        return {**role, "permissions": permissions}
+
+
 @app.get("/cameras", response_model=list[CameraOut])
 def list_cameras(user=Depends(get_current_user)):
     with get_conn() as conn:
-        cameras = cameras_service.list_cameras(conn)
+        # scope_type is only present on RBAC-issued tokens (Task 2); legacy
+        # hand-crafted tokens have no such claim and see every camera,
+        # matching this endpoint's behavior before this task.
+        dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+        cameras = cameras_service.list_cameras(conn, dept)
         return cameras
 
 
@@ -54,10 +166,10 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
 
 
 @app.post("/cameras", response_model=CameraOut, status_code=201)
-def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
+def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         created = cameras_service.create_camera(conn, camera.model_dump())
-        audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
         return created
 
 
@@ -84,7 +196,7 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"
                 results.append(CameraBulkResult(index=index, status="error", reason=str(e)))
                 continue
 
-            audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
+            audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
             results.append(CameraBulkResult(index=index, status="created", camera=created))
     return results
 
@@ -97,7 +209,7 @@ def reports_summary(user=Depends(get_current_user)):
 
 
 @app.put("/cameras/{camera_id}", response_model=CameraOut)
-def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_role("officer"))):
+def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         fields = camera.model_dump(exclude_unset=True)
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
@@ -106,7 +218,7 @@ def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_rol
 
         non_connectivity_fields = {k for k in fields if k != "connectivity_status"}
         if non_connectivity_fields:
-            audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+            audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "camera", camera_id)
         if connectivity_changed:
             logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
 
@@ -128,9 +240,9 @@ def camera_uptime(camera_id: int, user=Depends(get_current_user)):
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)
-def delete_camera(camera_id: int, user=Depends(require_role("officer"))):
+def delete_camera(camera_id: int, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         deleted = cameras_service.delete_camera(conn, camera_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "delete", "camera", camera_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "camera", camera_id)

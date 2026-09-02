@@ -78,3 +78,64 @@ class ReportSummary(BaseModel):
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
+
+
+class LoginRequest(BaseModel):
+    badge_number: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+
+
+class MeResponse(BaseModel):
+    badge_number: str
+    name: str
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    permissions: list[str]
+
+
+class PostingSummary(BaseModel):
+    id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class OfficerOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    active_posting: Optional[PostingSummary] = None
+
+
+class PostingOut(BaseModel):
+    id: int
+    officer_id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    is_active: bool
+
+
+class PostingCreate(BaseModel):
+    officer_id: int
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class RolePermissionsOut(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    permissions: list[str]
+
+
+class RolePermissionsUpdate(BaseModel):
+    permissions: list[str]
+    reason_code: Optional[str] = None
