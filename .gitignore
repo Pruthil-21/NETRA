@@ -16,6 +16,7 @@ venv/
 .env
 .env.local
 streaming/.organizer-password
+streaming/snmp/targets.json
 
 # OS
 .DS_Store
