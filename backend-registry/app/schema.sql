@@ -26,6 +26,20 @@ CREATE TABLE cameras (
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 
+-- Mirrors backend-watchlist's alert_status_history: append-only, one row per
+-- real connectivity transition. Written by cameras_service.update_camera()
+-- only when the new status differs from the current one -- repeated PUTs
+-- reporting the same status (e.g. a health-check poll that found nothing
+-- changed) write nothing here.
+CREATE TABLE IF NOT EXISTS camera_status_history (
+    id                  SERIAL PRIMARY KEY,
+    camera_id           INTEGER NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
+    connectivity_status TEXT NOT NULL,
+    changed_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_camera_status_history_camera ON camera_status_history (camera_id, changed_at);
+
 -- Shared across backend-registry and backend-watchlist (same Postgres instance).
 -- Declared identically, behind IF NOT EXISTS, in both services' schema.sql so
 -- either one can run first with zero cross-folder migration coordination.

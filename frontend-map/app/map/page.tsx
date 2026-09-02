@@ -2,12 +2,13 @@
 
 import React, { useState } from 'react';
 import dynamic from 'next/dynamic';
-import { useCameraRegistry } from '@/context/CameraRegistryContext';
+import { useCameraRegistry, HEALTH_CHECK_INTERVAL_MS } from '@/context/CameraRegistryContext';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import CameraFilterBar from '@/components/registry/CameraFilterBar';
 import CameraListSkeleton from '@/components/registry/CameraListSkeleton';
 import VirtualizedCameraList from '@/components/registry/VirtualizedCameraList';
 import AddCameraModal from '@/components/registry/AddCameraModal';
+import { StaleIndicator, useStaleness } from '@/components/common/StaleIndicator';
 import { RefreshCw, AlertTriangle, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
@@ -35,9 +36,11 @@ export default function MapPage() {
     refreshCameras,
     isLoading,
     error,
+    lastUpdated,
   } = useCameraRegistry();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showAddCamera, setShowAddCamera] = useState(false);
+  const { isStale } = useStaleness(lastUpdated, !!error, HEALTH_CHECK_INTERVAL_MS);
 
   return (
     <div className="flex-1 flex overflow-hidden relative min-h-0">
@@ -48,9 +51,12 @@ export default function MapPage() {
       >
         <div className="w-80 h-full flex flex-col">
           <div className="px-3.5 py-3 border-b border-line flex items-center justify-between gap-2">
-            <h2 className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase truncate">
-              {isLoading ? 'Syncing feeds…' : `${filteredCameras.length} Feeds`}
-            </h2>
+            <div className={`min-w-0 ${isStale ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
+              <h2 className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase truncate">
+                {isLoading ? 'Syncing feeds…' : `${filteredCameras.length} Feeds`}
+              </h2>
+              {!isLoading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={HEALTH_CHECK_INTERVAL_MS} />}
+            </div>
             <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
@@ -96,11 +102,13 @@ export default function MapPage() {
           ) : filteredCameras.length === 0 ? (
             <div className="p-6 text-center text-xs text-slate-500">No cameras match the active filters.</div>
           ) : (
-            <VirtualizedCameraList
-              cameras={filteredCameras}
-              selectedCamera={selectedCamera}
-              onSelect={setSelectedCamera}
-            />
+            <div className={`flex-1 min-h-0 flex flex-col ${isStale ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
+              <VirtualizedCameraList
+                cameras={filteredCameras}
+                selectedCamera={selectedCamera}
+                onSelect={setSelectedCamera}
+              />
+            </div>
           )}
         </div>
       </aside>

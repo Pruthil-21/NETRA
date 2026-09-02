@@ -1,17 +1,34 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
-import { HlsPlayer } from "@/components/player/HlsPlayer";
 import { useInView } from "@/hooks/useInView";
+import { createHoverGraceController, HoverGraceController } from "@/lib/hoverGrace";
 import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
+
+// hls.js is a large dependency only needed once a tile actually starts playing
+// (hover-hold or click) -- code-split it out of the Dashboard's initial bundle
+// the same way CameraMap is already split out of /map and /search for leaflet.
+const HlsPlayer = dynamic(
+  () => import("@/components/player/HlsPlayer").then((mod) => mod.HlsPlayer),
+  { ssr: false, loading: () => <div className="w-full h-full bg-black" /> }
+);
 
 // Hover this long before a preview starts -- a quick mouse pass-over
 // shouldn't spin up a decoder. Click always skips the wait.
 const HOVER_PLAY_DELAY_MS = 2000;
+// Once playing, keep playing this long after the mouse leaves before actually
+// tearing the decoder down -- a quick re-hover (scanning across the grid, briefly
+// crossing back onto this tile) shouldn't restart Hls.js from a cold manifest
+// fetch every time.
+const HOVER_LEAVE_GRACE_MS = 1200;
 
 interface FeedCardProps {
   feed: CameraFeed;
-  /** Present only when this card should offer a "focus this camera" affordance. */
-  onFocus?: () => void;
+  /** Present only when this card should offer a "focus this camera" affordance.
+   * Takes the feed's own id -- CameraGrid passes this straight through instead of
+   * pre-binding a per-tile closure, so the same onFocus reference works for every
+   * tile and doesn't defeat React.memo below. */
+  onFocus?: (id: string) => void;
   /** True when this card is the single camera an officer explicitly selected (focus
    * layout) -- that click already is the "play this" action, so skip the hover gate. */
   startPlaying?: boolean;
@@ -24,7 +41,7 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
   OFFLINE: { label: "OFFLINE", className: "bg-gray-900 border-gray-700 text-gray-400", icon: VideoOff },
 };
 
-export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
+const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
   // UNKNOWN cameras aren't confirmed dead — still worth attempting playback; useHls's
   // own error handling covers the case where there's genuinely nothing there.
   const isPlayable = feed.status !== "OFFLINE";
@@ -43,34 +60,46 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying 
   // player down again. Badges/status still update on their own via the registry poll
   // in useCameraFeeds regardless of whether a tile is actively playing.
   const [isPlaying, setIsPlaying] = useState(startPlaying);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // startPlaying can flip while this controller is alive (an officer double-clicking
+  // into focus mode) -- read via a ref inside onEnd so that closure always sees the
+  // current value instead of the one captured when the controller was created.
+  const startPlayingRef = useRef(startPlaying);
+  useEffect(() => {
+    startPlayingRef.current = startPlaying;
+  }, [startPlaying]);
 
-  const clearHoverTimer = useCallback(() => {
-    if (hoverTimer.current) {
-      clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-  }, []);
+  // Created once via useMemo rather than a lazy-init ref -- reading ref.current
+  // during render (even guarded) trips react-hooks/refs; setIsPlaying and
+  // startPlayingRef are both stable across renders, so an empty dep array still
+  // matches the original once-per-mount intent.
+  const hoverController: HoverGraceController = useMemo(
+    () =>
+      createHoverGraceController(
+        HOVER_PLAY_DELAY_MS,
+        HOVER_LEAVE_GRACE_MS,
+        () => setIsPlaying(true),
+        // startPlayingRef is only read once this callback actually runs, and
+        // createHoverGraceController (lib/hoverGrace.ts) never calls onEnd
+        // synchronously -- only from a setTimeout or a click handler, both always
+        // outside the render pass. The rule can't see into that module to verify
+        // this, so it flags a ref captured in a closure passed to another function
+        // as a precaution; verified safe here.
+        // eslint-disable-next-line react-hooks/refs
+        () => {
+          // A deliberately-focused single camera stays playing when the mouse wanders off
+          // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
+          // tear down on mouse-leave.
+          if (!startPlayingRef.current) setIsPlaying(false);
+        }
+      ),
+    []
+  );
 
-  const handleMouseEnter = useCallback(() => {
-    clearHoverTimer();
-    hoverTimer.current = setTimeout(() => setIsPlaying(true), HOVER_PLAY_DELAY_MS);
-  }, [clearHoverTimer]);
+  const handleMouseEnter = useCallback(() => hoverController.hoverStart(), [hoverController]);
+  const handleMouseLeave = useCallback(() => hoverController.hoverEnd(), [hoverController]);
+  const handleClick = useCallback(() => hoverController.forceStart(), [hoverController]);
 
-  const handleMouseLeave = useCallback(() => {
-    clearHoverTimer();
-    // A deliberately-focused single camera stays playing when the mouse wanders off
-    // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
-    // tear down on mouse-leave.
-    if (!startPlaying) setIsPlaying(false);
-  }, [clearHoverTimer, startPlaying]);
-
-  const handleClick = useCallback(() => {
-    clearHoverTimer();
-    setIsPlaying(true);
-  }, [clearHoverTimer]);
-
-  useEffect(() => clearHoverTimer, [clearHoverTimer]);
+  useEffect(() => hoverController.cancel, [hoverController]);
 
   return (
     <div
@@ -106,7 +135,7 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying 
           </div>
           {onFocus && (
             <button
-              onClick={onFocus}
+              onClick={() => onFocus?.(feed.id)}
               aria-label={`Focus on ${feed.name}`}
               title="Focus this camera"
               className="p-1 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
@@ -150,3 +179,9 @@ export const FeedCard: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying 
     </div>
   );
 };
+
+// Wrapped so a poll tick that leaves this tile's feed object reference unchanged
+// (see mergeFeedStatus in hooks/useCameraFeeds.ts) skips re-rendering it entirely --
+// including tiles with a live HlsPlayer mounted, which is the expensive case this
+// is actually for.
+export const FeedCard = React.memo(FeedCardImpl);
