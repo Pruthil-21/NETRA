@@ -86,6 +86,7 @@ class AlertOut(BaseModel):
 
 class AlertStatusUpdate(BaseModel):
     status: Literal["ACKNOWLEDGED", "DISMISSED", "ESCALATED"]
+    reason_code: Optional[str] = None
 
 
 class VehicleTraceSighting(BaseModel):
