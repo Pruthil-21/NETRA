@@ -1,5 +1,4 @@
 import jwt as pyjwt
-
 from app.config import settings
 
 

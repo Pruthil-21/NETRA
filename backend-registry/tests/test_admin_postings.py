@@ -2,7 +2,6 @@ import subprocess
 import sys
 
 import jwt as pyjwt
-
 from app.config import settings
 
 

@@ -7,8 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import get_conn  # noqa: E402
-from app.services import auth_service  # noqa: E402
+from app.db import get_conn
+from app.services import auth_service
 
 # badge_number, name, rank, password, role_name, scope_type, scope_value
 OFFICERS = [

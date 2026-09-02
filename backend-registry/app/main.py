@@ -22,7 +22,14 @@ from .schemas import (
     RolePermissionsOut,
     RolePermissionsUpdate,
 )
-from .services import admin_service, audit_service, auth_service, cameras_service, rbac_service, reports_service
+from .services import (
+    admin_service,
+    audit_service,
+    auth_service,
+    cameras_service,
+    rbac_service,
+    reports_service,
+)
 
 configure_logging()
 

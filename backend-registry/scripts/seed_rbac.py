@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import get_conn  # noqa: E402
+from app.db import get_conn
 
 # ROLE, display name, hierarchy_level (None = outside the operational chain), can_delegate_admin
 ROLES = [
