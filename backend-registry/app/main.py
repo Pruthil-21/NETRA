@@ -12,9 +12,11 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    LoginRequest,
+    LoginResponse,
     ReportSummary,
 )
-from .services import audit_service, cameras_service, reports_service
+from .services import audit_service, auth_service, cameras_service, rbac_service, reports_service
 
 configure_logging()
 
@@ -35,6 +37,22 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+def login(body: LoginRequest):
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_badge(conn, body.badge_number)
+        if officer is None or not auth_service.verify_password(body.password, officer["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid badge number or password")
+
+        posting = auth_service.get_active_posting(conn, officer["id"])
+        if posting is None:
+            raise HTTPException(status_code=401, detail="Officer has no active posting")
+
+        token = auth_service.issue_token(conn, officer, posting)
+        audit_service.log(conn, officer["badge_number"], "login", "officer", officer["id"], badge_number=officer["badge_number"])
+        return {"token": token}
 
 
 @app.get("/cameras", response_model=list[CameraOut])

@@ -78,3 +78,12 @@ class ReportSummary(BaseModel):
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
+
+
+class LoginRequest(BaseModel):
+    badge_number: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
