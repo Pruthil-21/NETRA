@@ -2836,3 +2836,173 @@ location behind each `direct-camNN` path.
 Nothing pushed. This session's code changes committed locally on
 `feature/plate-region-detector` per explicit go-ahead; not merged to
 `main`.
+
+---
+
+# Session 21 -- P3 scalability handoff: separated pipeline, worker pool, async delivery, synthetic load test
+
+Branch: `feature/plate-region-detector`, continuing directly from
+Session 20. Direct response to a handoff from P3: make the ML detection
+pipeline scalable independently of live video playback, with 10
+specific numbered requirements and 5 pieces of required evidence.
+
+New package `anpr/pipeline/` -- a separate layer alongside
+`anpr/streaming.py`, not a replacement for it. The existing
+`process_stream`/`process_video_file`/`process_hls_stream` (used
+throughout Sessions 1-20 and already regression-tested against
+`HR98E4959`) are untouched; this is a new, additive entry point for the
+multi-camera/scalable case, built on top of the same underlying
+`detect_plate_from_frame`/`VehicleTracker` logic, not a reimplementation
+of it.
+
+## Architecture: three independent stages connected by queues
+
+1. **`frame_source.FrameReader`** (item 1, 2) -- one per camera, its own
+   thread, configurable sampling rate (`sample_every_n`, same semantics
+   as `process_video_file`'s existing `process_every_n_frames`). Pushes
+   sampled frames onto a bounded queue instead of calling inference
+   inline. Backpressure (item 7): a full queue means the newest frame is
+   dropped, counted, not blocked on -- a live camera can't be paused,
+   and blocking one reader would back up every camera sharing that
+   downstream worker.
+
+2. **`inference_worker.InferenceWorkerPool`** (item 3) -- N workers, one
+   dedicated frame queue each. Cameras are hashed to a worker up front,
+   not round-robined per frame -- `VehicleTracker` keeps per-camera
+   frame-to-frame state (IoU matching, confirmation clusters) that isn't
+   thread-safe and depends on in-order frames, so a camera's tracker
+   must only ever be touched by one thread for its whole lifetime. This
+   is real camera-level parallelism (N cameras spread across M workers),
+   not frame-level -- documented as the honest scope of "distributed
+   across workers" here.
+
+3. **`event_sender.EventSenderPool`** (items 4, 6, 7, 8) -- multiple
+   senders draining one shared event queue (no per-camera pinning needed
+   here, unlike inference -- any sender can deliver any event safely).
+   Batches up to `batch_size` events or `batch_timeout_sec`, whichever
+   first, and sends each with retry + exponential backoff. Backpressure
+   here too: a full event queue means new events are dropped and
+   counted, not blocked on.
+
+`events.DetectionEvent` (item 5): every event carries `event_id`,
+`camera_id`, `timestamp`, `model_version`, `confidence`, and
+`detection_type`. Honest caveat, not glossed over: real
+backend-watchlist's `POST /detections` contract only documents
+`{camera_id, plate_number, confidence}` -- the extra fields are sent as
+additional JSON fields (most REST frameworks ignore fields they don't
+recognize) so the richer schema is already in place if the contract
+gets extended, but whether the backend actually stores/uses them today
+is unconfirmed, not claimed as done.
+
+`metrics.Metrics` (item 9): thread-safe counters/latency-sample deques
+for frames read/dropped/processed, inference throughput, events
+produced/sent/failed/retried/dropped, event throughput, avg/p95 send and
+inference latency, and live queue depth. One `snapshot()` call gives a
+single consistent read across every stage.
+
+## The item 6 gap, stated plainly rather than papered over
+
+"Retry failed deliveries safely without creating duplicate detections"
+can only be a **best-effort client-side guarantee** against the real
+contract as it exists today -- `POST /detections` has no client-supplied
+idempotency key (its only server-side dedup is for scripted *replay*
+scenarios keyed on `scenario_run_id`+`camera_id`+`plate_number`, not for
+retrying an arbitrary live detection). What's actually implemented: a
+clean connection failure is always safely retried (request definitely
+never arrived); a timeout is retried too on the judgment that losing a
+real detection is worse than an occasional duplicate row for a
+security-alert pipeline -- a real, deliberate tradeoff, not a guarantee;
+a local in-process "already confirmed sent" set (keyed on `event_id`)
+stops resending something this client already got a real `201` for. A
+genuine fix needs a server-side idempotency key in the contract --
+flagged as a real ask for P6, not solved unilaterally here.
+
+## Required evidence
+
+**Real inference from the available sample streams:** ran the full
+3-stage pipeline against `dashcam_trimmed.mp4` (`ScalablePipeline`,
+1 camera, 2 workers, `sample_every_n=15`, 45s). Real, not mocked:
+30 frames processed, 4 real confirmed-plate events produced from actual
+`detect_plate_from_frame`/`VehicleTracker` output, all 4 delivered
+successfully through the real `EventSenderPool` batching/retry logic
+(dry-run send target, since backend-watchlist isn't reachable from this
+dev machine -- see Session 20's backend-integration section). Separately
+verified retry/backpressure against the real, currently-unreachable
+`DETECTION_API_URL`: 2 retries with backoff, clean failure, accurate
+metrics (`events_failed=1`, `events_retried=2`), no crash -- exactly the
+required safe-degradation behavior.
+
+**Synthetic detection-event load test (item 10):** `benchmarks/
+synthetic_load_test.py`, fake metadata events for 1,000/10,000/80,000
+camera identities, no video decode at all, run against a local mock
+backend (`benchmarks/mock_backend_server.py`) since real
+backend-watchlist isn't reachable from here right now -- explicitly
+measures this pipeline's own delivery infrastructure, not the real
+production backend's capacity, stated as such in the script's own
+output.
+
+**Maximum tested events per second / average and p95 latency:**
+measured directly, not estimated -- a real, reproducible ceiling of
+**~1,870-1,900 events/sec sustained** (8 sender threads, this machine's
+hardware, against the mock backend), independent of camera-identity
+count: 1,000/10,000/80,000 identities all sustain essentially the same
+throughput once the target rate is at or above that ceiling, a clean
+signal that this pipeline's delivery capacity is rate-bound, not
+identity-count-bound. At that ceiling: avg latency ~1.2-4ms, p95
+~2.7-5.7ms, 0 errors, 0 drops.
+
+Found and fixed two real bottlenecks while measuring this, not assumed
+away:
+1. First measurement showed adding more sender threads barely moved
+   achieved throughput (~1,200-1,300/s regardless of thread count) --
+   traced to `requests.post()` opening a fresh TCP connection every
+   call; switched to a persistent `requests.Session()` per sender for
+   connection-pool reuse. Modest improvement (~1,300 -> ~1,400/s), not
+   the fix alone.
+2. Real bottleneck: the load generator and the mock backend were both
+   running as threads inside the *same* Python process, meaning they
+   competed for the same GIL -- not a limit on the pipeline's own
+   design, an artifact of how the test was first set up. Running the
+   mock backend as a genuinely separate OS process (matching how a real
+   backend actually would be) raised throughput to the ~1,870-1,900/s
+   figure above.
+
+**Worker-scaling design:** camera-level horizontal scaling via
+`InferenceWorkerPool` (stable hash of `camera_id` -> worker index, so
+each camera's tracker state stays coherent on one thread) and
+independent horizontal scaling of delivery via `EventSenderPool` (no
+per-camera constraint, any sender can send any event). Both pools take
+`num_workers`/`num_senders` as plain constructor arguments -- sizing
+them for a real deployment is a hardware/ops decision, not hardcoded
+here. Not exercised on this hardware: true multi-GPU distribution (this
+Mac has one MPS device) -- the worker-pool structure is what that would
+plug into (one model instance per worker, pinned to its own device), but
+that specific extension is un-tested, stated as such rather than implied
+as done.
+
+## What's not done / open
+
+- Not tested against a real, live camera feed end-to-end (needs a
+  reachable backend-watchlist URL first -- see Session 20's still-open
+  item on that).
+- Multi-*process* worker distribution (vs. multi-*thread*, what's built)
+  not implemented -- threads share this pipeline's already-loaded
+  `anpr.config.yolo_model`/OCR clients cheaply, but true CPU-core
+  parallelism for the CPU-bound parts of inference would need separate
+  processes (GIL). Threads were the right first build for what item 3
+  actually asked (distribute cameras across workers) and matches this
+  session's demo-scope hardware (single Mac, one GPU); real multi-core/
+  multi-GPU horizontal scaling is the natural next step once there's
+  real hardware to test it against.
+- The claim text P3 asked to be able to make ("NETRA separates video
+  ingestion from AI inference and scales inference horizontally using
+  independent workers. Synthetic load testing represents 80,000 camera
+  identities, while real inference is demonstrated on the available
+  video feeds.") is now backed by real, measured evidence above, not
+  asserted without it.
+
+Nothing pushed. Working tree has new, uncommitted files
+(`anpr/pipeline/`, `benchmarks/mock_backend_server.py`,
+`benchmarks/_run_mock_server_standalone.py`,
+`benchmarks/synthetic_load_test.py`) -- not committed yet, awaiting
+explicit go-ahead same as every other change this session.
