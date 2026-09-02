@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, LogOut } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
+import { logout } from '@/lib/session';
 
 // Ordered by how often an officer actually reaches for each one during a
 // shift: Dashboard (continuous monitoring, the default landing page) first,
@@ -71,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
 
   const handleLogout = () => {
-    localStorage.removeItem('netra_authenticated');
+    logout();
     router.push('/login');
   };
 
