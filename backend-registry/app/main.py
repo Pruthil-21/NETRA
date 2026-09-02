@@ -1,5 +1,5 @@
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
@@ -24,6 +24,8 @@ from .schemas import (
     ReportSummary,
     RolePermissionsOut,
     RolePermissionsUpdate,
+    SyntheticDetectionEventAccepted,
+    SyntheticDetectionEventIn,
 )
 from .services import (
     admin_service,
@@ -32,6 +34,7 @@ from .services import (
     cameras_service,
     rbac_service,
     reports_service,
+    synthetic_events_service,
 )
 
 configure_logging()
@@ -312,3 +315,19 @@ def delete_camera(camera_id: int, user=Depends(require_permission("manage_camera
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "camera", camera_id)
+
+
+@app.post("/synthetic/detections", response_model=SyntheticDetectionEventAccepted, status_code=202)
+def receive_synthetic_detection(
+    body: SyntheticDetectionEventIn, background_tasks: BackgroundTasks, user=Depends(get_current_user)
+):
+    require_scale_demo_enabled()
+    if "manage_cameras" not in user.get("permissions", []) and user.get("role") not in ("officer", "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    def _write():
+        with get_conn() as conn:
+            synthetic_events_service.record_event(conn, body.event_id, body.camera_id, body.edge_node_id, body.payload)
+
+    background_tasks.add_task(_write)
+    return {"event_id": body.event_id, "status": "accepted"}
