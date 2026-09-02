@@ -24,6 +24,13 @@ export interface PostingCreateBody {
   scope_value: string | null;
 }
 
+export interface RolePermissionsOut {
+  name: string;
+  display_name: string;
+  hierarchy_level: number | null;
+  permissions: string[];
+}
+
 export const adminService = {
   async listOfficers(): Promise<OfficerOut[]> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/officers`, { headers: authHeaders() });
@@ -38,6 +45,22 @@ export const adminService = {
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Failed to reassign posting: HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async getRoles(): Promise<RolePermissionsOut[]> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/roles`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Failed to fetch roles: HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async updateRolePermissions(roleName: string, permissions: string[], reasonCode?: string): Promise<RolePermissionsOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/roles/${roleName}/permissions`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ permissions, reason_code: reasonCode }),
+    });
+    if (!res.ok) throw new Error(`Failed to update role permissions: HTTP ${res.status}`);
     return res.json();
   },
 };
