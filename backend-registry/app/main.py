@@ -116,7 +116,11 @@ def create_posting(body: PostingCreate, user=Depends(require_permission("manage_
 @app.get("/cameras", response_model=list[CameraOut])
 def list_cameras(user=Depends(get_current_user)):
     with get_conn() as conn:
-        cameras = cameras_service.list_cameras(conn)
+        # scope_type is only present on RBAC-issued tokens (Task 2); legacy
+        # hand-crafted tokens have no such claim and see every camera,
+        # matching this endpoint's behavior before this task.
+        dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+        cameras = cameras_service.list_cameras(conn, dept)
         return cameras
 
 
@@ -130,7 +134,7 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
 
 
 @app.post("/cameras", response_model=CameraOut, status_code=201)
-def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
+def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         created = cameras_service.create_camera(conn, camera.model_dump())
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
@@ -204,7 +208,7 @@ def camera_uptime(camera_id: int, user=Depends(get_current_user)):
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)
-def delete_camera(camera_id: int, user=Depends(require_role("officer"))):
+def delete_camera(camera_id: int, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         deleted = cameras_service.delete_camera(conn, camera_id)
         if not deleted:
