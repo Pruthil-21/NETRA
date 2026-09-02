@@ -5,6 +5,9 @@ services:
     image: bluenviron/mediamtx:1.20.0
     container_name: netra-mediamtx
     restart: unless-stopped
+    cpus: "${MEDIAMTX_CPUS:-2.0}"
+    mem_limit: "${MEDIAMTX_MEMORY_LIMIT:-3g}"
+    memswap_limit: "${MEDIAMTX_MEMORY_LIMIT:-3g}"
     ports:
       - "8554:8554"
       - "1935:1935"
@@ -21,6 +24,9 @@ services:
       dockerfile: docker/Dockerfile.replay
     container_name: netra-replay
     restart: unless-stopped
+    cpus: "${REPLAY_CPUS:-4.0}"
+    mem_limit: "${REPLAY_MEMORY_LIMIT:-2g}"
+    memswap_limit: "${REPLAY_MEMORY_LIMIT:-2g}"
     init: true
     stop_grace_period: 20s
     depends_on:
@@ -28,15 +34,25 @@ services:
     environment:
       ARCHIVE_DIR: /recordings
       MEDIAMTX_HOST: mediamtx
+      EDGE_NODE_ID: "${EDGE_NODE_ID:-edge-local-001}"
       STREAM_PREFIX: direct
       CAMERA_LIMIT: "${CAMERA_LIMIT:-30}"
     volumes:
       - "${HOME}/Downloads/NETRA-organizer-archive:/recordings:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://mediamtx:8888/stream/$${STREAM_PREFIX}-cam01/index.m3u8?cookieCheck=1"]
+      interval: 15s
+      timeout: 7s
+      retries: 5
+      start_period: 30s
 
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: netra-cloudflared
     restart: unless-stopped
+    cpus: "${CLOUDFLARED_CPUS:-0.5}"
+    mem_limit: "${CLOUDFLARED_MEMORY_LIMIT:-256m}"
+    memswap_limit: "${CLOUDFLARED_MEMORY_LIMIT:-256m}"
     depends_on:
       - mediamtx
     command:
