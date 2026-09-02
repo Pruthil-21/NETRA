@@ -2,6 +2,7 @@
 
 import { ScaleSummaryCard } from '@/components/scale/ScaleSummaryCard';
 import { ScaleMap } from '@/components/scale/ScaleMap';
+import { ScaleCameraList } from '@/components/scale/ScaleCameraList';
 
 export default function ScaleDemoPage() {
   return (
@@ -15,6 +16,9 @@ export default function ScaleDemoPage() {
       </div>
       <div className="mt-4 h-[500px] rounded-lg overflow-hidden border border-line">
         <ScaleMap onSelectCamera={(cam) => console.log('selected', cam.id)} />
+      </div>
+      <div className="mt-4 h-96">
+        <ScaleCameraList onSelectCamera={(cam) => console.log('selected', cam.id)} />
       </div>
     </main>
   );
