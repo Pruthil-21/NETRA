@@ -1,6 +1,7 @@
 'use client';
 
 import { ScaleSummaryCard } from '@/components/scale/ScaleSummaryCard';
+import { ScaleMap } from '@/components/scale/ScaleMap';
 
 export default function ScaleDemoPage() {
   return (
@@ -11,6 +12,9 @@ export default function ScaleDemoPage() {
       <p className="text-xs text-slate-500 mt-1">Isolated synthetic control-plane demo. Later tasks in this plan fill this page in.</p>
       <div className="mt-4">
         <ScaleSummaryCard />
+      </div>
+      <div className="mt-4 h-[500px] rounded-lg overflow-hidden border border-line">
+        <ScaleMap onSelectCamera={(cam) => console.log('selected', cam.id)} />
       </div>
     </main>
   );
