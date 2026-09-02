@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
 import { useInView } from "@/hooks/useInView";
@@ -68,21 +68,32 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = f
     startPlayingRef.current = startPlaying;
   }, [startPlaying]);
 
-  const hoverControllerRef = useRef<HoverGraceController | null>(null);
-  if (!hoverControllerRef.current) {
-    hoverControllerRef.current = createHoverGraceController(
-      HOVER_PLAY_DELAY_MS,
-      HOVER_LEAVE_GRACE_MS,
-      () => setIsPlaying(true),
-      () => {
-        // A deliberately-focused single camera stays playing when the mouse wanders off
-        // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
-        // tear down on mouse-leave.
-        if (!startPlayingRef.current) setIsPlaying(false);
-      }
-    );
-  }
-  const hoverController = hoverControllerRef.current;
+  // Created once via useMemo rather than a lazy-init ref -- reading ref.current
+  // during render (even guarded) trips react-hooks/refs; setIsPlaying and
+  // startPlayingRef are both stable across renders, so an empty dep array still
+  // matches the original once-per-mount intent.
+  const hoverController: HoverGraceController = useMemo(
+    () =>
+      createHoverGraceController(
+        HOVER_PLAY_DELAY_MS,
+        HOVER_LEAVE_GRACE_MS,
+        () => setIsPlaying(true),
+        // startPlayingRef is only read once this callback actually runs, and
+        // createHoverGraceController (lib/hoverGrace.ts) never calls onEnd
+        // synchronously -- only from a setTimeout or a click handler, both always
+        // outside the render pass. The rule can't see into that module to verify
+        // this, so it flags a ref captured in a closure passed to another function
+        // as a precaution; verified safe here.
+        // eslint-disable-next-line react-hooks/refs
+        () => {
+          // A deliberately-focused single camera stays playing when the mouse wanders off
+          // it (e.g. an officer reading the sidebar) -- only hover-previews in the grid
+          // tear down on mouse-leave.
+          if (!startPlayingRef.current) setIsPlaying(false);
+        }
+      ),
+    []
+  );
 
   const handleMouseEnter = useCallback(() => hoverController.hoverStart(), [hoverController]);
   const handleMouseLeave = useCallback(() => hoverController.hoverEnd(), [hoverController]);

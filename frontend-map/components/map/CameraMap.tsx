@@ -161,19 +161,25 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // every render, which makes React detach-then-reattach every marker's ref on every
   // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
   // background connectivity poller in CameraRegistryContext, whether or not this
-  // specific camera's own data changed).
-  const markerRefCallbacks = useRef<Map<number, (marker: L.Marker | null) => void>>(new Map());
-  const getMarkerRefCallback = useCallback((camId: number) => {
-    let cb = markerRefCallbacks.current.get(camId);
-    if (!cb) {
-      cb = (marker) => {
-        if (marker) markerRefs.current.set(camId, marker);
-        else markerRefs.current.delete(camId);
-      };
-      markerRefCallbacks.current.set(camId, cb);
+  // specific camera's own data changed). Built via useMemo (keyed on `cameras`) rather
+  // than a lazy ref-cache read during render -- the closures themselves only touch
+  // markerRefs.current when React actually calls them (mount/unmount), never here.
+  const markerRefCallbacks = useMemo(() => {
+    const map = new Map<number, (marker: L.Marker | null) => void>();
+    for (const cam of cameras) {
+      // markerRefs is only read once React actually invokes this ref callback, which
+      // happens during commit (mount/unmount), never synchronously during render. The
+      // rule flags any ref captured in a closure handed to another function as a
+      // precaution since it can't trace invocation timing across the Map.set/
+      // <Marker ref={...}> boundary; verified safe here.
+      // eslint-disable-next-line react-hooks/refs
+      map.set(cam.id, (marker) => {
+        if (marker) markerRefs.current.set(cam.id, marker);
+        else markerRefs.current.delete(cam.id);
+      });
     }
-    return cb;
-  }, []);
+    return map;
+  }, [cameras]);
   // One hover-grace controller per camera id, created lazily on first hover and
   // reused after -- mirrors the per-marker-ref cache above for the same reason
   // (this component manages every marker from one instance, so per-marker state
@@ -252,7 +258,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
             return (
               <Marker
                 key={cam.id}
-                ref={getMarkerRefCallback(cam.id)}
+                ref={markerRefCallbacks.get(cam.id)}
                 position={[cam.lat, longitude]}
                 icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
                 eventHandlers={{
