@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs (resource_type, resource_id);
 
--- RBAC: Role (function) x Jurisdiction (scope) -- see docs/superpowers/plans/2026-09-02-rbac.md.
+-- RBAC: Role (function) x Jurisdiction (scope).
 -- 5 of the proposed 13 functional roles, enough to demonstrate hierarchy +
 -- scoping + separation-of-duty + audit logging. hierarchy_level is for
 -- display/scope-inheritance only -- permissions are an explicit per-role
