@@ -19,6 +19,8 @@ from .schemas import (
     PostingCreate,
     PostingOut,
     ReportSummary,
+    RolePermissionsOut,
+    RolePermissionsUpdate,
 )
 from .services import admin_service, audit_service, auth_service, cameras_service, rbac_service, reports_service
 
@@ -111,6 +113,36 @@ def create_posting(body: PostingCreate, user=Depends(require_permission("manage_
         )
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "reassign_posting", "posting", posting["id"])
         return posting
+
+
+@app.get("/admin/roles", response_model=list[RolePermissionsOut])
+def list_roles(user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        return rbac_service.list_roles_with_permissions(conn)
+
+
+@app.put("/admin/roles/{role_name}/permissions", response_model=RolePermissionsOut)
+def update_role_permissions(
+    role_name: str, body: RolePermissionsUpdate, user=Depends(require_permission("manage_roles"))
+):
+    with get_conn() as conn:
+        role = rbac_service.get_role_by_name(conn, role_name)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Unknown role '{role_name}'")
+
+        unknown = set(body.permissions) - rbac_service.VALID_PERMISSIONS
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown permission(s): {', '.join(sorted(unknown))}")
+
+        if role["name"] == "super_admin" and "manage_roles" not in body.permissions:
+            raise HTTPException(status_code=400, detail="Cannot remove manage_roles from super_admin")
+
+        permissions = rbac_service.set_role_permissions(conn, role["id"], body.permissions)
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "edit_role_permissions",
+            "role", role["id"], reason_code=body.reason_code,
+        )
+        return {**role, "permissions": permissions}
 
 
 @app.get("/cameras", response_model=list[CameraOut])

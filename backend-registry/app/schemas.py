@@ -127,3 +127,15 @@ class PostingCreate(BaseModel):
     role_name: str
     scope_type: str
     scope_value: Optional[str] = None
+
+
+class RolePermissionsOut(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    permissions: list[str]
+
+
+class RolePermissionsUpdate(BaseModel):
+    permissions: list[str]
+    reason_code: Optional[str] = None

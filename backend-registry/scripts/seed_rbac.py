@@ -20,7 +20,7 @@ PERMISSIONS = {
     "super_admin": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
-        "acknowledge_alerts",
+        "acknowledge_alerts", "manage_roles",
     ],
     "district_command": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
