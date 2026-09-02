@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ARCHIVE_DIR="${ARCHIVE_DIR:-/recordings}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
+EDGE_NODE_ID="${EDGE_NODE_ID:-edge-local-001}"
 STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
 TRANSCODE_CAMERAS="${TRANSCODE_CAMERAS:-^(cam15|cam27|cam29|cam30)$}"
@@ -31,11 +32,18 @@ if [[ ! "$CAMERA_LIMIT" =~ ^[0-9]+$ ]] ||
   exit 1
 fi
 
+if [[ ! "$EDGE_NODE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "EDGE_NODE_ID contains unsupported characters: $EDGE_NODE_ID" >&2
+  exit 1
+fi
+
 if [[ ! -d "$ARCHIVE_DIR" ]]; then
   echo "Recording directory is unavailable: $ARCHIVE_DIR" >&2
   exit 1
 fi
 
+echo "Edge node: $EDGE_NODE_ID"
+echo "Camera limit: $CAMERA_LIMIT"
 echo "Waiting for MediaMTX at $MEDIAMTX_HOST:$MEDIAMTX_PORT..."
 mediamtx_ready=0
 
