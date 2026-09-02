@@ -3,6 +3,8 @@
 Duplicated (not shared) in backend-registry and backend-watchlist by design —
 keeps each service independently owned with zero cross-folder edits.
 """
+import os
+
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -42,3 +44,12 @@ def require_permission(permission: str):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
+
+
+def require_scale_demo_enabled():
+    """Hard kill-switch for every synthetic/scale-demo endpoint. 404, not 403
+    -- when disabled, these routes should look like they don't exist, not
+    like a permission was denied (no reason to reveal the feature exists at
+    all in an environment where it's off)."""
+    if os.environ.get("SCALE_DEMO_ENABLED", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")
