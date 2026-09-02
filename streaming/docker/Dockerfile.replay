@@ -2,9 +2,14 @@ FROM alpine:3.22
 
 RUN apk add --no-cache \
     bash \
-    ffmpeg
+    curl \
+    ffmpeg \
+    jq
 
 COPY docker/replay-entrypoint.sh /usr/local/bin/replay-entrypoint
-RUN chmod +x /usr/local/bin/replay-entrypoint
+COPY docker/hybrid-entrypoint.sh /usr/local/bin/hybrid-entrypoint
+
+RUN chmod +x /usr/local/bin/replay-entrypoint \
+    /usr/local/bin/hybrid-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/replay-entrypoint"]
