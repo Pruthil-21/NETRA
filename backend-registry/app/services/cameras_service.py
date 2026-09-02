@@ -11,6 +11,7 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url
                 FROM cameras
+                WHERE is_synthetic = false
                 ORDER BY id
             """)
         else:
@@ -20,12 +21,68 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url
                 FROM cameras
-                WHERE dept = %s
+                WHERE dept = %s AND is_synthetic = false
                 ORDER BY id
             """, (dept,))
         cols = [c.name for c in cur.description]
         rows = cur.fetchall()
         return [dict(zip(cols, row)) for row in rows]
+
+
+MAX_PAGE_LIMIT = 500
+
+_CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
+                     ST_X(location::geometry) AS long, camera_type, ownership,
+                     connectivity_status, storage_type, retention_days,
+                     health_status, rtsp_url, stream_id, hls_url,
+                     is_synthetic, edge_node_id"""
+
+
+def list_cameras_page(
+    conn,
+    cursor: int | None = None,
+    limit: int = 100,
+    include_synthetic: bool = False,
+    dept: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict:
+    """Keyset-paginated camera listing. bbox is (min_lat, max_lat, min_long, max_long).
+    limit is always capped server-side at MAX_PAGE_LIMIT, regardless of what's requested --
+    this endpoint must never be able to return all 80,000+ rows in one response."""
+    limit = min(limit, MAX_PAGE_LIMIT)
+    clauses = []
+    params: dict = {"limit": limit + 1}  # fetch one extra to know if there's a next page
+
+    if not include_synthetic:
+        clauses.append("is_synthetic = false")
+    if cursor is not None:
+        clauses.append("id > %(cursor)s")
+        params["cursor"] = cursor
+    if dept is not None:
+        clauses.append("dept = %(dept)s")
+        params["dept"] = dept
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {_CAMERA_COLUMNS} FROM cameras {where} ORDER BY id LIMIT %(limit)s",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = rows[-1]["id"]
+
+    return {"cameras": rows, "next_cursor": next_cursor}
 
 
 def get_camera(conn, camera_id: int):

@@ -139,3 +139,8 @@ class RolePermissionsOut(BaseModel):
 class RolePermissionsUpdate(BaseModel):
     permissions: list[str]
     reason_code: Optional[str] = None
+
+
+class PaginatedCamerasOut(BaseModel):
+    cameras: list[CameraOut]
+    next_cursor: Optional[int] = None

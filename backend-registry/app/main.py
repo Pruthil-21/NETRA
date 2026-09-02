@@ -3,7 +3,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_permission, require_role
+from .auth import get_current_user, require_permission, require_role, require_scale_demo_enabled
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
@@ -152,15 +152,52 @@ def update_role_permissions(
         return {**role, "permissions": permissions}
 
 
-@app.get("/cameras", response_model=list[CameraOut])
-def list_cameras(user=Depends(get_current_user)):
+@app.get("/cameras")
+def list_cameras(
+    user=Depends(get_current_user),
+    include_synthetic: bool = False,
+    cursor: int | None = None,
+    limit: int | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    # include_synthetic is the scale-demo surface -- gated behind the
+    # environment kill-switch and manage_cameras (Super Admin/District
+    # Command only, not every officer), so an ordinary officer can neither
+    # see nor flood the synthetic registry. Real-camera pagination (cursor/
+    # limit with include_synthetic left false) stays open to anyone
+    # authenticated, same as today.
+    if include_synthetic:
+        require_scale_demo_enabled()
+        if "manage_cameras" not in user.get("permissions", []) and user.get("role") not in ("officer", "admin"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     with get_conn() as conn:
-        # scope_type is only present on RBAC-issued tokens (Task 2); legacy
-        # hand-crafted tokens have no such claim and see every camera,
-        # matching this endpoint's behavior before this task.
+        # scope_type is only present on RBAC-issued tokens; legacy hand-crafted
+        # tokens have no such claim and see every (real) camera, matching this
+        # endpoint's behavior before pagination was added.
         dept = user.get("scope_value") if user.get("scope_type") == "district" else None
-        cameras = cameras_service.list_cameras(conn, dept)
-        return cameras
+
+        # No pagination/synthetic params at all -> today's exact legacy behavior:
+        # every real camera, as a bare list, no envelope. This is the path
+        # CameraRegistryContext.tsx's fetchRegistryCameras() always takes.
+        if cursor is None and limit is None and not include_synthetic:
+            return cameras_service.list_cameras(conn, dept)
+
+        bbox = None
+        if None not in (min_lat, max_lat, min_long, max_long):
+            bbox = (min_lat, max_lat, min_long, max_long)
+
+        return cameras_service.list_cameras_page(
+            conn,
+            cursor=cursor,
+            limit=limit or 100,
+            include_synthetic=include_synthetic,
+            dept=dept,
+            bbox=bbox,
+        )
 
 
 @app.get("/cameras/{camera_id}", response_model=CameraOut)
