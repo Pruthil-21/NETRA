@@ -87,3 +87,12 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+
+
+class MeResponse(BaseModel):
+    badge_number: str
+    name: str
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    permissions: list[str]

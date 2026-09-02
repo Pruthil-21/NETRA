@@ -3,7 +3,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_role
+from .auth import get_current_user, require_permission, require_role
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
@@ -14,6 +14,7 @@ from .schemas import (
     CameraUptimeReport,
     LoginRequest,
     LoginResponse,
+    MeResponse,
     ReportSummary,
 )
 from .services import audit_service, auth_service, cameras_service, rbac_service, reports_service
@@ -55,6 +56,18 @@ def login(body: LoginRequest):
         token = auth_service.issue_token(conn, officer, posting)
         audit_service.log(conn, officer["badge_number"], "login", "officer", officer["id"], badge_number=officer["badge_number"])
         return {"token": token}
+
+
+@app.get("/auth/me", response_model=MeResponse)
+def me(user=Depends(get_current_user)):
+    return {
+        "badge_number": user.get("badge_number", user.get("sub", "")),
+        "name": user.get("name", ""),
+        "role": user.get("role", ""),
+        "scope_type": user.get("scope_type", "platform"),
+        "scope_value": user.get("scope_value"),
+        "permissions": user.get("permissions", []),
+    }
 
 
 @app.get("/cameras", response_model=list[CameraOut])
@@ -117,7 +130,7 @@ def reports_summary(user=Depends(get_current_user)):
 
 
 @app.put("/cameras/{camera_id}", response_model=CameraOut)
-def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_role("officer"))):
+def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         fields = camera.model_dump(exclude_unset=True)
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
