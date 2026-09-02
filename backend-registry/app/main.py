@@ -43,7 +43,9 @@ def health():
 def login(body: LoginRequest):
     with get_conn() as conn:
         officer = auth_service.get_officer_by_badge(conn, body.badge_number)
-        if officer is None or not auth_service.verify_password(body.password, officer["password_hash"]):
+        password_hash = officer["password_hash"] if officer else auth_service.DUMMY_PASSWORD_HASH
+        password_ok = auth_service.verify_password(body.password, password_hash)
+        if officer is None or not password_ok:
             raise HTTPException(status_code=401, detail="Invalid badge number or password")
 
         posting = auth_service.get_active_posting(conn, officer["id"])
@@ -75,7 +77,7 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
 def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
     with get_conn() as conn:
         created = cameras_service.create_camera(conn, camera.model_dump())
-        audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
         return created
 
 
@@ -102,7 +104,7 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"
                 results.append(CameraBulkResult(index=index, status="error", reason=str(e)))
                 continue
 
-            audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
+            audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
             results.append(CameraBulkResult(index=index, status="created", camera=created))
     return results
 
@@ -124,7 +126,7 @@ def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_rol
 
         non_connectivity_fields = {k for k in fields if k != "connectivity_status"}
         if non_connectivity_fields:
-            audit_service.log(conn, user.get("sub"), "update", "camera", camera_id)
+            audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "camera", camera_id)
         if connectivity_changed:
             logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
 
@@ -151,4 +153,4 @@ def delete_camera(camera_id: int, user=Depends(require_role("officer"))):
         deleted = cameras_service.delete_camera(conn, camera_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "delete", "camera", camera_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "camera", camera_id)

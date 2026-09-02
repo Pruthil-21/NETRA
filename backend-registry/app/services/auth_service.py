@@ -9,6 +9,11 @@ import jwt
 from ..config import settings
 from . import rbac_service
 
+# Precomputed bcrypt hash of a fixed dummy value -- used when no officer
+# matches the submitted badge number, so verify_password() still runs and
+# the response time doesn't leak whether the badge number exists.
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-constant-time-login", bcrypt.gensalt()).decode("utf-8")
+
 TOKEN_LIFETIME = timedelta(hours=12)
 
 

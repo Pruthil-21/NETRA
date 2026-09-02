@@ -41,6 +41,26 @@ def test_login_with_unknown_badge_number_returns_401(client):
     assert resp.status_code == 401
 
 
+def test_login_still_returns_401_for_both_wrong_password_and_unknown_badge_after_constant_time_fix(client):
+    # Regression test for the constant-time login fix: verify_password() now
+    # always runs (against a dummy hash when there's no matching officer),
+    # so this just confirms the response is unchanged for both 401 paths.
+    _run("scripts/seed_rbac.py")
+    _run("scripts/seed_demo_officers.py")
+
+    wrong_password_resp = client.post(
+        "/auth/login", json={"badge_number": "GJ-SA-001", "password": "wrong-password"}
+    )
+    assert wrong_password_resp.status_code == 401
+    assert wrong_password_resp.json()["detail"] == "Invalid badge number or password"
+
+    unknown_badge_resp = client.post(
+        "/auth/login", json={"badge_number": "GJ-NOPE-999", "password": "anything"}
+    )
+    assert unknown_badge_resp.status_code == 401
+    assert unknown_badge_resp.json()["detail"] == "Invalid badge number or password"
+
+
 def test_district_command_token_carries_district_scope(client):
     _run("scripts/seed_rbac.py")
     _run("scripts/seed_demo_officers.py")
