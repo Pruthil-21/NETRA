@@ -11,7 +11,10 @@ from .schemas import (
     CameraCreate,
     CameraOut,
     CameraUpdate,
+    CameraSummaryOut,
     CameraUptimeReport,
+    DistrictCount,
+    DistrictSummaryOut,
     LoginRequest,
     LoginResponse,
     MeResponse,
@@ -198,6 +201,25 @@ def list_cameras(
             dept=dept,
             bbox=bbox,
         )
+
+
+@app.get("/cameras/summary")
+def camera_summary(
+    user=Depends(get_current_user),
+    group_by: str | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    require_scale_demo_enabled()
+    with get_conn() as conn:
+        if group_by == "district":
+            bbox = None
+            if None not in (min_lat, max_lat, min_long, max_long):
+                bbox = (min_lat, max_lat, min_long, max_long)
+            return {"districts": cameras_service.get_district_summary(conn, bbox)}
+        return cameras_service.get_summary(conn)
 
 
 @app.get("/cameras/{camera_id}", response_model=CameraOut)

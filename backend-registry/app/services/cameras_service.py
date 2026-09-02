@@ -204,3 +204,56 @@ def delete_camera(conn, camera_id: int) -> bool:
         row = cur.fetchone()
         conn.commit()
         return row is not None
+
+
+def get_summary(conn) -> dict:
+    """One aggregate query against the indexes from Task 1 -- never fetches
+    individual camera rows to count in Python, so this stays fast at 80,000+ rows."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE connectivity_status = 'online') AS online,
+                COUNT(*) FILTER (WHERE connectivity_status = 'degraded') AS degraded,
+                COUNT(*) FILTER (WHERE connectivity_status = 'offline') AS offline,
+                COUNT(*) FILTER (WHERE is_synthetic = false) AS real_stream_count,
+                COUNT(*) FILTER (WHERE is_synthetic = true) AS synthetic_count
+            FROM cameras
+        """)
+        row = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM edge_nodes")
+        edge_node_count = cur.fetchone()[0]
+
+    return {
+        "total": row[0],
+        "online": row[1],
+        "degraded": row[2],
+        "offline": row[3],
+        "real_stream_count": row[4],
+        "synthetic_count": row[5],
+        "edge_node_count": edge_node_count,
+    }
+
+
+def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = None) -> list[dict]:
+    """Real SQL GROUP BY district -- this is what the zoomed-out map view
+    calls instead of counting a single truncated page of cameras client-side,
+    which would under-report any district with more cameras than fit in one
+    page. bbox is (min_lat, max_lat, min_long, max_long)."""
+    clauses = []
+    params: dict = {}
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT dept AS district, COUNT(*) AS count FROM cameras {where} GROUP BY dept ORDER BY count DESC",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
