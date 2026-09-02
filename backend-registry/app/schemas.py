@@ -163,3 +163,19 @@ class DistrictCount(BaseModel):
 
 class DistrictSummaryOut(BaseModel):
     districts: list[DistrictCount]
+
+
+class SyntheticDetectionEventIn(BaseModel):
+    event_id: str
+    camera_id: int
+    edge_node_id: Optional[int] = None
+    payload: Optional[dict] = None
+
+
+class SyntheticDetectionEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
+
+
+class ArchiveResult(BaseModel):
+    archived: int
