@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ScaleCameraList } from '@/components/scale/ScaleCameraList';
 
 function makeCameras(n: number) {
@@ -11,8 +11,29 @@ function makeCameras(n: number) {
   }));
 }
 
+// jsdom does no real layout, so every element's offsetHeight/offsetWidth is
+// 0 -- @tanstack/react-virtual treats a 0 measured container size as "not
+// yet measured" and returns an empty virtual-items range regardless of
+// ResizeObserver availability. Stubbing these two prototype accessors gives
+// the virtualizer a non-zero viewport to compute a real range against;
+// restored after each test so it doesn't leak into other test files sharing
+// this process.
+let offsetHeightDescriptor: PropertyDescriptor | undefined;
+let offsetWidthDescriptor: PropertyDescriptor | undefined;
+
 describe('ScaleCameraList', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    offsetWidthDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 400 });
+    Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 800 });
+  });
+
+  afterEach(() => {
+    if (offsetHeightDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDescriptor);
+    if (offsetWidthDescriptor) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', offsetWidthDescriptor);
+  });
 
   it('does not render every row into the DOM for a large page', async () => {
     vi.stubGlobal(
