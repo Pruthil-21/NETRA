@@ -1,8 +1,13 @@
+import os
 import subprocess
 import sys
 
 import jwt as pyjwt
 from app.config import settings
+
+# backend-registry's root, computed relative to this file -- not a hardcoded
+# path, so this works on any machine/OS, including CI (which has no D: drive).
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _token(role, permissions, scope_type="platform", scope_value=None, sub="998"):
@@ -14,8 +19,8 @@ def _token(role, permissions, scope_type="platform", scope_value=None, sub="998"
 
 
 def _super_admin_token(client):
-    subprocess.run([sys.executable, "scripts/seed_rbac.py"], check=True, cwd="D:/NETRA/backend-registry")
-    subprocess.run([sys.executable, "scripts/seed_demo_officers.py"], check=True, cwd="D:/NETRA/backend-registry")
+    subprocess.run([sys.executable, "scripts/seed_rbac.py"], check=True, cwd=BACKEND_ROOT)
+    subprocess.run([sys.executable, "scripts/seed_demo_officers.py"], check=True, cwd=BACKEND_ROOT)
     resp = client.post("/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"})
     return resp.json()["token"]
 

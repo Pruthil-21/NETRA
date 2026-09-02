@@ -1,12 +1,17 @@
+import os
 import subprocess
 import sys
 
 import jwt as pyjwt
 from app.config import settings
 
+# backend-registry's root, computed relative to this file -- not a hardcoded
+# path, so this works on any machine/OS, including CI (which has no D: drive).
+BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def _run(script):
-    subprocess.run([sys.executable, script], check=True, cwd="D:/NETRA/backend-registry")
+    subprocess.run([sys.executable, script], check=True, cwd=BACKEND_ROOT)
 
 
 def test_login_with_correct_password_returns_token_with_resolved_permissions(client):
