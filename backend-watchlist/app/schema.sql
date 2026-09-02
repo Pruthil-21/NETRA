@@ -80,3 +80,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs (resource_type, resource_id);
+
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS badge_number TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason_code TEXT;

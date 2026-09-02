@@ -10,6 +10,7 @@ import VirtualizedCameraList from '@/components/registry/VirtualizedCameraList';
 import AddCameraModal from '@/components/registry/AddCameraModal';
 import { StaleIndicator, useStaleness } from '@/components/common/StaleIndicator';
 import { RefreshCw, AlertTriangle, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { usePermissions } from '@/hooks/usePermissions';
 
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
   ssr: false,
@@ -41,6 +42,7 @@ export default function MapPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [showAddCamera, setShowAddCamera] = useState(false);
   const { isStale } = useStaleness(lastUpdated, !!error, HEALTH_CHECK_INTERVAL_MS);
+  const { has } = usePermissions();
 
   return (
     <div className="flex-1 flex overflow-hidden relative min-h-0">
@@ -58,14 +60,16 @@ export default function MapPage() {
               {!isLoading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={HEALTH_CHECK_INTERVAL_MS} />}
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => setShowAddCamera(true)}
-                aria-label="Add camera"
-                className="p-1.5 text-slate-400 hover:text-white bg-panel-raised rounded border border-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
-              >
-                <Plus size={13} />
-              </button>
+              {has('manage_cameras') && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddCamera(true)}
+                  aria-label="Add camera"
+                  className="p-1.5 text-slate-400 hover:text-white bg-panel-raised rounded border border-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
+                >
+                  <Plus size={13} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => refreshCameras()}

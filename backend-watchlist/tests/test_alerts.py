@@ -61,12 +61,20 @@ def test_status_update_is_append_only_not_a_mutation(client, officer_headers, in
     assert listed["status"] == "ACKNOWLEDGED"
 
 
-def test_multiple_status_changes_append_multiple_rows(client, officer_headers, internal_headers):
+def test_multiple_status_changes_append_multiple_rows(client, officer_headers, second_officer_headers, internal_headers):
     alert, _ = _seed_watchlist_and_detection(client, internal_headers)
     alert_id = alert["id"]
 
+    # ESCALATED is done by a second officer: Separation of Duty (spec Section
+    # 6) blocks the officer who already acted on this alert (ACKNOWLEDGED)
+    # from also being the one who escalates it.
+    headers_by_status = {
+        "ACKNOWLEDGED": officer_headers,
+        "ESCALATED": second_officer_headers,
+        "DISMISSED": officer_headers,
+    }
     for status in ("ACKNOWLEDGED", "ESCALATED", "DISMISSED"):
-        resp = client.patch(f"/alerts/{alert_id}", json={"status": status}, headers=officer_headers)
+        resp = client.patch(f"/alerts/{alert_id}", json={"status": status}, headers=headers_by_status[status])
         assert resp.status_code == 200
         assert resp.json()["status"] == status
 

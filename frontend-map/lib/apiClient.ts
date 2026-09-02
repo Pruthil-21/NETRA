@@ -1,17 +1,17 @@
+import { getToken } from "./session";
+
 /**
- * Shared fetch helper for backend-registry and backend-watchlist.
- *
- * HACKATHON SHORTCUT: /cameras (any authenticated user) and /alerts (officer role)
- * both require a JWT, and neither service has a login endpoint yet — this reuses one
- * token minted out-of-band and dropped in via env rather than a real login flow.
- * Replace with a proper auth flow post-hackathon.
+ * Shared fetch helper for backend-registry and backend-watchlist. Attaches
+ * whatever officer is currently logged in (see lib/session.ts) -- both
+ * /cameras and /alerts are JWT-gated and now resolve the real actor from
+ * the session token, not a fixed demo identity.
  *
  * Pulled out of useCameraFeeds/AlertBanner so the two don't each carry their own copy
- * of this header logic — they drifted out of sync once already (one was pointed at the
+ * of this header logic -- they drifted out of sync once already (one was pointed at the
  * wrong service URL for a while).
  */
 export function authorizedFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = process.env.NEXT_PUBLIC_DEMO_OFFICER_JWT || "";
+  const token = getToken() || "";
   return fetch(url, {
     ...init,
     headers: {

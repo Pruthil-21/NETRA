@@ -56,7 +56,7 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
         const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts`);
 
         if (!res.ok) {
-          console.warn(`Alerts API returned ${res.status} — check NEXT_PUBLIC_DEMO_OFFICER_JWT is a valid officer token.`);
+          console.warn(`Alerts API returned ${res.status} — check you are logged in with a valid officer session.`);
           onConnectionChange?.(false);
           return;
         }

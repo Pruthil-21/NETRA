@@ -51,6 +51,17 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
     return get_alert(db, new_id)
 
 
+def has_prior_status_change(db, alert_id: int, changed_by) -> bool:
+    """True if `changed_by` already has a status-history row on this alert --
+    used to enforce Separation of Duty on escalation (spec Section 6): the
+    officer who first acted on an alert can't also be the one who escalates it."""
+    db.execute(
+        "SELECT 1 FROM alert_status_history WHERE alert_id = %s AND changed_by = %s LIMIT 1",
+        (alert_id, changed_by),
+    )
+    return db.fetchone() is not None
+
+
 def update_status(db: RealDictCursor, alert_id: int, status: str, changed_by):
     db.execute("SELECT id FROM alerts WHERE id = %s", (alert_id,))
     if db.fetchone() is None:

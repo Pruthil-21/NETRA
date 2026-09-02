@@ -6,12 +6,14 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, LogOut } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
+import { logout } from '@/lib/session';
+import { usePermissions } from '@/hooks/usePermissions';
 
 // Ordered by how often an officer actually reaches for each one during a
 // shift: Dashboard (continuous monitoring, the default landing page) first,
 // Map (asset/coverage lookup) second, Search and Alerts (on-demand,
 // investigative/reactive) last -- not alphabetical, not build order.
-const NAV_ITEMS = [
+const BASE_NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/map', label: 'Map', icon: MapIcon },
   { href: '/search', label: 'Search', icon: Search },
@@ -69,9 +71,13 @@ function StatusTicker() {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const { has } = usePermissions();
+  const navItems = has('manage_users_roles')
+    ? [...BASE_NAV_ITEMS, { href: '/admin', label: 'Admin', icon: Shield }]
+    : BASE_NAV_ITEMS;
 
   const handleLogout = () => {
-    localStorage.removeItem('netra_authenticated');
+    logout();
     router.push('/login');
   };
 
@@ -87,7 +93,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="h-6 w-px bg-line shrink-0" />
 
           <nav aria-label="Primary" className="flex items-center flex-1 min-w-0 overflow-x-auto">
-            {NAV_ITEMS.map((item) => {
+            {navItems.map((item) => {
               const isActive = item.href === '/' ? pathname === '/' : pathname.startsWith(item.href);
               const Icon = item.icon;
               return (
