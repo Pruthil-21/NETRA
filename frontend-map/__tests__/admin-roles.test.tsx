@@ -29,7 +29,22 @@ describe('Role Permissions section (super_admin)', () => {
     expect(screen.getByText('Station Officer')).toBeInTheDocument();
   });
 
-  it('saves an updated permission set for the role', async () => {
+  it('saves an updated permission set for the role, with the typed reason code', async () => {
+    render(<AdminPage />);
+    const checkbox = await screen.findByLabelText('manage_cameras');
+    fireEvent.click(checkbox);
+    fireEvent.change(screen.getByLabelText(/reason code/i), { target: { value: 'SCOPE_REDUCTION' } });
+    fireEvent.click(screen.getByRole('button', { name: /save/i }));
+    await waitFor(() =>
+      expect(adminService.updateRolePermissions).toHaveBeenCalledWith(
+        'station_officer',
+        expect.arrayContaining(['view_live_feeds', 'search_vehicles', 'manage_cameras']),
+        'SCOPE_REDUCTION',
+      ),
+    );
+  });
+
+  it('omits the reason code when the field is left blank', async () => {
     render(<AdminPage />);
     const checkbox = await screen.findByLabelText('manage_cameras');
     fireEvent.click(checkbox);
@@ -38,7 +53,7 @@ describe('Role Permissions section (super_admin)', () => {
       expect(adminService.updateRolePermissions).toHaveBeenCalledWith(
         'station_officer',
         expect.arrayContaining(['view_live_feeds', 'search_vehicles', 'manage_cameras']),
-        expect.anything(),
+        undefined,
       ),
     );
   });

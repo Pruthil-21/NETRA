@@ -72,7 +72,7 @@ function roleBadgeClass(role: string): string {
 function RolePermissionsSection() {
   const [roles, setRoles] = useState<RolePermissionsOut[]>([]);
   const [draft, setDraft] = useState<Record<string, string[]>>({});
-  const [reasonCode, setReasonCode] = useState('');
+  const [reasonCodes, setReasonCodes] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [savingRole, setSavingRole] = useState<string | null>(null);
@@ -109,7 +109,11 @@ function RolePermissionsSection() {
     setSaveError(null);
     setSavedRole(null);
     try {
-      const updated = await adminService.updateRolePermissions(roleName, draft[roleName] ?? [], reasonCode);
+      const updated = await adminService.updateRolePermissions(
+        roleName,
+        draft[roleName] ?? [],
+        reasonCodes[roleName] || undefined,
+      );
       setRoles((prev) => prev.map((r) => (r.name === roleName ? updated : r)));
       setSavedRole(roleName);
     } catch (err) {
@@ -231,8 +235,10 @@ function RolePermissionsSection() {
                     </label>
                     <input
                       id={`reason-${role.name}`}
-                      value={reasonCode}
-                      onChange={(e) => setReasonCode(e.target.value)}
+                      value={reasonCodes[role.name] ?? ''}
+                      onChange={(e) =>
+                        setReasonCodes((prev) => ({ ...prev, [role.name]: e.target.value }))
+                      }
                       placeholder="SCOPE_REDUCTION"
                       className="w-full sm:max-w-xs bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
                     />
