@@ -2,9 +2,10 @@
 
 Field names match /contract/API_CONTRACT.md exactly.
 """
+from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CameraCreate(BaseModel):
@@ -51,6 +52,21 @@ class CameraBulkResult(BaseModel):
     status: Literal["created", "error"]
     camera: Optional[CameraOut] = None
     reason: Optional[str] = None
+
+
+class UptimeWindow(BaseModel):
+    status: str
+    from_: datetime = Field(alias="from")
+    to: Optional[datetime] = None
+    duration_seconds: float
+
+    model_config = {"populate_by_name": True}
+
+
+class CameraUptimeReport(BaseModel):
+    camera_id: int
+    current_status: str
+    windows: list[UptimeWindow]
 
 
 class ReportSummary(BaseModel):

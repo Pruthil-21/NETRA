@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { GridControls } from "@/components/dashboard/GridControls";
 import { AlertLog } from "@/components/dashboard/AlertLog";
 import { AlertBanner, Alert } from "@/components/AlertBanner";
-import { useCameraFeeds } from "@/hooks/useCameraFeeds";
+import { StaleIndicator, useStaleness } from "@/components/common/StaleIndicator";
+import { useCameraFeeds, FEED_STALE_THRESHOLD_MS } from "@/hooks/useCameraFeeds";
 import { CameraFeed } from "@/types/stream";
 import { TEST_FEEDS } from "@/config/streams";
 
@@ -18,7 +19,8 @@ type StatusFilter = CameraFeed["status"] | "all";
 // bar (branding, live clock, online/offline ticker, alerts bell) for every
 // route -- stacking a second one under it would just be a duplicate banner.
 export default function DashboardPage() {
-  const { feeds, loading, error, refetch } = useCameraFeeds();
+  const { feeds, loading, error, refetch, lastUpdated } = useCameraFeeds();
+  const { isStale } = useStaleness(lastUpdated, !!error, FEED_STALE_THRESHOLD_MS);
   const [layout, setLayout] = useState<"grid-4" | "grid-9" | "focus">("grid-9");
   const [searchTerm, setSearchTerm] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("all");
@@ -60,7 +62,7 @@ export default function DashboardPage() {
     return focused ? [focused] : filteredFeeds.slice(0, 1);
   }, [layout, filteredFeeds, focusedId]);
 
-  const handleSelectFocus = (id: string) => {
+  const handleSelectFocus = useCallback((id: string) => {
     setFocusedId(id);
     setLayout("focus");
     // Clear filters so jumping to a camera from an alert always works, even if the
@@ -69,7 +71,7 @@ export default function DashboardPage() {
     setDepartmentFilter("all");
     setStatusFilter("all");
     setSearchTerm("");
-  };
+  }, []);
 
   return (
     <main className="flex-1 overflow-y-auto min-h-0 w-full flex flex-col">
@@ -77,7 +79,7 @@ export default function DashboardPage() {
 
       <div className="flex-1 p-4 sm:p-6">
         <div className="mb-6 flex justify-between items-center">
-          <div>
+          <div className={isStale ? "opacity-60 transition-opacity" : "transition-opacity"}>
             <h2 className="text-lg font-semibold text-white">Live Operations Feeds</h2>
             <p className="text-xs text-gray-400">
               {loading
@@ -85,6 +87,7 @@ export default function DashboardPage() {
                 : `${feeds.length} camera${feeds.length === 1 ? "" : "s"} registered`}
             </p>
           </div>
+          {!loading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={FEED_STALE_THRESHOLD_MS} />}
         </div>
 
         <AlertLog alerts={allAlerts} onJumpToCamera={handleSelectFocus} />
@@ -126,12 +129,14 @@ export default function DashboardPage() {
             fetched real feeds) shouldn't disappear just because the registry is down;
             the error banner above already communicates that separately. */}
         {!loading && (
-          <CameraGrid
-            feeds={visibleFeeds}
-            layout={layout}
-            onSelectFocus={handleSelectFocus}
-            registryEmpty={allFeeds.length === 0}
-          />
+          <div className={isStale ? "opacity-60 grayscale-[30%] transition-all" : "transition-all"}>
+            <CameraGrid
+              feeds={visibleFeeds}
+              layout={layout}
+              onSelectFocus={handleSelectFocus}
+              registryEmpty={allFeeds.length === 0}
+            />
+          </div>
         )}
       </div>
     </main>

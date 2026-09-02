@@ -21,15 +21,20 @@ export const MapPopupCard: React.FC<MapPopupCardProps> = ({ camera, onInspect, i
 
   return (
     <div
-      className={`text-slate-100 overflow-hidden transition-[width] duration-300 ease-out ${
+      className={`text-slate-100 overflow-hidden transition-[width] duration-300 ease-out [contain:layout] [will-change:width] ${
         isPreviewing ? 'w-[240px]' : 'w-[180px]'
       }`}
     >
       {/* Grows in from the top edge as the preview mounts -- the one motion
           flourish for this feature, matching the LIVE-pulse language already
-          used in the drawer's live players rather than inventing a new one. */}
+          used in the drawer's live players rather than inventing a new one.
+          [contain:layout] on both this box and its parent above scopes the
+          layout recalculation this transition forces (width and
+          grid-template-rows are layout-affecting, unlike transform/opacity)
+          to just this popup card instead of letting it ripple into the
+          surrounding Leaflet-managed DOM -- same visual result, cheaper paint. */}
       <div
-        className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+        className={`grid transition-[grid-template-rows] duration-300 ease-out [contain:layout] [will-change:grid-template-rows] ${
           isPreviewing ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
         }`}
       >

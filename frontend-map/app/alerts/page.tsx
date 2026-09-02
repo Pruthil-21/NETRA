@@ -36,6 +36,9 @@ export default function AlertsPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [citySearch, setCitySearch] = useState('');
   const [updatingIds, setUpdatingIds] = useState<Set<number>>(new Set());
+  // Dismiss is the one action here that reads as final (Acknowledge/Escalate leave the
+  // alert open to further action) -- these ids are mid-confirm, waiting on a second click.
+  const [confirmDismissIds, setConfirmDismissIds] = useState<Set<number>>(new Set());
 
   const handleUpdateStatus = async (alertId: number, status: AlertStatus) => {
     const previous = alerts;
@@ -55,6 +58,28 @@ export default function AlertsPage() {
         return next;
       });
     }
+  };
+
+  // First click arms the confirm state (auto-reverts after 4s if not followed
+  // up); second click while armed actually fires the dismiss.
+  const requestDismiss = (alertId: number) => {
+    if (confirmDismissIds.has(alertId)) {
+      setConfirmDismissIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+      handleUpdateStatus(alertId, 'DISMISSED');
+      return;
+    }
+    setConfirmDismissIds((prev) => new Set(prev).add(alertId));
+    setTimeout(() => {
+      setConfirmDismissIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+    }, 4000);
   };
 
   const camerasById = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras]);
@@ -186,19 +211,28 @@ export default function AlertsPage() {
                               {alert.status}
                             </span>
                             {(alert.status === 'NEW' || alert.status === 'ACKNOWLEDGED') &&
-                              ACTIONS.filter((a) => a.status !== alert.status).map(({ status, label, icon: Icon }) => (
-                                <button
-                                  key={status}
-                                  type="button"
-                                  onClick={() => handleUpdateStatus(alert.id, status)}
-                                  disabled={updatingIds.has(alert.id)}
-                                  aria-label={`${label} alert for ${alert.plate_number}`}
-                                  title={label}
-                                  className="flex items-center gap-1 px-1.5 py-1 bg-panel-raised border border-line rounded text-slate-300 hover:text-white disabled:opacity-50 disabled:cursor-wait focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
-                                >
-                                  <Icon size={12} />
-                                </button>
-                              ))}
+                              ACTIONS.filter((a) => a.status !== alert.status).map(({ status, label, icon: Icon }) => {
+                                const isDismiss = status === 'DISMISSED';
+                                const armed = isDismiss && confirmDismissIds.has(alert.id);
+                                return (
+                                  <button
+                                    key={status}
+                                    type="button"
+                                    onClick={() => (isDismiss ? requestDismiss(alert.id) : handleUpdateStatus(alert.id, status))}
+                                    disabled={updatingIds.has(alert.id)}
+                                    aria-label={armed ? `Confirm dismiss for ${alert.plate_number}` : `${label} alert for ${alert.plate_number}`}
+                                    title={armed ? 'Click again to confirm' : label}
+                                    className={`flex items-center gap-1 rounded border disabled:opacity-50 disabled:cursor-wait focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command ${
+                                      armed
+                                        ? 'px-2 py-1 bg-red-950 border-red-800 text-red-200 ring-1 ring-red-400 animate-pulse'
+                                        : 'px-1.5 py-1 bg-panel-raised border-line text-slate-300 hover:text-white'
+                                    }`}
+                                  >
+                                    <Icon size={12} />
+                                    {armed && <span className="text-[10px] font-semibold whitespace-nowrap">Confirm?</span>}
+                                  </button>
+                                );
+                              })}
                             <button
                               type="button"
                               onClick={() => router.push(`/alerts/track/${encodeURIComponent(alert.plate_number)}`)}
