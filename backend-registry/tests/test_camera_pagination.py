@@ -69,6 +69,12 @@ def test_limit_is_capped_server_side_even_if_a_huge_value_is_requested(client, o
 
 
 def test_bbox_filter_excludes_cameras_outside_the_box(client, officer_headers, monkeypatch):
+    # Coordinates deliberately sit far from the seeded real-camera region (Gujarat) --
+    # this dev DB has ~294 real cameras, most of them inside that region, and the
+    # endpoint's default limit=100 (ORDER BY id) would silently truncate this test's
+    # own rows out of the result before they're ever reached if the box overlapped
+    # real data. Null-island-adjacent coordinates guarantee only this test's own
+    # rows can match.
     monkeypatch.setenv("SCALE_DEMO_ENABLED", "true")
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -76,16 +82,16 @@ def test_bbox_filter_excludes_cameras_outside_the_box(client, officer_headers, m
                 INSERT INTO cameras (name, dept, location, camera_type, ownership,
                     connectivity_status, storage_type, retention_days, health_status, is_synthetic)
                 VALUES ('Pagination Test Camera Inside Box', 'Test District',
-                    ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'ip', 'synthetic-scale-demo',
+                    ST_SetSRID(ST_MakePoint(1.0, 1.0), 4326), 'ip', 'synthetic-scale-demo',
                     'online', 'nvr', 15, 'operational', true),
                 ('Pagination Test Camera Outside Box', 'Test District',
-                    ST_SetSRID(ST_MakePoint(10.0, 10.0), 4326), 'ip', 'synthetic-scale-demo',
+                    ST_SetSRID(ST_MakePoint(-10.0, -10.0), 4326), 'ip', 'synthetic-scale-demo',
                     'online', 'nvr', 15, 'operational', true)
             """)
         conn.commit()
 
     resp = client.get(
-        "/cameras?include_synthetic=true&min_lat=22&max_lat=24&min_long=71&max_long=74",
+        "/cameras?include_synthetic=true&min_lat=0&max_lat=2&min_long=0&max_long=2",
         headers=officer_headers,
     )
     names = {c["name"] for c in resp.json()["cameras"]}
