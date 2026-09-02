@@ -341,7 +341,7 @@ export default function AdminPage() {
           </span>
           <div>
             <h1 className="text-sm font-semibold text-white uppercase tracking-wide">Officers &amp; Postings</h1>
-            <p className="text-[11px] text-slate-500">Reassign a station's role and jurisdiction</p>
+            <p className="text-[11px] text-slate-500">Reassign a station&apos;s role and jurisdiction</p>
           </div>
         </div>
 
@@ -380,7 +380,7 @@ export default function AdminPage() {
             <div className="flex flex-col items-center text-center gap-2 py-16 text-slate-500">
               <Users size={28} className="text-slate-600" />
               <p className="text-xs font-semibold text-slate-400">No officers found</p>
-              <p className="text-[11px] text-slate-600">Officers you're authorized to manage will appear here.</p>
+              <p className="text-[11px] text-slate-600">Officers you&apos;re authorized to manage will appear here.</p>
             </div>
           ) : (
             <div className="flex flex-col gap-3">
