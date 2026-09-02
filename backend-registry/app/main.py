@@ -15,9 +15,12 @@ from .schemas import (
     LoginRequest,
     LoginResponse,
     MeResponse,
+    OfficerOut,
+    PostingCreate,
+    PostingOut,
     ReportSummary,
 )
-from .services import audit_service, auth_service, cameras_service, rbac_service, reports_service
+from .services import admin_service, audit_service, auth_service, cameras_service, rbac_service, reports_service
 
 configure_logging()
 
@@ -68,6 +71,46 @@ def me(user=Depends(get_current_user)):
         "scope_value": user.get("scope_value"),
         "permissions": user.get("permissions", []),
     }
+
+
+@app.get("/admin/officers", response_model=list[OfficerOut])
+def list_officers(user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        return admin_service.list_officers(conn)
+
+
+@app.get("/admin/postings", response_model=list[PostingOut])
+def list_postings(user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        return admin_service.list_postings(conn)
+
+
+@app.post("/admin/postings", response_model=PostingOut, status_code=201)
+def create_posting(body: PostingCreate, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        role = rbac_service.get_role_by_name(conn, body.role_name)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Unknown role '{body.role_name}'")
+
+        # Delegated admin (spec Section 6): a platform-wide actor (Super Admin)
+        # can assign anything. A district-scoped actor with can_delegate_admin
+        # (District Command) can only assign roles below their own level, and
+        # only within their own scope_value -- never Super Admin's platform-wide
+        # reach, and never another district's.
+        actor_scope_type = user.get("scope_type")
+        actor_scope_value = user.get("scope_value")
+        if actor_scope_type != "platform":
+            if body.scope_type != "district" or body.scope_value != actor_scope_value:
+                raise HTTPException(status_code=403, detail="Cannot assign outside your own jurisdiction")
+            if role["name"] in ("super_admin", "district_command"):
+                raise HTTPException(status_code=403, detail="Cannot assign a role at or above your own")
+
+        posting = admin_service.reassign_posting(
+            conn, body.officer_id, role["id"], body.scope_type, body.scope_value,
+            assigned_by=user.get("badge_number", user.get("sub", "")),
+        )
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reassign_posting", "posting", posting["id"])
+        return posting
 
 
 @app.get("/cameras", response_model=list[CameraOut])

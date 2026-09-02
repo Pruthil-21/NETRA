@@ -96,3 +96,34 @@ class MeResponse(BaseModel):
     scope_type: str
     scope_value: Optional[str] = None
     permissions: list[str]
+
+
+class PostingSummary(BaseModel):
+    id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class OfficerOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    active_posting: Optional[PostingSummary] = None
+
+
+class PostingOut(BaseModel):
+    id: int
+    officer_id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    is_active: bool
+
+
+class PostingCreate(BaseModel):
+    officer_id: int
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
