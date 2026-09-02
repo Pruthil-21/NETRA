@@ -7,6 +7,8 @@ import { ScaleMap } from '@/components/scale/ScaleMap';
 import { ScaleCameraList } from '@/components/scale/ScaleCameraList';
 import { ScalePlayerGrid } from '@/components/scale/ScalePlayerGrid';
 import { useLimitedPlayers } from '@/hooks/useLimitedPlayers';
+import { useScaleMetrics } from '@/hooks/useScaleMetrics';
+import { ScaleMetricsPanel } from '@/components/scale/ScaleMetricsPanel';
 import { ScaleCamera } from '@/types/scaleCamera';
 import { REGISTRY_API_URL } from '@/config/streams';
 
@@ -16,12 +18,14 @@ export default function ScaleDemoPage() {
   const [selectedById, setSelectedById] = useState<Map<number, ScaleCamera>>(new Map());
   const [backendReachable, setBackendReachable] = useState(true);
   const { activeCameraIds, openPlayer, closePlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
+  const { initialLoadMs, apiRequestCount, memoryMb, recordApiRequest, recordInteraction, interactions } = useScaleMetrics();
 
   useEffect(() => {
     fetch(`${REGISTRY_API_URL}/health`)
       .then((res) => setBackendReachable(res.ok))
-      .catch(() => setBackendReachable(false));
-  }, []);
+      .catch(() => setBackendReachable(false))
+      .finally(() => recordApiRequest());
+  }, [recordApiRequest]);
 
   const handleSelectCamera = (camera: ScaleCamera) => {
     setSelectedById((prev) => new Map(prev).set(camera.id, camera));
@@ -53,10 +57,17 @@ export default function ScaleDemoPage() {
         <ScaleSummaryCard />
       </div>
 
+      <ScaleMetricsPanel
+        initialLoadMs={initialLoadMs}
+        apiRequestCount={apiRequestCount}
+        memoryMb={memoryMb}
+        interactions={interactions}
+      />
+
       <ScalePlayerGrid cameras={activeCameras} onClose={closePlayer} />
 
       <div className="mt-4 h-[500px] rounded-lg overflow-hidden border border-line">
-        <ScaleMap onSelectCamera={handleSelectCamera} />
+        <ScaleMap onSelectCamera={handleSelectCamera} onInteraction={recordInteraction} />
       </div>
 
       <div className="mt-4 h-96">
