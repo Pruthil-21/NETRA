@@ -33,7 +33,7 @@ than overclaiming.
   `alert_status_history` accumulates one row per transition.
 - No secrets committed to source control. `.env`/`.env.local` are
   gitignored at the repo root; `.env.example` / `.env.local.example`
-  files (frontend-map, frontend-dashboard, streaming) contain
+  files (frontend-map, streaming) contain
   placeholders only. Confirmed no tracked `.env` file exists anywhere
   in the repo.
 - CI (`.github/workflows/ci.yml`) runs lint (`ruff` / `next lint` or
@@ -58,12 +58,6 @@ than overclaiming.
   identity provider integration.
 - Rate limiting / WAF — none in front of any service.
 - Formal penetration test — not performed.
-- Known dependency vulnerabilities — `npm audit` on
-  `frontend-dashboard` currently reports 5 high-severity findings (0
-  critical), concentrated in `next@14.2.35` and its build toolchain
-  (`postcss`, `glob`, and the ESLint/Next config packages). A full fix
-  requires upgrading Next.js past its current major version; deferred
-  given the hackathon timeline.
 - ANPR camera-id mapping — live/simulated feeds not yet tied to the
   real camera registry are mapped to a placeholder `camera_id` for
   testing.

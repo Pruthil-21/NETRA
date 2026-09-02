@@ -10,9 +10,8 @@ NETRA (Network for Extended Threat Recognition & Analytics) — a unified CCTV r
 
 - `contract/` — API contract for all services
 - `backend-registry/` — camera registry API, PostGIS
-- `frontend-map/` — registry map + filters UI
+- `frontend-map/` — registry map, live viewing, and alerts UI
 - `streaming/` — MediaMTX + FFmpeg feed simulation
-- `frontend-dashboard/` — live viewing + alerts UI
 - `ml-anpr/` — ANPR plate detection
 - `backend-watchlist/` — watchlist + alerts API
 
