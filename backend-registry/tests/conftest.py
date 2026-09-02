@@ -26,7 +26,7 @@ def viewer_headers():
 
 
 @pytest.fixture
-def synthetic_test_cameras():
+def synthetic_test_cameras(synthetic_test_edge_nodes):
     """Guaranteed cleanup for synthetic cameras a test creates -- deletes only
     rows whose id was appended to the yielded list, never a blanket
     is_synthetic delete (which would wipe a live demo's full 80,000-row seed
@@ -37,7 +37,10 @@ def synthetic_test_cameras():
             ...assertions...
     This runs during pytest's fixture teardown, so cleanup happens even if
     an assertion above raises -- unlike a bare cleanup() call at the bottom
-    of the test function, which is skipped the moment an earlier assert fails."""
+    of the test function, which is skipped the moment an earlier assert fails.
+
+    Depends on synthetic_test_edge_nodes to ensure proper teardown ordering:
+    cameras (which reference edge_nodes via FK) are deleted first, then edge_nodes."""
     created_ids: list[int] = []
     yield created_ids
     if created_ids:
