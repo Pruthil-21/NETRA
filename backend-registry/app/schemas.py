@@ -181,3 +181,23 @@ class SyntheticDetectionEventAccepted(BaseModel):
 
 class ArchiveResult(BaseModel):
     archived: int
+
+
+class CoverageTargetCreate(BaseModel):
+    name: str
+    lat: float
+    long: float
+    district: str
+    priority: str = "medium"
+
+
+class CoverageTargetUpdate(BaseModel):
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    long: Optional[float] = None
+    district: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class CoverageTargetOut(CoverageTargetCreate):
+    id: int
