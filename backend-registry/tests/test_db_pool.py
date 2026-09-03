@@ -47,9 +47,11 @@ def test_pool_max_size_is_configurable_via_env_var(monkeypatch):
     import app.db as db_module
 
     monkeypatch.setenv("DB_POOL_MAX_SIZE", "7")
+    db_module._pool.close()  # close the pool this reload is about to abandon
     importlib.reload(db_module)
     try:
         assert db_module._pool.max_size == 7
     finally:
         monkeypatch.delenv("DB_POOL_MAX_SIZE", raising=False)
+        db_module._pool.close()  # close the size-7 pool before replacing it too
         importlib.reload(db_module)  # restore the default-configured pool for every other test
