@@ -92,6 +92,12 @@ class AlertOut(BaseModel):
     detection_id: Optional[int] = None
     matched_at: datetime
     status: str
+    # Combined VAHAN (ownership) + eGujCop (crime/FIR) lookup -- computed at
+    # read time by alerts_service, not stored on the alerts row (see
+    # govt_lookup_service.py). Shape: {"vahan": {...}, "egujcop": {...}},
+    # each with its own `status` field -- "not_configured" until real access
+    # exists, so this is always present but not yet populated with real data.
+    owner_details: Optional[dict] = None
 
 
 class AlertStatusUpdate(BaseModel):
