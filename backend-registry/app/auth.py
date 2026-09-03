@@ -46,6 +46,15 @@ def require_permission(permission: str):
     return checker
 
 
+def has_permission(user: dict, permission: str) -> bool:
+    """Same logic as require_permission's checker, usable inline when the
+    check is conditional rather than the route's own Depends (e.g. only
+    required for one branch of an endpoint, not every request to it)."""
+    if user.get("role") in ("officer", "admin") and "permissions" not in user:
+        return True
+    return permission in user.get("permissions", [])
+
+
 def require_scale_demo_enabled():
     """Hard kill-switch for every synthetic/scale-demo endpoint. 404, not 403
     -- when disabled, these routes should look like they don't exist, not

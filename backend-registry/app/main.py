@@ -3,7 +3,13 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_permission, require_role, require_scale_demo_enabled
+from .auth import (
+    get_current_user,
+    has_permission,
+    require_permission,
+    require_role,
+    require_scale_demo_enabled,
+)
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
@@ -174,7 +180,7 @@ def list_cameras(
     # authenticated, same as today.
     if include_synthetic:
         require_scale_demo_enabled()
-        if "manage_cameras" not in user.get("permissions", []) and user.get("role") not in ("officer", "admin"):
+        if not has_permission(user, "manage_cameras"):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     with get_conn() as conn:
@@ -319,7 +325,7 @@ def receive_synthetic_detection(
     body: SyntheticDetectionEventIn, background_tasks: BackgroundTasks, user=Depends(get_current_user)
 ):
     require_scale_demo_enabled()
-    if "manage_cameras" not in user.get("permissions", []) and user.get("role") not in ("officer", "admin"):
+    if not has_permission(user, "manage_cameras"):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     def _write():
