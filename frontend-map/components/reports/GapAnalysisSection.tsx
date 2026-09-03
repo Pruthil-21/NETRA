@@ -8,6 +8,7 @@ import {
   GapAnalysisReport,
   CoverageTarget,
 } from '@/services/coverageTargetsService';
+import { usePermissions } from '@/hooks/usePermissions';
 
 export function GapAnalysisSection() {
   const [report, setReport] = useState<GapAnalysisReport | null>(null);
@@ -15,6 +16,7 @@ export function GapAnalysisSection() {
   const [targets, setTargets] = useState<CoverageTarget[] | null>(null);
   const [targetsError, setTargetsError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const { has } = usePermissions();
 
   useEffect(() => {
     fetchGapAnalysisReport()
@@ -76,14 +78,16 @@ export function GapAnalysisSection() {
                   <td className="py-1 text-slate-400">{t.district}</td>
                   <td className="py-1 text-slate-400 capitalize">{t.priority}</td>
                   <td className="py-1 text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(t.id)}
-                      disabled={deletingId === t.id}
-                      className="text-signal-red hover:text-signal-red/80 disabled:opacity-50 text-[11px]"
-                    >
-                      {deletingId === t.id ? 'Removing…' : 'Delete'}
-                    </button>
+                    {has('manage_cameras') && (
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(t.id)}
+                        disabled={deletingId === t.id}
+                        className="text-signal-red hover:text-signal-red/80 disabled:opacity-50 text-[11px]"
+                      >
+                        {deletingId === t.id ? 'Removing…' : 'Delete'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

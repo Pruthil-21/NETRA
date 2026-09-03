@@ -332,11 +332,13 @@ def gap_analysis_report(
             uncovered = gap_analysis_service.compute_uncovered_zones(conn, threshold_m)
         except psycopg.Error:
             conn.rollback()
+            logger.error("gap-analysis: uncovered-zones computation failed", exc_info=True)
             uncovered = []
         try:
             ageing = gap_analysis_service.compute_ageing_infrastructure(conn, age_threshold_days)
         except psycopg.Error:
             conn.rollback()
+            logger.error("gap-analysis: ageing-infrastructure computation failed", exc_info=True)
             ageing = []
         return {"uncovered_zones": uncovered, "ageing_infrastructure": ageing}
 
