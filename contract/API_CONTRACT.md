@@ -60,7 +60,7 @@ Alert:
   draft below: ANPR used to post detections here directly.
 
 Detection:
-`{ id, plate_number, camera_id, detected_at, confidence, scenario_run_id, source }`
+`{ id, plate_number, camera_id, detected_at, confidence, scenario_run_id, source, event_id }`
 
 - `GET /detections` — officer role. Search the full vehicle-sighting
   history, independent of watchlist status.
@@ -80,9 +80,10 @@ Detection:
   - `plate_number`/`plate` is normalized server-side (whitespace stripped,
     upper-cased) before storage/matching/lookup, so `GX15 OGJ` and
     `GX15OGJ` are the same plate everywhere.
-  - `detected_at`, `scenario_run_id`, `source` are optional; live ml-anpr
-    detections omit all three (server timestamps with `now()`, no dedup).
-    A scripted replay sends its own `detected_at` and tags itself with a
+  - `detected_at`, `scenario_run_id`, `source`, `event_id` are all optional;
+    live ml-anpr detections that omit them behave exactly as before (server
+    timestamps with `now()`, no dedup).
+  - A scripted replay sends its own `detected_at` and tags itself with a
     `scenario_run_id` — repeat POSTs for the same
     `(scenario_run_id, camera_id, plate_number)` are a no-op (returns the
     already-recorded sighting instead of inserting a duplicate), so a
@@ -90,6 +91,14 @@ Detection:
     Nothing is ever deleted or updated; a new replay uses a new
     `scenario_run_id` and simply adds another set of rows alongside the old
     ones.
+  - `event_id` is a client-supplied idempotency key (a UUID) for live
+    detections: a caller that retries a POST — e.g. after a timeout,
+    without knowing whether the first attempt landed — sends the same
+    `event_id` both times. A repeat POST for an `event_id` already on
+    record is a no-op that returns the ORIGINAL `detection` and `alert`
+    (never a second alert for the same underlying sighting) instead of
+    creating a duplicate of either. Independent of the `scenario_run_id`
+    mechanism above; a caller sends at most one of them in practice.
   Response `201`: `{ detection: Detection, alert: Alert | null }` —
   `alert` is `null` when the plate did not match the watchlist (the normal/
   expected case for most detections).

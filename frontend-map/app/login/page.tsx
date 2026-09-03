@@ -3,16 +3,27 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, KeyRound, UserCheck } from 'lucide-react';
+import { login } from '@/lib/session';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('officer@gujarat.gov.in');
-  const [password, setPassword] = useState('admin123');
+  const [badgeNumber, setBadgeNumber] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    localStorage.setItem('netra_authenticated', 'true');
-    router.push('/');
+    setError(null);
+    setSubmitting(true);
+    try {
+      await login(badgeNumber, password);
+      router.push('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -29,15 +40,16 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="officer-id" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
-              Official ID
+              Badge Number
             </label>
             <div className="relative">
               <UserCheck size={16} className="absolute left-3 top-2.5 text-slate-500" />
               <input
                 id="officer-id"
                 type="text"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                value={badgeNumber}
+                onChange={(e) => setBadgeNumber(e.target.value)}
+                placeholder="GJ-SO-001"
                 className="w-full bg-ink border border-line rounded-md pl-10 pr-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
                 required
               />
@@ -59,11 +71,13 @@ export default function LoginPage() {
               />
             </div>
           </div>
+          {error && <p className="text-signal-red text-xs">{error}</p>}
           <button
             type="submit"
-            className="w-full bg-command hover:bg-command-dim text-white font-semibold py-2.5 rounded-md text-xs uppercase tracking-wider transition"
+            disabled={submitting}
+            className="w-full bg-command hover:bg-command-dim text-white font-semibold py-2.5 rounded-md text-xs uppercase tracking-wider transition disabled:opacity-50"
           >
-            Authenticate Portal
+            {submitting ? 'Authenticating…' : 'Authenticate Portal'}
           </button>
         </form>
 

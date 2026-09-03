@@ -20,4 +20,34 @@ vi.mock('next/navigation', () => ({
     push: vi.fn(),
     replace: vi.fn(),
   }),
+  // Defaults to a non-/scale path -- CameraRegistryContext gates its real-camera
+  // fetch/poll on pathname === '/scale' (see Fix 4), so this default keeps every
+  // existing test's behavior (fetch/poll fire normally) unchanged. scalePage.test.tsx
+  // renders ScaleDemoPage directly, without CameraRegistryProvider, so it never
+  // observes this value.
+  usePathname: () => '/',
 }));
+
+// jsdom doesn't implement IntersectionObserver -- components that gate rendering on
+// visibility (e.g. useInView, used by FeedCard to defer mounting HlsPlayer until
+// scrolled into view) need a stub to mount in tests at all. Reports every observed
+// target as immediately intersecting so tests don't need to simulate a real scroll.
+class IntersectionObserverMock implements IntersectionObserver {
+  readonly root: Element | Document | null = null;
+  readonly rootMargin: string = '';
+  readonly thresholds: ReadonlyArray<number> = [];
+  constructor(private callback: IntersectionObserverCallback) {}
+  observe(target: Element) {
+    this.callback(
+      [{ isIntersecting: true, target } as IntersectionObserverEntry],
+      this
+    );
+  }
+  unobserve() {}
+  disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] {
+    return [];
+  }
+}
+
+global.IntersectionObserver = IntersectionObserverMock as unknown as typeof IntersectionObserver;

@@ -18,9 +18,34 @@ def plate_region_crop(vehicle_img):
     searching mostly irrelevant pixels (badges, mirrors, grille) at low
     effective resolution. Narrowing to this band before OCR raises the
     fraction of real plate pixels in what gets upscaled and read.
+
+    Bottom edge widened 92% -> 98% (feature/plate-region-detector):
+    confirmed on two independent real datasets (Dhruv's Tailscale
+    training cameras and Sentinel Gujarat/Kaggle footage) that on
+    elevated/angled CCTV views -- as opposed to the close, level,
+    forward-facing dashcam framing this band was originally tuned
+    against -- the plate can sit lower in the vehicle box than 92%,
+    right where the old cutoff clipped it. Left the other three edges
+    alone: neither diagnosed case implicated the top or sides, and this
+    project's own discipline is to fix what's actually been measured
+    broken, not everything that theoretically could be.
+
+    Safe against the dashcam-overlay false positive this project has
+    already fixed once (Session 3: a close/large vehicle box pulling in
+    the dashcam's own burned-in timestamp, misread as a sequence of
+    valid-shaped plates): that protection is a *frame*-relative clip
+    applied to the vehicle box itself, upstream of this function, in
+    detection._read_plate_from_box (`y2 = min(y2, int(raw_h * 0.92))`)
+    -- it operates in frame coordinates, not vehicle-crop coordinates,
+    so widening this band (a fraction of the already-overlay-excluded
+    vehicle_img's own height) doesn't reach back into the overlay band
+    except for a vehicle box that itself already sits right at that
+    frame-relative boundary -- and re-verified directly against the
+    real dashcam_trimmed.mp4 regression after this change, not just
+    reasoned about (see ALPR_IMPROVEMENT_LOG.md).
     """
     h, w = vehicle_img.shape[:2]
-    y1, y2 = int(0.55 * h), int(0.92 * h)
+    y1, y2 = int(0.55 * h), int(0.98 * h)
     x1, x2 = int(0.12 * w), int(0.90 * w)
     if y2 - y1 < 10 or x2 - x1 < 20:
         return None
@@ -69,6 +94,23 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     # Real plates aren't mounted in the dashcam's own UI overlay band,
     # so clip the crop's bottom edge to exclude it.
     y2 = min(y2, int(raw_h * 0.92))
+
+    # Real Sentinel Gujarat CCTV footage (cam06/cam07) burns its own
+    # overlay into the *top* of frame instead (date/time + location
+    # label, e.g. "17-06-2026 18:00:27  Madhuram Bypass Road Fix-2..."),
+    # a position the bottom-band clip above doesn't cover at all --
+    # confirmed as a real false-positive source: cam06 misread its own
+    # "Fix-2" label as plate-shaped text (ADFIX2/DFIX2H/AFIX2EF/DFX2FR,
+    # all fallback-tier) and cam07 misread its date overlay's "Sat"
+    # weekday as SAT212518/SAT212519. Measured the actual overlay extent
+    # directly on saved cam06/cam07 frames rather than guessing: the text
+    # sits within the top ~5% of a 1080px frame on both cameras (same
+    # overlay style/position), so 8% gives real margin without eating
+    # meaningfully into genuine vehicle crops. Same reasoning as the
+    # bottom clip -- real plates aren't mounted in a camera's own UI
+    # overlay band.
+    y1 = max(y1, int(raw_h * 0.08))
+
     if y2 <= y1:
         return {"plate_number": None, "confidence": 0, "note": "Vehicle box entirely in overlay band", "box": box}
 
