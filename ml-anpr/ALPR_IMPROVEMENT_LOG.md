@@ -3144,3 +3144,59 @@ for the first time this project.
 - The tunnel URL is a Cloudflare quick-tunnel and will change if P3's
   container restarts -- not hardcoded anywhere in config, used only as
   a one-off test argument, per P3's own warning.
+
+# Session 24 -- reconfirm cooldown: a broken-and-reformed track for the same real vehicle could log it twice
+
+Real question raised, not hypothetical: if a vehicle sits in heavy
+traffic and gets blocked from view by another car for more than
+`MAX_MISSED_FRAMES` (5) processed frames, does it log twice on the same
+camera?
+
+Traced the actual mechanism: `PlateConfirmationTracker` (per-track)
+already refuses to re-confirm within its own track once confirmed. But
+when a track is lost (blocked/occluded past `MAX_MISSED_FRAMES`) and the
+same real vehicle is picked back up, `VehicleTracker.update()` creates a
+**brand-new track with a brand-new `PlateConfirmationTracker`** -- no
+memory of the old one. The old `VehicleTracker`-level `self.confirmed`
+set was only ever consulted by the VLM-fallback path
+(`pop_ready_vlm_confirmations()`), not the normal OCR-confirmation path
+in `update()` -- so a broken-and-reformed track for the same plate could
+genuinely produce a second confirmed event and a second backend POST.
+
+## Fix: time-bounded reconfirm cooldown, not a permanent one
+
+`VehicleTracker.confirmed` changed from a plain `set()` to a `dict` of
+`plate -> last-confirmed monotonic timestamp`. New
+`RECONFIRM_COOLDOWN_SEC = 45` class constant, checked in both
+confirmation paths (`update()`'s normal OCR path and
+`pop_ready_vlm_confirmations()`) via a shared `_recently_confirmed()`/
+`_mark_confirmed()` pair -- same dedup logic both paths already used,
+just made consistent and given an expiry.
+
+Deliberately **not** a permanent "never again" set: a camera that runs
+for hours needs to treat the same plate returning much later (a genuine
+separate sighting) as a new event, not silently swallow it forever. 45s
+covers "blocked by traffic for a few seconds," not "came back this
+afternoon." `_recently_confirmed()` also prunes expired entries on every
+call, so this stays bounded over a long-running stream without a
+separate cleanup pass.
+
+## Verification
+
+New `tests/test_reconfirm_cooldown.py` (pure logic, no models, matches
+this project's existing `tests/test_pipeline_smoke.py` `__main__`-style
+convention): confirms a plate once via one track, forces that track to
+be pruned (feeds `MAX_MISSED_FRAMES + 1` empty frames), then re-confirms
+the same plate via a second track at a different box -- asserts zero
+events fire the second time. Passes.
+
+## What's not done / open
+
+- No real-footage test of this specific scenario (a real vehicle
+  genuinely blocked mid-track) -- the fix is verified against the exact
+  mechanism traced in the code, not observed against a real occlusion
+  event in live footage, since reproducing that on demand isn't
+  practical.
+- 45s is a reasoned default (covers a traffic-light/blocked-view delay),
+  not tuned against real measured occlusion durations -- worth revisiting
+  if real footage shows blocks lasting meaningfully longer.
