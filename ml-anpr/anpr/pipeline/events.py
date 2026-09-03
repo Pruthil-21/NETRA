@@ -2,15 +2,19 @@
 timestamp, model version, confidence, and detection type in every
 event).
 
-Real backend-watchlist's POST /detections only documents/guarantees use
-of {camera_id, plate_number, confidence} (see contract/API_CONTRACT.md)
--- event_id/timestamp/model_version/detection_type aren't part of its
-documented contract today. Sent anyway as extra JSON fields (most REST
-frameworks silently ignore unrecognized fields rather than reject the
-request) so the richer schema is already in place and forward-compatible
-if the contract gets extended later, without a client change -- but
-don't assume the backend actually stores or uses them yet; that's an
-open question for P6, not something this module can confirm on its own.
+`event_id` is now a documented, real idempotency key: backend-watchlist's
+POST /detections accepts it as an optional client-supplied UUID and dedups
+on it server-side (see contract/API_CONTRACT.md, backend-watchlist commit
+2cb1757 on origin/feature/backend-watchlist -- not yet merged to main).
+This module generates one automatically per event, so retries get real
+duplicate-safety once pointed at a backend with that contract -- see
+event_sender.py's module docstring for the retry-path details.
+
+`timestamp`/`model_version`/`detection_type` remain extra fields beyond
+what's documented (most REST frameworks silently ignore unrecognized
+fields rather than reject the request), sent for forward-compatibility
+and our own audit trail -- don't assume the backend stores or uses those
+three yet.
 """
 import time
 import uuid

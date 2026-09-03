@@ -1,29 +1,36 @@
 """Async, batched, retrying event delivery (P3 handoff items 4, 6, 7, 8).
 
-Honest limitation, not glossed over: real backend-watchlist's
-POST /detections (see contract/API_CONTRACT.md) has no client-supplied
-idempotency key in its documented contract -- the only server-side dedup
-it does is for scripted *replay* scenarios, keyed on
-(scenario_run_id, camera_id, plate_number), not for arbitrary retries of
-a live detection. That means "retry without creating duplicate
-detections" (item 6) can only be a best-effort *client-side* guarantee
-here, not an absolute one: if a POST times out, this client genuinely
-cannot know whether the server received and processed it before the
-connection dropped. What this module actually does about that:
+Duplicate-safety on retry (item 6): backend-watchlist's POST /detections
+now accepts a client-supplied event_id (UUID) as a real server-side
+idempotency key (see contract/API_CONTRACT.md, backend-watchlist commit
+2cb1757 on origin/feature/backend-watchlist -- not yet merged to main as
+of this writing). A repeat POST with the same event_id is a no-op that
+returns the original detection and alert instead of creating a second
+one of either. DetectionEvent already generates a UUID event_id for
+every event and sends it in every payload (events.py), so this pipeline
+gets that guarantee automatically once the contract change is live on
+whatever backend it's pointed at -- no payload change needed here.
+
+This means both retry paths below are now genuinely safe, not a
+tradeoff:
 
 - A clean network failure (connection refused, DNS failure -- the
   request definitely never reached the server) is always safe to retry.
 - A timeout (request may have reached the server, response just never
-  came back) is retried too, since for a security-alert pipeline losing
-  a real detection is worse than an occasional duplicate row -- but this
-  is a real, deliberate tradeoff, not a guarantee of no duplicates.
+  came back) is retried too -- previously a deliberate risk (duplicate
+  row) accepted because losing a real detection is worse; now backed by
+  the server-side event_id dedup above, so a retried timeout can no
+  longer create a duplicate detection or a duplicate alert.
 - Within one process's lifetime, a local "already-confirmed-sent" set
-  keyed on event_id stops this client from re-sending something it
-  already got a real 201 for, even if a caller mistakenly resubmits it.
+  keyed on event_id still short-circuits resending something this
+  client already got a real 201 for -- kept as a cheap local fast path
+  (skips a network round-trip), not because it's still load-bearing for
+  correctness; the server-side index is now the actual guarantee.
 
-The real fix for full duplicate-safety would be a server-side
-idempotency key in the contract (e.g. accept and dedup on event_id) --
-flagged as a genuine ask for P6, not solved unilaterally here.
+Caveat: this only holds against whichever backend-watchlist deployment
+already has commit 2cb1757. Until that's merged to main and deployed,
+a target still running the old contract has no event_id dedup and the
+timeout-retry duplicate-row risk described above still applies there.
 """
 import queue
 import threading
