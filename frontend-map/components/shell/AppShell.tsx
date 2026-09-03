@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, LogOut } from 'lucide-react';
+import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, LogOut } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
 import { logout } from '@/lib/session';
@@ -18,6 +18,7 @@ const BASE_NAV_ITEMS = [
   { href: '/map', label: 'Map', icon: MapIcon },
   { href: '/search', label: 'Search', icon: Search },
   { href: '/alerts', label: 'Alerts', icon: ShieldAlert },
+  { href: '/reports', label: 'Reports', icon: FileBarChart },
 ];
 
 // Isolated so the once-a-second tick only re-renders this small readout, not
