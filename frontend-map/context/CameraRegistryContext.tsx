@@ -257,9 +257,21 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // fails, LiveFeedPlayer reports the real outcome here so the map pin
   // reflects reality instead of staying stuck on the preliminary guess.
   const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
-    setCameras((prev) =>
-      prev.map((c) => (c.id === id && c.connectivity_status !== status ? { ...c, connectivity_status: status } : c))
-    );
+    setCameras((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1 || prev[idx].connectivity_status === status) return prev;
+      // Fire-and-forget: the backend's own dedup is the real safety net
+      // if this fires more than once for the same transition; a failed
+      // report here shouldn't block the UI from updating.
+      fetch(`${process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000'}/cameras/${id}`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ connectivity_status: status }),
+      }).catch(() => {});
+      const next = prev.slice();
+      next[idx] = { ...prev[idx], connectivity_status: status };
+      return next;
+    });
     setSelectedCamera((prev) =>
       prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
     );

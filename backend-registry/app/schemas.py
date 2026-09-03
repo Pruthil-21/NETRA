@@ -78,6 +78,8 @@ class ReportSummary(BaseModel):
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
+    blacklist_entries_last_24h: Optional[int] = None
+    avg_alert_response_seconds: Optional[float] = None
 
 
 class LoginRequest(BaseModel):

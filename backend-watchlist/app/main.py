@@ -5,6 +5,7 @@ Run locally: uvicorn app.main:app --reload --port 8001
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .logging_config import configure_logging
 from .routers import (
     alerts,
     detections,
@@ -13,6 +14,8 @@ from .routers import (
     vehicle_lookup,
     watchlist,
 )
+
+configure_logging()
 
 app = FastAPI(title="NETRA Watchlist & Alerts Service")
 
