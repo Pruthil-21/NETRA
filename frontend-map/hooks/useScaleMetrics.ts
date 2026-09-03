@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { onScaleApiRequest } from '@/services/scaleCameraService';
 
 interface Interaction {
@@ -23,8 +23,15 @@ export function useScaleMetrics() {
   const [initialLoadMs, setInitialLoadMs] = useState<number | null>(null);
   const [apiRequestCount, setApiRequestCount] = useState(0);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
-  const mountTime = useRef(performance.now());
+  // Avoid calling performance.now() during render (impure). Record mount
+  // time in a layout effect so the timestamp is captured as early as
+  // possible on mount without violating React's purity rules.
+  const mountTime = useRef<number>(0);
   const firstRequestRecorded = useRef(false);
+
+  useLayoutEffect(() => {
+    mountTime.current = performance.now();
+  }, []);
 
   const markFirstRequestIfNeeded = useCallback(() => {
     if (!firstRequestRecorded.current) {
