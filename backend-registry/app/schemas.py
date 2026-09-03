@@ -1,5 +1,4 @@
-"""Pydantic request/response models for the cameras API.
-
+"""
 Field names match /contract/API_CONTRACT.md exactly.
 """
 from datetime import datetime
@@ -20,9 +19,11 @@ class CameraCreate(BaseModel):
     retention_days: int
     health_status: str = "unknown"
     rtsp_url: Optional[str] = None
-    # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    is_synthetic: bool = False
+    edge_node_id: Optional[str] = None
+    scale_run_id: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -39,18 +40,35 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    is_synthetic: Optional[bool] = None
+    edge_node_id: Optional[str] = None
+    scale_run_id: Optional[str] = None
 
 
-class CameraOut(CameraCreate):
+class CameraOut(BaseModel):
     id: int
+    name: str
+    dept: str
+    lat: float
+    long: float
+    camera_type: str
+    ownership: str
+    connectivity_status: str
+    storage_type: str
+    retention_days: int
+    health_status: str
+    rtsp_url: Optional[str]
+    stream_id: Optional[str]
+    hls_url: Optional[str]
+    created_at: str
+    is_synthetic: bool
+    edge_node_id: Optional[str]
+    scale_run_id: Optional[str]
 
 
 class CameraBulkResult(BaseModel):
-    """One row's outcome from POST /cameras/bulk — a bad row never fails the
-    whole batch, so the caller needs a per-row success/failure verdict."""
-    index: int
-    status: Literal["created", "error"]
-    camera: Optional[CameraOut] = None
+    camera_id: Optional[int] = None
+    success: bool
     reason: Optional[str] = None
 
 
@@ -72,9 +90,8 @@ class CameraUptimeReport(BaseModel):
 class ReportSummary(BaseModel):
     total_cameras: int
     cameras_by_department: dict[str, int]
-    cameras_by_connectivity_status: dict[str, int]
     cameras_by_health_status: dict[str, int]
-    # None when backend-watchlist's schema hasn't been applied yet in this
+    # alerts_last_24h and detections_last_24h are only populated in the
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
