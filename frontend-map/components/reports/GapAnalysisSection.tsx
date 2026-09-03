@@ -1,11 +1,20 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { fetchGapAnalysisReport, GapAnalysisReport } from '@/services/coverageTargetsService';
+import {
+  fetchGapAnalysisReport,
+  fetchCoverageTargets,
+  deleteCoverageTarget,
+  GapAnalysisReport,
+  CoverageTarget,
+} from '@/services/coverageTargetsService';
 
 export function GapAnalysisSection() {
   const [report, setReport] = useState<GapAnalysisReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [targets, setTargets] = useState<CoverageTarget[] | null>(null);
+  const [targetsError, setTargetsError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchGapAnalysisReport()
@@ -13,11 +22,76 @@ export function GapAnalysisSection() {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load gap analysis'));
   }, []);
 
+  const loadTargets = () => {
+    fetchCoverageTargets()
+      .then(setTargets)
+      .catch((err) => setTargetsError(err instanceof Error ? err.message : 'Failed to load coverage targets'));
+  };
+
+  useEffect(() => {
+    loadTargets();
+  }, []);
+
+  const handleDelete = async (id: number) => {
+    setDeletingId(id);
+    try {
+      await deleteCoverageTarget(id);
+      loadTargets();
+    } catch (err) {
+      setTargetsError(err instanceof Error ? err.message : 'Failed to delete coverage target');
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   if (error) return <p className="text-signal-red text-xs">{error}</p>;
   if (!report) return <p className="text-slate-500 text-xs">Loading gap analysis…</p>;
 
   return (
     <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">
+          Coverage Targets {targets ? `(${targets.length})` : ''}
+        </h3>
+        {targetsError ? (
+          <p className="text-signal-red text-xs">{targetsError}</p>
+        ) : !targets ? (
+          <p className="text-slate-500 text-xs">Loading coverage targets…</p>
+        ) : targets.length === 0 ? (
+          <p className="text-slate-500 text-xs">No coverage targets defined.</p>
+        ) : (
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-slate-500 text-left">
+                <th className="pb-1">Name</th>
+                <th className="pb-1">District</th>
+                <th className="pb-1">Priority</th>
+                <th className="pb-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {targets.map((t) => (
+                <tr key={t.id} className="border-t border-line">
+                  <td className="py-1 text-white">{t.name}</td>
+                  <td className="py-1 text-slate-400">{t.district}</td>
+                  <td className="py-1 text-slate-400 capitalize">{t.priority}</td>
+                  <td className="py-1 text-right">
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(t.id)}
+                      disabled={deletingId === t.id}
+                      className="text-signal-red hover:text-signal-red/80 disabled:opacity-50 text-[11px]"
+                    >
+                      {deletingId === t.id ? 'Removing…' : 'Delete'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       <div>
         <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">
           Uncovered Zones ({report.uncovered_zones.length})
