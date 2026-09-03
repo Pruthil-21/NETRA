@@ -1,9 +1,15 @@
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_permission, require_role
+from .auth import (
+    get_current_user,
+    has_permission,
+    require_permission,
+    require_role,
+    require_scale_demo_enabled,
+)
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
@@ -21,6 +27,8 @@ from .schemas import (
     ReportSummary,
     RolePermissionsOut,
     RolePermissionsUpdate,
+    SyntheticDetectionEventAccepted,
+    SyntheticDetectionEventIn,
 )
 from .services import (
     admin_service,
@@ -29,6 +37,7 @@ from .services import (
     cameras_service,
     rbac_service,
     reports_service,
+    synthetic_events_service,
 )
 
 configure_logging()
@@ -152,15 +161,71 @@ def update_role_permissions(
         return {**role, "permissions": permissions}
 
 
-@app.get("/cameras", response_model=list[CameraOut])
-def list_cameras(user=Depends(get_current_user)):
+@app.get("/cameras")
+def list_cameras(
+    user=Depends(get_current_user),
+    include_synthetic: bool = False,
+    cursor: int | None = None,
+    limit: int | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    # include_synthetic is the scale-demo surface -- gated behind the
+    # environment kill-switch and manage_cameras (Super Admin/District
+    # Command only, not every officer), so an ordinary officer can neither
+    # see nor flood the synthetic registry. Real-camera pagination (cursor/
+    # limit with include_synthetic left false) stays open to anyone
+    # authenticated, same as today.
+    if include_synthetic:
+        require_scale_demo_enabled()
+        if not has_permission(user, "manage_cameras"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     with get_conn() as conn:
-        # scope_type is only present on RBAC-issued tokens (Task 2); legacy
-        # hand-crafted tokens have no such claim and see every camera,
-        # matching this endpoint's behavior before this task.
+        # scope_type is only present on RBAC-issued tokens; legacy hand-crafted
+        # tokens have no such claim and see every (real) camera, matching this
+        # endpoint's behavior before pagination was added.
         dept = user.get("scope_value") if user.get("scope_type") == "district" else None
-        cameras = cameras_service.list_cameras(conn, dept)
-        return cameras
+
+        # No pagination/synthetic params at all -> today's exact legacy behavior:
+        # every real camera, as a bare list, no envelope. This is the path
+        # CameraRegistryContext.tsx's fetchRegistryCameras() always takes.
+        if cursor is None and limit is None and not include_synthetic:
+            return cameras_service.list_cameras(conn, dept)
+
+        bbox = None
+        if None not in (min_lat, max_lat, min_long, max_long):
+            bbox = (min_lat, max_lat, min_long, max_long)
+
+        return cameras_service.list_cameras_page(
+            conn,
+            cursor=cursor,
+            limit=limit or 100,
+            include_synthetic=include_synthetic,
+            dept=dept,
+            bbox=bbox,
+        )
+
+
+@app.get("/cameras/summary")
+def camera_summary(
+    user=Depends(get_current_user),
+    group_by: str | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    require_scale_demo_enabled()
+    with get_conn() as conn:
+        if group_by == "district":
+            bbox = None
+            if None not in (min_lat, max_lat, min_long, max_long):
+                bbox = (min_lat, max_lat, min_long, max_long)
+            return {"districts": cameras_service.get_district_summary(conn, bbox)}
+        return cameras_service.get_summary(conn)
 
 
 @app.get("/cameras/{camera_id}", response_model=CameraOut)
@@ -253,3 +318,28 @@ def delete_camera(camera_id: int, user=Depends(require_permission("manage_camera
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "camera", camera_id)
+
+
+@app.post("/synthetic/detections", response_model=SyntheticDetectionEventAccepted, status_code=202)
+def receive_synthetic_detection(
+    body: SyntheticDetectionEventIn, background_tasks: BackgroundTasks, user=Depends(get_current_user)
+):
+    require_scale_demo_enabled()
+    if not has_permission(user, "manage_cameras"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    def _write():
+        # Runs after the 202 has already gone out -- the client can't be told
+        # about a failure here, so a broad catch is intentional (a pool
+        # timeout, a bad payload, anything) rather than picking one exception
+        # type to handle and letting the rest crash the background task
+        # silently. No retry (out of scope) -- this just makes the failure
+        # observable instead of a silently dropped event.
+        try:
+            with get_conn() as conn:
+                synthetic_events_service.record_event(conn, body.event_id, body.camera_id, body.edge_node_id, body.payload)
+        except Exception:  # noqa: BLE001 -- deliberate catch-all, see comment above
+            logger.error(f"failed to write synthetic detection event {body.event_id}", exc_info=True)
+
+    background_tasks.add_task(_write)
+    return {"event_id": body.event_id, "status": "accepted"}

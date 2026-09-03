@@ -31,6 +31,16 @@ def get_alert(db: RealDictCursor, alert_id: int):
     return db.fetchone()
 
 
+def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
+    """Looks up the alert (if any) already linked to a detection — used when
+    POST /detections receives a retry (a duplicate event_id/scenario_run_id)
+    so the original alert can be returned instead of calling
+    process_detection again and creating a second one for the same
+    underlying sighting."""
+    db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.detection_id = %s", (detection_id,))
+    return db.fetchone()
+
+
 def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, detection_id: int):
     """Checks a plate against the watchlist; creates an alert (linked back to
     the detections row that triggered it) if it matches. Called as a side

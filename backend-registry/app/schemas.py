@@ -139,3 +139,43 @@ class RolePermissionsOut(BaseModel):
 class RolePermissionsUpdate(BaseModel):
     permissions: list[str]
     reason_code: Optional[str] = None
+
+
+class PaginatedCamerasOut(BaseModel):
+    cameras: list[CameraOut]
+    next_cursor: Optional[int] = None
+
+
+class CameraSummaryOut(BaseModel):
+    total: int
+    online: int
+    degraded: int
+    offline: int
+    real_stream_count: int
+    synthetic_count: int
+    edge_node_count: int
+
+
+class DistrictCount(BaseModel):
+    district: str
+    count: int
+
+
+class DistrictSummaryOut(BaseModel):
+    districts: list[DistrictCount]
+
+
+class SyntheticDetectionEventIn(BaseModel):
+    event_id: str
+    camera_id: int
+    edge_node_id: Optional[int] = None
+    payload: Optional[dict] = None
+
+
+class SyntheticDetectionEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
+
+
+class ArchiveResult(BaseModel):
+    archived: int
