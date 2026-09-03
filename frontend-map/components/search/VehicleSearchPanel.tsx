@@ -4,8 +4,12 @@ import React, { useEffect, useState } from 'react';
 import { Search, MapPin, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { Detection } from '@/types/detection';
+import { VehicleGovtLookup } from '@/types/ownerDetails';
 import { detectionService } from '@/services/detectionService';
+import { vehicleLookupService } from '@/services/vehicleLookupService';
 import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
+import { OwnerDetailsPanel } from '@/components/search/OwnerDetailsPanel';
+import { LicenseLookupPanel } from '@/components/search/LicenseLookupPanel';
 
 // How often an active search re-polls for new sightings of the same plate —
 // frequent enough that a demo's next staged camera hit shows up without a
@@ -32,6 +36,8 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
   const [results, setResults] = useState<Detection[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ownerDetails, setOwnerDetails] = useState<VehicleGovtLookup | null>(null);
+  const [isLoadingOwner, setIsLoadingOwner] = useState(false);
 
   useEffect(() => {
     onResultsChange(results ?? []);
@@ -76,6 +82,21 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
       setActiveScenarioRunId(null);
     } finally {
       setIsLoading(false);
+    }
+
+    // Owner/vehicle registry lookup (VAHAN) runs alongside the sighting
+    // search, not gated on it succeeding -- a plate with no sighting
+    // history yet can still have a real registry entry. Failures here are
+    // swallowed (owner lookup is a bonus, not the primary search result)
+    // rather than surfacing a second `error` state.
+    setIsLoadingOwner(true);
+    setOwnerDetails(null);
+    try {
+      setOwnerDetails(await vehicleLookupService.lookup(plate));
+    } catch {
+      setOwnerDetails(null);
+    } finally {
+      setIsLoadingOwner(false);
     }
   };
 
@@ -162,6 +183,14 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
           {isLoading ? 'Searching…' : 'Search Sightings'}
         </button>
       </div>
+
+      {(isLoadingOwner || ownerDetails) && (
+        <div className="px-3 pt-2">
+          <OwnerDetailsPanel details={ownerDetails} isLoading={isLoadingOwner} />
+        </div>
+      )}
+
+      <LicenseLookupPanel />
 
       <div className="flex-1 overflow-y-auto">
         {error ? (

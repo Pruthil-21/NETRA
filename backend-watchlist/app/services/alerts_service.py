@@ -6,7 +6,7 @@ in the latest history row so callers always see the current status.
 """
 from psycopg2.extras import RealDictCursor
 
-from . import watchlist_service
+from . import govt_lookup_service, watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
     SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
@@ -21,14 +21,25 @@ _SELECT_WITH_CURRENT_STATUS = """
 """
 
 
+def _with_owner_details(alert):
+    if alert is not None:
+        # Combined VAHAN (ownership) + eGujCop (crime/FIR) lookup, both
+        # keyed on the alert's plate_number -- see govt_lookup_service.py.
+        alert["owner_details"] = govt_lookup_service.lookup_vehicle(alert["plate_number"])
+    return alert
+
+
 def list_alerts(db: RealDictCursor):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " ORDER BY a.matched_at DESC")
-    return db.fetchall()
+    alerts = db.fetchall()
+    for alert in alerts:
+        _with_owner_details(alert)
+    return alerts
 
 
 def get_alert(db: RealDictCursor, alert_id: int):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.id = %s", (alert_id,))
-    return db.fetchone()
+    return _with_owner_details(db.fetchone())
 
 
 def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
@@ -38,7 +49,7 @@ def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
     process_detection again and creating a second one for the same
     underlying sighting."""
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.detection_id = %s", (detection_id,))
-    return db.fetchone()
+    return _with_owner_details(db.fetchone())
 
 
 def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, detection_id: int):

@@ -42,6 +42,36 @@ than overclaiming.
   PR before merge. CI environment values (e.g. `JWT_SECRET:
   ci-test-secret-not-for-production`) are clearly labeled as dummy,
   not real secrets.
+- Password security: officer passwords are bcrypt-hashed
+  (`auth_service.hash_password`/`verify_password`), never stored or
+  compared in plaintext. Login is timing-attack resistant — a badge
+  number with no match still runs `verify_password` against a
+  precomputed dummy hash (`DUMMY_PASSWORD_HASH`), so response time
+  doesn't leak whether a badge number exists.
+- Fine-grained RBAC beyond the role check above: backend-registry's
+  `require_permission`/`has_permission` check an explicit permissions
+  list issued per officer posting (`auth_service.issue_token`, scoped
+  by `scope_type`/`scope_value`, e.g. a jurisdiction), on top of the
+  coarser role gate — backward-compatible with pre-RBAC demo JWTs
+  (role-only, no permissions claim), which are still treated as fully
+  trusted rather than breaking existing test fixtures/tokens.
+- Separation of duty on alert escalation: an officer who already made
+  a status change on an alert cannot be the one who escalates it
+  (`alerts_service.has_prior_status_change`, enforced in
+  `routers/alerts.py`'s `PATCH /alerts/{id}` — verified as an actual
+  gate on the ESCALATED path, not just a defined-but-unused helper).
+- Feature kill-switches fail closed as 404, not 403
+  (`require_scale_demo_enabled`) — a disabled synthetic/scale-demo
+  route looks like it doesn't exist rather than revealing the feature
+  is present but off.
+- The new government-database lookup endpoints (`GET
+  /vehicle-lookup/{plate}`, `GET /license-lookup/{dl_number}` — VAHAN,
+  eGujCop, SARTHI readiness) are gated by the same `require_role("officer")`
+  as every other officer-facing route. They currently return an honest
+  `"not_configured"` placeholder (no real VAHAN/eGujCop/SARTHI
+  credentials exist yet), so there's no real external PII exposure
+  risk from this surface today — noted here so it's tracked for when
+  real credentials are added.
 
 ## Explicitly Deferred (documented gaps, not built)
 
@@ -61,6 +91,12 @@ than overclaiming.
 - ANPR camera-id mapping — live/simulated feeds not yet tied to the
   real camera registry are mapped to a placeholder `camera_id` for
   testing.
+- Real VAHAN/eGujCop/SARTHI credentials — all three government-database
+  lookups are wired end-to-end but not actually implemented against a
+  real API, since access to any of them requires a formal application
+  we don't have. Once granted, this needs its own security review
+  (these return real PII/police data, not the placeholder response
+  used today).
 
 ## Summary
 

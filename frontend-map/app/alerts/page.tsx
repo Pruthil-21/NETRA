@@ -205,6 +205,21 @@ export default function AlertsPage() {
                             <p className="font-mono font-semibold text-white">{alert.plate_number}</p>
                             <p className="text-slate-400 truncate">{camera?.name || `Camera #${alert.camera_id}`}</p>
                             <p className="text-slate-600">{new Date(alert.matched_at).toLocaleString()}</p>
+                            {/* Owner details (VAHAN) / police records (eGujCop) -- only
+                                rendered once real access exists server-side (status "ok");
+                                until then every alert's status is "not_configured", so this
+                                stays hidden rather than repeating a placeholder on every row. */}
+                            {alert.owner_details?.vahan.status === 'ok' && (
+                              <p className="text-slate-500 truncate">
+                                Owner: {alert.owner_details.vahan.owner_name || 'Unknown'}
+                              </p>
+                            )}
+                            {alert.owner_details?.egujcop.status === 'ok' &&
+                              alert.owner_details.egujcop.has_open_case && (
+                                <p className="text-amber-400 truncate">
+                                  Open case: {alert.owner_details.egujcop.case_ids?.join(', ') || 'yes'}
+                                </p>
+                              )}
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${STATUS_STYLES[alert.status] || STATUS_STYLES.DISMISSED}`}>
