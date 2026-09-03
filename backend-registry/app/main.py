@@ -329,8 +329,17 @@ def receive_synthetic_detection(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     def _write():
-        with get_conn() as conn:
-            synthetic_events_service.record_event(conn, body.event_id, body.camera_id, body.edge_node_id, body.payload)
+        # Runs after the 202 has already gone out -- the client can't be told
+        # about a failure here, so a broad catch is intentional (a pool
+        # timeout, a bad payload, anything) rather than picking one exception
+        # type to handle and letting the rest crash the background task
+        # silently. No retry (out of scope) -- this just makes the failure
+        # observable instead of a silently dropped event.
+        try:
+            with get_conn() as conn:
+                synthetic_events_service.record_event(conn, body.event_id, body.camera_id, body.edge_node_id, body.payload)
+        except Exception:  # noqa: BLE001 -- deliberate catch-all, see comment above
+            logger.error(f"failed to write synthetic detection event {body.event_id}", exc_info=True)
 
     background_tasks.add_task(_write)
     return {"event_id": body.event_id, "status": "accepted"}
