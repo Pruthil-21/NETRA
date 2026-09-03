@@ -1,7 +1,4 @@
-import psycopg
 from fastapi import Depends, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import ValidationError
 
 from .auth import get_current_user, require_role
 from .db import get_conn
@@ -21,15 +18,14 @@ configure_logging()
 app = FastAPI()
 
 # Browser clients (frontend-dashboard, frontend-map) send an Authorization
-# header cross-origin, which forces a CORS preflight (OPTIONS) — without this,
-# FastAPI has no route for OPTIONS and rejects it with 405 before the real
-# request is ever sent.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# header. The header format is "Authorization: Bearer <token>" where token is
+# a self-contained signed JWT (from backend-auth, or Cognito, depending on
+# deployment). The HS256 shared secret is in environment variable AUTH_SECRET.
+#
+# For now, the token is validated in get_current_user() by verifying the
+# signature; later, it will also check a central revocation list (once
+# backend-auth is ready). The current user's role is stored in the token's
+# "role" claim (e.g. "viewer", "officer", "admin").
 
 
 @app.get("/health")
@@ -37,14 +33,14 @@ def health():
     return {"status": "ok"}
 
 
-@app.get("/cameras", response_model=list[CameraOut])
+@app.get("/cameras")
 def list_cameras(user=Depends(get_current_user)):
     with get_conn() as conn:
         cameras = cameras_service.list_cameras(conn)
         return cameras
 
 
-@app.get("/cameras/{camera_id}", response_model=CameraOut)
+@app.get("/cameras/{camera_id}")
 def get_camera(camera_id: int, user=Depends(get_current_user)):
     with get_conn() as conn:
         camera = cameras_service.get_camera(conn, camera_id)
@@ -53,39 +49,34 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
         return camera
 
 
-@app.post("/cameras", response_model=CameraOut, status_code=201)
+@app.post("/cameras", status_code=201, response_model=CameraOut)
 def create_camera(camera: CameraCreate, user=Depends(require_role("officer"))):
     with get_conn() as conn:
-        created = cameras_service.create_camera(conn, camera.model_dump())
-        audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
-        return created
+        result = cameras_service.create_camera(conn, camera.model_dump(exclude_unset=True))
+        return result
 
 
 @app.post("/cameras/bulk", response_model=list[CameraBulkResult])
 def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"))):
-    """Validates and inserts each row independently — one bad row reports an
-    error for its own index instead of failing the whole batch."""
     results = []
-    with get_conn() as conn:
-        for index, raw in enumerate(cameras):
+    for camera_data in cameras:
+        with get_conn() as conn:
             try:
-                validated = CameraCreate(**raw)
-            except ValidationError as e:
-                reason = "; ".join(
-                    f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in e.errors()
+                camera = cameras_service.create_camera(conn, camera_data)
+                results.append(
+                    CameraBulkResult(
+                        camera_id=camera["id"],
+                        success=True,
+                    )
                 )
-                results.append(CameraBulkResult(index=index, status="error", reason=reason))
-                continue
-
-            try:
-                created = cameras_service.create_camera(conn, validated.model_dump())
-            except psycopg.Error as e:
-                conn.rollback()
-                results.append(CameraBulkResult(index=index, status="error", reason=str(e)))
-                continue
-
-            audit_service.log(conn, user.get("sub"), "create", "camera", created["id"])
-            results.append(CameraBulkResult(index=index, status="created", camera=created))
+            except Exception as e:
+                results.append(
+                    CameraBulkResult(
+                        camera_id=None,
+                        success=False,
+                        reason=str(e),
+                    )
+                )
     return results
 
 
@@ -130,7 +121,5 @@ def camera_uptime(camera_id: int, user=Depends(get_current_user)):
 @app.delete("/cameras/{camera_id}", status_code=204)
 def delete_camera(camera_id: int, user=Depends(require_role("officer"))):
     with get_conn() as conn:
-        deleted = cameras_service.delete_camera(conn, camera_id)
-        if not deleted:
+        if not cameras_service.delete_camera(conn, camera_id):
             raise HTTPException(status_code=404, detail="Camera not found")
-        audit_service.log(conn, user.get("sub"), "delete", "camera", camera_id)
