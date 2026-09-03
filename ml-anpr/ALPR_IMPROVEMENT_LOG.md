@@ -3001,8 +3001,73 @@ as done.
   video feeds.") is now backed by real, measured evidence above, not
   asserted without it.
 
-Nothing pushed. Working tree has new, uncommitted files
-(`anpr/pipeline/`, `benchmarks/mock_backend_server.py`,
-`benchmarks/_run_mock_server_standalone.py`,
-`benchmarks/synthetic_load_test.py`) -- not committed yet, awaiting
-explicit go-ahead same as every other change this session.
+Committed (`daf479f`); nothing pushed yet, per this project's
+always-ask-before-push rule.
+
+# Session 22 -- P6 closed the item-6 idempotency gap: `event_id` is now a real server-side dedup key, not just a client-side best-effort guard
+
+Session 21 flagged one real gap in the scalability build and sent it to
+P6 as a genuine ask: `EventSender`'s retry-on-timeout path (item 6)
+could not guarantee no duplicate detections/alerts, because
+backend-watchlist's `POST /detections` had no client-supplied
+idempotency key -- only `scenario_run_id` dedup for scripted replays,
+which doesn't apply to live retries.
+
+P6's reply: `event_id` (UUID) is now accepted as an optional field on
+`POST /detections` and is a real server-side idempotency key -- a
+repeat POST with the same `event_id` is a no-op that returns the
+original `detection` and `alert` instead of creating a second one of
+either (the alert side specifically called out as handled, since a
+duplicate *alert* was the case that actually mattered for the
+downstream alerting flow, not just a duplicate detection row). Backed
+by a partial unique index on `event_id`, mirroring the existing
+`scenario_run_id` dedup pattern. Omitting `event_id` is a complete
+no-op -- safe to roll out incrementally, no behavior change for any
+caller not sending it.
+
+Backend commit: `2cb1757` (`feat(backend-watchlist): add
+client-supplied idempotency key to POST /detections`) on
+`origin/feature/backend-watchlist` -- **confirmed via `git fetch` +
+`git show`, not taken on faith** -- this branch is not yet merged to
+`main`, so this guarantee only holds against a backend-watchlist
+deployment that actually has this commit.
+
+## What changed on our side: nothing functional, one stale limitation removed
+
+Checked `anpr/pipeline/events.py` and `event_sender.py` against the
+confirmed contract diff before touching anything:
+
+- `DetectionEvent` (`events.py`) already generates a UUID `event_id`
+  per event (`field(default_factory=lambda: str(uuid.uuid4()))`) and
+  already sends it as `"event_id"` in every `to_backend_payload()` call
+  -- field name matches the contract exactly, no payload change needed.
+- `EventSender._send_with_retry()` (`event_sender.py`) already retries
+  on both clean network failures and timeouts (`requests.exceptions.
+  RequestException` covers both) -- this was Session 21's deliberate
+  "retry on timeout too, accept the duplicate-row risk" tradeoff. That
+  tradeoff is now backed by a real guarantee instead of being a risk,
+  with no code change required to get it.
+
+So the fix here was documentation only: both modules' docstrings
+described item-6 duplicate-safety as "best-effort client-side only, not
+a guarantee" -- now stale and actively misleading now that the server
+side exists. Rewrote both docstrings to state the real current
+guarantee, name the confirming commit, and flag the one real remaining
+caveat (only holds once `2cb1757` is merged/deployed on whichever
+backend a given run actually points at). The local
+`_sent_event_ids` in-process set is kept as-is -- no longer
+load-bearing for correctness, but still a legitimate fast local
+short-circuit that avoids a redundant network round-trip.
+
+## What's not done / open
+
+- `2cb1757` is not yet on `main` -- if a real end-to-end test against
+  backend-watchlist happens before it's merged, the old
+  best-effort-only behavior (and the small duplicate-row risk on a
+  retried timeout) still applies there. Worth confirming merge status
+  before relying on this for a real demo.
+- No real end-to-end retry-duplicate test run against a live
+  backend-watchlist with `2cb1757` deployed -- confirmed by reading the
+  contract commit directly, not by testing our own retry path against
+  a real server (still unreachable from this dev machine, per Session
+  20/21's open item).
