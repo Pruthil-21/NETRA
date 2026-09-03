@@ -18,6 +18,9 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    CoverageTargetCreate,
+    CoverageTargetOut,
+    CoverageTargetUpdate,
     LoginRequest,
     LoginResponse,
     MeResponse,
@@ -35,6 +38,7 @@ from .services import (
     audit_service,
     auth_service,
     cameras_service,
+    coverage_targets_service,
     rbac_service,
     reports_service,
     synthetic_events_service,
@@ -271,6 +275,48 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"
             audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
             results.append(CameraBulkResult(index=index, status="created", camera=created))
     return results
+
+
+@app.get("/coverage-targets", response_model=list[CoverageTargetOut])
+def list_coverage_targets(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        return coverage_targets_service.list_targets(conn)
+
+
+@app.get("/coverage-targets/{target_id}", response_model=CoverageTargetOut)
+def get_coverage_target(target_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        target = coverage_targets_service.get_target(conn, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        return target
+
+
+@app.post("/coverage-targets", response_model=CoverageTargetOut, status_code=201)
+def create_coverage_target(body: CoverageTargetCreate, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        created = coverage_targets_service.create_target(conn, body.model_dump())
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "coverage_target", created["id"])
+        return created
+
+
+@app.put("/coverage-targets/{target_id}", response_model=CoverageTargetOut)
+def update_coverage_target(target_id: int, body: CoverageTargetUpdate, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        updated = coverage_targets_service.update_target(conn, target_id, body.model_dump(exclude_unset=True))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "coverage_target", target_id)
+        return updated
+
+
+@app.delete("/coverage-targets/{target_id}", status_code=204)
+def delete_coverage_target(target_id: int, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        deleted = coverage_targets_service.delete_target(conn, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "coverage_target", target_id)
 
 
 @app.get("/reports/summary", response_model=ReportSummary)
