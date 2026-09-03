@@ -44,3 +44,4 @@ ml-anpr/test_images/after/
 
 # Local cloudflared tunnel logs (machine-specific)
 cf-tunnel-*.log
+streaming/.organizer-email
