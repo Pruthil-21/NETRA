@@ -3071,3 +3071,76 @@ short-circuit that avoids a redundant network round-trip.
   contract commit directly, not by testing our own retry path against
   a real server (still unreachable from this dev machine, per Session
   20/21's open item).
+
+# Session 23 -- first real live-stream test against P3's Docker/MediaMTX relay, found and fixed a real connection bug in `process_hls_stream()`
+
+P3 shared a live Cloudflare-tunneled HLS relay
+(`https://<tunnel>.trycloudflare.com/stream/direct-camNN/index.m3u8`)
+for `direct-cam06`/`direct-cam07` -- the first time `process_hls_stream()`
+could be tested against real relay infrastructure instead of a local
+`.mp4` file. Direct `cv2.VideoCapture(master_url)` failed every time:
+FFmpeg's stream-open hit its 30s internal timeout and gave up after all
+`max_open_attempts`, even though `curl` on the exact same URL returned a
+valid HLS manifest instantly.
+
+## Root cause (confirmed, not guessed)
+
+Fetched the master `index.m3u8` three times back-to-back with plain
+`curl` -- each response referenced a *different* `?session=<uuid>`
+variant-playlist URL. MediaMTX (the relay's HLS server) mints a brand
+new session on every master-playlist GET. OpenCV's FFmpeg backend
+issues more than one request while opening a stream (format probing,
+then actual demuxing) -- by the time it tries to read segments, a
+second internal request has already been assigned a newer session,
+stranding the first one. That's what produced the 30s
+`_opencv_ffmpeg_interrupt_callback` timeout on every attempt.
+
+Verified the mechanism directly: resolving the master playlist once
+with `requests.get()`, extracting the first non-comment line (the
+session-scoped variant playlist URL), and handing *that* URL straight
+to `cv2.VideoCapture()` opened in ~3s and read frames immediately.
+Confirmed the resolved session stays valid across repeated
+reconnects too, not just the first open.
+
+## Fix: `anpr/streaming.py`'s `process_hls_stream()`
+
+Added `_resolve_master_playlist()`, called inside `_open()` on every
+attempt (including reconnects, so a stale/expired session gets a fresh
+one automatically rather than looping on a dead one forever): fetches
+the given URL, and if the first referenced line is itself another
+`.m3u8` (i.e. this is a master playlist pointing at a variant), resolves
+to that variant URL before passing it to `cv2.VideoCapture()`. Falls
+back to the original URL unchanged if the fetch fails or the URL is
+already a variant/plain HLS source with no master/variant split --
+doesn't assume every HLS source needs this, only follows the pattern
+when it's actually there.
+
+## Live test result (real footage, real detection, not synthetic)
+
+After the fix, ran the real pipeline against `direct-cam06`'s live feed
+for ~3 minutes: connected immediately, no timeout. Real plate confirmed
+three times across reconnects -- `GJ32AG2883`, confidence `0.99`,
+`ok - pattern match` each time (same vehicle/scene, consistent with a
+mostly-static camera view rather than a bug). Some H.264 decode
+warnings appeared mid-stream (`cabac decode ... failed`, `error while
+decoding MB ...`) -- consistent with occasional packet loss over a free
+Cloudflare quick-tunnel, not a pipeline bug; the existing
+reconnect-on-read-failure logic recovered cleanly every time without
+manual intervention. `send_detection_to_watchlist` correctly attempted
+and failed gracefully (`localhost:8001` unreachable, as expected --
+no local backend running during this test); the detection/tracking/event
+side of the pipeline worked end-to-end against real, live infrastructure
+for the first time this project.
+
+## What's not done / open
+
+- Only tested against `direct-cam06` directly; `direct-cam07` uses the
+  identical relay path pattern and the fix is generic (not
+  cam06-specific), but wasn't separately re-verified this session.
+- Not tested against a real reachable `backend-watchlist` -- the
+  detection/tracking side is proven live now, but full
+  detect-to-alert-to-frontend delivery still isn't, per the
+  still-open Session 20/21/22 item.
+- The tunnel URL is a Cloudflare quick-tunnel and will change if P3's
+  container restarts -- not hardcoded anywhere in config, used only as
+  a one-off test argument, per P3's own warning.
