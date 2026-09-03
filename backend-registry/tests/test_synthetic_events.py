@@ -1,4 +1,3 @@
-import time
 import uuid
 
 from app.db import get_conn

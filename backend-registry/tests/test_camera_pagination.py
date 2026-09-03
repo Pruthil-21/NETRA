@@ -124,7 +124,6 @@ def test_include_synthetic_is_404_when_the_scale_demo_flag_is_off(client, office
 
 def test_include_synthetic_is_403_for_a_role_without_manage_cameras(client, monkeypatch):
     import jwt as pyjwt
-
     from app.config import settings
 
     monkeypatch.setenv("SCALE_DEMO_ENABLED", "true")

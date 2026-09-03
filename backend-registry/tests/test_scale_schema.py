@@ -1,7 +1,7 @@
 import uuid
 
+import psycopg
 import pytest
-
 from app.db import get_conn
 
 
@@ -45,7 +45,7 @@ def test_synthetic_detection_events_event_id_is_unique():
                     (event_id, 1),
                 )
                 conn.commit()
-                with pytest.raises(Exception):
+                with pytest.raises(psycopg.errors.UniqueViolation):
                     cur.execute(
                         "INSERT INTO synthetic_detection_events (event_id, camera_id) VALUES (%s, %s)",
                         (event_id, 1),
