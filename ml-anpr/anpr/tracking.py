@@ -1,6 +1,9 @@
 """Per-plate confidence-weighted-voting confirmation, and per-vehicle IoU
 tracking so that confirmation runs independently per physical vehicle."""
+from concurrent.futures import ThreadPoolExecutor
+
 from .plate_format import INDIAN_PLATE_PATTERN, _plate_similarity
+from . import vlm_fallback
 
 
 class PlateConfirmationTracker:
@@ -150,21 +153,44 @@ class VehicleTracker:
     IOU_MATCH_THRESHOLD = 0.3
     MAX_MISSED_FRAMES = 5
 
+    # A track seen only once or twice before losing it is as likely to be
+    # a spurious/noise detection as a real missed vehicle -- not worth an
+    # expensive VLM call. Two real matches is the same bar
+    # PlateConfirmationTracker's own default confirm_threshold uses.
+    VLM_FALLBACK_MIN_MATCHES = 2
+
     def __init__(self, window_size=10, confirm_threshold=2):
         self.window_size = window_size
         self.confirm_threshold = confirm_threshold
-        self.tracks = []  # each: {"box": (x1,y1,x2,y2), "tracker": PlateConfirmationTracker, "missed": int}
+        self.tracks = []  # each: {"box", "tracker": PlateConfirmationTracker, "missed",
+                           #        "best_crop", "best_crop_area", "match_count", "vlm_dispatched"}
         # Persists across track pruning -- a confirmed plate must not
         # silently disappear from the summary just because the vehicle
         # that produced it later left frame and its track got pruned.
         self.confirmed = set()
 
-    def update(self, detections):
+        # BLPR-style last-resort fallback (see vlm_fallback.py): dispatched
+        # in the background because measured Ollama latency (0.48s warm /
+        # 6.7s cold -- see ALPR_IMPROVEMENT_LOG.md) is too slow to block
+        # this per-frame update() loop. Bounded pool size doubles as a
+        # natural rate limit if many tracks get pruned in the same burst.
+        self._vlm_executor = ThreadPoolExecutor(max_workers=2)
+        self._vlm_pending = []
+
+    def update(self, detections, raw_frame=None):
         """
         detections: detection.detect_plate_from_frame's list output for
-        one frame. Returns a list of confirmed-event dicts for this frame
-        (0 or more -- one per vehicle track that just crossed its own
-        confirm_threshold).
+        one frame. raw_frame: the same full frame passed to
+        detect_plate_from_frame, optional -- used only to cache each
+        track's best (largest-area) vehicle crop for the VLM fallback
+        below; omitting it (existing callers are unaffected) just means
+        that fallback never has an image to work with, not an error.
+
+        Returns a list of confirmed-event dicts for this frame (0 or
+        more -- one per vehicle track that just crossed its own
+        confirm_threshold). VLM-fallback confirmations complete
+        asynchronously and do NOT come out of this return value -- call
+        pop_ready_vlm_confirmations() once per frame to collect those.
         """
         confirmed_events = []
         matched = set()
@@ -189,12 +215,29 @@ class VehicleTracker:
                         window_size=self.window_size, confirm_threshold=self.confirm_threshold
                     ),
                     "missed": 0,
+                    "best_crop": None,
+                    "best_crop_area": 0,
+                    "match_count": 0,
+                    "vlm_dispatched": False,
                 }
                 self.tracks.append(best_track)
 
             best_track["box"] = box
             best_track["missed"] = 0
+            best_track["match_count"] += 1
             matched.add(id(best_track))
+
+            if raw_frame is not None:
+                x1, y1, x2, y2 = box
+                area = max(0, x2 - x1) * max(0, y2 - y1)
+                # Largest-area crop over the track's life, not
+                # highest-OCR-confidence -- picking by OCR confidence would
+                # systematically exclude exactly the tracks most worth a
+                # fallback (zero OCR candidates ever has no confidence
+                # signal at all to rank by).
+                if area > best_track["best_crop_area"]:
+                    best_track["best_crop"] = raw_frame[y1:y2, x1:x2].copy()
+                    best_track["best_crop_area"] = area
 
             plate = det.get("plate_number")
             if not plate:
@@ -207,6 +250,66 @@ class VehicleTracker:
         for t in self.tracks:
             if id(t) not in matched:
                 t["missed"] += 1
+
+        # Last chance, right before a track gets pruned below: if it never
+        # confirmed through normal OCR voting, try the VLM fallback exactly
+        # once. Firing only here means this can never touch a track that
+        # already confirmed normally (a long clean run like HR98E4959
+        # confirms well before MAX_MISSED_FRAMES and never reaches this
+        # condition at all), and never double-fires for the same track.
+        for t in self.tracks:
+            if (
+                t["missed"] == self.MAX_MISSED_FRAMES
+                and not t["vlm_dispatched"]
+                and not t["tracker"].confirmed
+                and t["match_count"] >= self.VLM_FALLBACK_MIN_MATCHES
+                and t["best_crop"] is not None
+            ):
+                t["vlm_dispatched"] = True
+                self._vlm_pending.append(
+                    self._vlm_executor.submit(vlm_fallback.read_plate_vlm, t["best_crop"])
+                )
+
         self.tracks = [t for t in self.tracks if t["missed"] <= self.MAX_MISSED_FRAMES]
 
         return confirmed_events
+
+    def pending_vlm_futures(self):
+        """Read-only access to in-flight VLM fallback calls, for a caller
+        that wants to wait on them (e.g. draining before a final summary
+        at the end of a finite video) without reaching into a private
+        attribute. See pop_ready_vlm_confirmations() to collect results."""
+        return list(self._vlm_pending)
+
+    def pop_ready_vlm_confirmations(self):
+        """
+        Call once per processed frame (after update()). VLM fallback calls
+        run in a background thread (see update()'s docstring for why) and
+        complete on their own schedule, so their confirmations can't come
+        out of update()'s own return value -- this collects any that
+        finished since the last call. Returns a list of confirmed-event
+        dicts, same shape as update()'s, tagged with
+        note == "ok - vlm fallback" so callers can tell them apart from
+        normal OCR-confirmed events (e.g. to keep them out of
+        send_detection_to_watchlist's default gate).
+        """
+        ready, still_pending = [], []
+        for fut in self._vlm_pending:
+            if not fut.done():
+                still_pending.append(fut)
+                continue
+            result = fut.result()
+            if result is None:
+                continue
+            plate, confidence, note = result
+            # Same dedup rule PlateConfirmationTracker.add() uses --
+            # refuse to re-confirm something already close to an
+            # already-confirmed plate (e.g. a different track's normal
+            # OCR path confirmed the same vehicle in the meantime).
+            if any(_plate_similarity(plate, c) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
+                   for c in self.confirmed):
+                continue
+            self.confirmed.add(plate)
+            ready.append({"plate_number": plate, "confidence": confidence, "note": note})
+        self._vlm_pending = still_pending
+        return ready

@@ -20,5 +20,10 @@ def officer_headers():
 
 
 @pytest.fixture
+def second_officer_headers():
+    return {"Authorization": f"Bearer {make_token('officer', sub='second-test-officer')}"}
+
+
+@pytest.fixture
 def internal_headers():
     return {"X-Internal-Key": settings.internal_service_key}

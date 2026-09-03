@@ -98,3 +98,89 @@ def test_search_detections_by_camera_id(client, officer_headers, internal_header
     resp = client.get("/detections", params={"camera_id": 9}, headers=officer_headers)
     assert resp.status_code == 200
     assert any(d["plate_number"] == plate for d in resp.json())
+
+
+def test_reposting_the_same_event_id_returns_the_original_detection_not_a_duplicate(client, internal_headers):
+    # The actual condition a retrying client hits: a timeout on the first
+    # attempt, then the identical payload resent -- the server must return
+    # the SAME detection, not create a second row.
+    plate = _random_plate()
+    event_id = str(uuid.uuid4())
+    body = {"camera_id": 1, "plate_number": plate, "confidence": 0.9, "event_id": event_id}
+
+    first = client.post("/detections", json=body, headers=internal_headers)
+    second = client.post("/detections", json=body, headers=internal_headers)
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert first.json()["detection"]["id"] == second.json()["detection"]["id"]
+
+    with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM detections WHERE event_id = %s", (event_id,))
+        assert cur.fetchone()["n"] == 1
+
+
+def test_reposting_the_same_event_id_returns_the_original_alert_not_a_second_one(client, internal_headers):
+    # The case Avi's request specifically calls out: a retried POST must not
+    # create a second alert for the same underlying detection either.
+    plate = _random_plate()
+    with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "INSERT INTO watchlist (plate_number, reason, dept_flagged) VALUES (%s, %s, %s) RETURNING id",
+            (plate, "test reason", "Traffic Police"),
+        )
+        watchlist_id = cur.fetchone()["id"]
+
+    event_id = str(uuid.uuid4())
+    body = {"camera_id": 2, "plate_number": plate, "event_id": event_id}
+
+    first = client.post("/detections", json=body, headers=internal_headers)
+    second = client.post("/detections", json=body, headers=internal_headers)
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    first_alert = first.json()["alert"]
+    second_alert = second.json()["alert"]
+    assert first_alert is not None
+    assert first_alert["watchlist_id"] == watchlist_id
+    assert second_alert is not None
+    assert second_alert["id"] == first_alert["id"]  # same alert, not a new one
+
+    with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM alerts WHERE plate_number = %s", (plate,))
+        assert cur.fetchone()["n"] == 1
+
+
+def test_different_event_ids_create_separate_detections(client, internal_headers):
+    plate = _random_plate()
+    first = client.post(
+        "/detections",
+        json={"camera_id": 1, "plate_number": plate, "event_id": str(uuid.uuid4())},
+        headers=internal_headers,
+    )
+    second = client.post(
+        "/detections",
+        json={"camera_id": 1, "plate_number": plate, "event_id": str(uuid.uuid4())},
+        headers=internal_headers,
+    )
+    assert first.json()["detection"]["id"] != second.json()["detection"]["id"]
+
+
+def test_omitting_event_id_is_unaffected_no_dedup(client, internal_headers):
+    # Live ml-anpr detections that don't yet send event_id must behave
+    # exactly as before this change -- no accidental dedup.
+    plate = _random_plate()
+    first = client.post("/detections", json={"camera_id": 1, "plate_number": plate}, headers=internal_headers)
+    second = client.post("/detections", json={"camera_id": 1, "plate_number": plate}, headers=internal_headers)
+    assert first.json()["detection"]["id"] != second.json()["detection"]["id"]
+
+
+def test_event_id_is_echoed_back_in_the_response(client, internal_headers):
+    plate = _random_plate()
+    event_id = str(uuid.uuid4())
+    resp = client.post(
+        "/detections",
+        json={"camera_id": 1, "plate_number": plate, "event_id": event_id},
+        headers=internal_headers,
+    )
+    assert resp.json()["detection"]["event_id"] == event_id

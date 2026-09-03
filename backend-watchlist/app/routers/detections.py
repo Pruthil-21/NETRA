@@ -41,7 +41,16 @@ def receive_detection(
     db: RealDictCursor = Depends(get_db),
     _=Depends(require_internal_key),
 ):
-    recorded = detections_service.record_detection(db, detection)
+    recorded, is_duplicate = detections_service.record_detection(db, detection)
+
+    if is_duplicate:
+        # A retried/replayed event for a sighting already recorded — return
+        # its original alert (if any) rather than matching against the
+        # watchlist again, which would create a second alert for the same
+        # underlying detection.
+        alert = alerts_service.get_alert_by_detection_id(db, recorded["id"])
+        return {"detection": recorded, "alert": alert}
+
     audit_service.log(db, "ml-anpr", "create", "detection", recorded["id"])
 
     alert = alerts_service.process_detection(

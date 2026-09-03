@@ -1,3 +1,5 @@
+import { VehicleGovtLookup } from './ownerDetails';
+
 // Mirrors backend-watchlist's AlertOut/WatchlistOut (contract/API_CONTRACT.md)
 // -- created server-side as a side effect of POST /detections whenever a
 // confirmed plate read matches an active watchlist entry.
@@ -11,6 +13,11 @@ export interface Alert {
   detection_id: number | null;
   matched_at: string;
   status: AlertStatus;
+  // Attached server-side at read time: combined VAHAN (ownership) +
+  // eGujCop (crime/FIR) lookup -- always present, but each `status`
+  // inside stays "not_configured" until real access exists.
+  // See govt_lookup_service.py.
+  owner_details?: VehicleGovtLookup | null;
 }
 
 export type WatchlistPriority = 'low' | 'medium' | 'high';

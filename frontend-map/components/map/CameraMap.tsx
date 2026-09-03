@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
@@ -10,6 +10,16 @@ import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
 import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
+import { getCameraStreamUrl } from '@/lib/stream';
+import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
+
+// Hold the hover this long before the popup grows into a live preview — long
+// enough that scanning past several markers doesn't spin up a decoder per pin.
+const HOVER_PREVIEW_DELAY_MS = 2000;
+// Once previewing, keep the decoder alive this long after the mouse leaves the
+// marker before actually tearing it down -- panning across the map often clips
+// past a marker's icon briefly on the way to another one.
+const HOVER_PREVIEW_GRACE_MS = 1200;
 
 interface MapControllerProps {
   selectedCamera: Camera | null;
@@ -140,6 +150,80 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     [sightingPoints]
   );
 
+  // Which marker's popup should render the live preview -- only ever one at a
+  // time, since only one marker can be hovered. The Leaflet marker instances
+  // themselves are refs (not React state) so opening/closing a popup on hover
+  // doesn't need a re-render just to call .openPopup()/.closePopup().
+  const [previewingCameraId, setPreviewingCameraId] = useState<number | null>(null);
+  const markerRefs = useRef<Map<number, L.Marker>>(new Map());
+  // One stable ref-callback per camera id, reused across renders -- without this,
+  // the inline arrow passed to each <Marker ref={...}> below is a brand-new function
+  // every render, which makes React detach-then-reattach every marker's ref on every
+  // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
+  // background connectivity poller in CameraRegistryContext, whether or not this
+  // specific camera's own data changed). Built via useMemo (keyed on `cameras`) rather
+  // than a lazy ref-cache read during render -- the closures themselves only touch
+  // markerRefs.current when React actually calls them (mount/unmount), never here.
+  const markerRefCallbacks = useMemo(() => {
+    const map = new Map<number, (marker: L.Marker | null) => void>();
+    for (const cam of cameras) {
+      // markerRefs is only read once React actually invokes this ref callback, which
+      // happens during commit (mount/unmount), never synchronously during render. The
+      // rule flags any ref captured in a closure handed to another function as a
+      // precaution since it can't trace invocation timing across the Map.set/
+      // <Marker ref={...}> boundary; verified safe here.
+      // eslint-disable-next-line react-hooks/refs
+      map.set(cam.id, (marker) => {
+        if (marker) markerRefs.current.set(cam.id, marker);
+        else markerRefs.current.delete(cam.id);
+      });
+    }
+    return map;
+  }, [cameras]);
+  // One hover-grace controller per camera id, created lazily on first hover and
+  // reused after -- mirrors the per-marker-ref cache above for the same reason
+  // (this component manages every marker from one instance, so per-marker state
+  // lives in a Map rather than one-hook-per-marker).
+  const hoverControllers = useRef<Map<number, HoverGraceController>>(new Map());
+  const getHoverController = useCallback((camId: number) => {
+    let controller = hoverControllers.current.get(camId);
+    if (!controller) {
+      controller = createHoverGraceController(
+        HOVER_PREVIEW_DELAY_MS,
+        HOVER_PREVIEW_GRACE_MS,
+        () => setPreviewingCameraId(camId),
+        () => {
+          setPreviewingCameraId((current) => (current === camId ? null : current));
+          markerRefs.current.get(camId)?.closePopup();
+        }
+      );
+      hoverControllers.current.set(camId, controller);
+    }
+    return controller;
+  }, []);
+
+  const handleMarkerHoverStart = useCallback(
+    (camId: number) => {
+      markerRefs.current.get(camId)?.openPopup();
+      getHoverController(camId).hoverStart();
+    },
+    [getHoverController]
+  );
+
+  const handleMarkerHoverEnd = useCallback(
+    (camId: number) => {
+      getHoverController(camId).hoverEnd();
+    },
+    [getHoverController]
+  );
+
+  useEffect(
+    () => () => {
+      hoverControllers.current.forEach((controller) => controller.cancel());
+    },
+    []
+  );
+
   return (
     <div className="relative w-full h-full">
       {sightingPoints.length > 0 && (
@@ -174,14 +258,22 @@ export const CameraMap: React.FC<CameraMapProps> = ({
             return (
               <Marker
                 key={cam.id}
+                ref={markerRefCallbacks.get(cam.id)}
                 position={[cam.lat, longitude]}
                 icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
                 eventHandlers={{
                   click: () => onSelectCamera(cam),
+                  mouseover: () => handleMarkerHoverStart(cam.id),
+                  mouseout: () => handleMarkerHoverEnd(cam.id),
                 }}
               >
                 <Popup className="dark-gis-popup">
-                  <MapPopupCard camera={cam} onInspect={() => onSelectCamera(cam)} />
+                  <MapPopupCard
+                    camera={cam}
+                    onInspect={() => onSelectCamera(cam)}
+                    isPreviewing={previewingCameraId === cam.id}
+                    previewSrc={previewingCameraId === cam.id ? getCameraStreamUrl(cam).url : null}
+                  />
                 </Popup>
               </Marker>
             );

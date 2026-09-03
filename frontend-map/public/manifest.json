@@ -1,0 +1,10 @@
+{
+  "name": "NETRA - Unified Video & GIS Command",
+  "short_name": "NETRA",
+  "description": "Real-time CCTV monitoring, GIS camera registry, and vehicle-trace command center",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05070A",
+  "theme_color": "#05070A",
+  "icons": []
+}

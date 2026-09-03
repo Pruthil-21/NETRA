@@ -1,4 +1,5 @@
-"""
+"""Pydantic request/response models for the cameras API.
+
 Field names match /contract/API_CONTRACT.md exactly.
 """
 from datetime import datetime
@@ -19,11 +20,9 @@ class CameraCreate(BaseModel):
     retention_days: int
     health_status: str = "unknown"
     rtsp_url: Optional[str] = None
+    # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
-    is_synthetic: bool = False
-    edge_node_id: Optional[str] = None
-    scale_run_id: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -40,35 +39,18 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
-    is_synthetic: Optional[bool] = None
-    edge_node_id: Optional[str] = None
-    scale_run_id: Optional[str] = None
 
 
-class CameraOut(BaseModel):
+class CameraOut(CameraCreate):
     id: int
-    name: str
-    dept: str
-    lat: float
-    long: float
-    camera_type: str
-    ownership: str
-    connectivity_status: str
-    storage_type: str
-    retention_days: int
-    health_status: str
-    rtsp_url: Optional[str]
-    stream_id: Optional[str]
-    hls_url: Optional[str]
-    created_at: str
-    is_synthetic: bool
-    edge_node_id: Optional[str]
-    scale_run_id: Optional[str]
 
 
 class CameraBulkResult(BaseModel):
-    camera_id: Optional[int] = None
-    success: bool
+    """One row's outcome from POST /cameras/bulk — a bad row never fails the
+    whole batch, so the caller needs a per-row success/failure verdict."""
+    index: int
+    status: Literal["created", "error"]
+    camera: Optional[CameraOut] = None
     reason: Optional[str] = None
 
 
@@ -90,10 +72,110 @@ class CameraUptimeReport(BaseModel):
 class ReportSummary(BaseModel):
     total_cameras: int
     cameras_by_department: dict[str, int]
+    cameras_by_connectivity_status: dict[str, int]
     cameras_by_health_status: dict[str, int]
-    # alerts_last_24h and detections_last_24h are only populated in the
+    # None when backend-watchlist's schema hasn't been applied yet in this
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
-    blacklist_entries_last_24h: Optional[int] = None
-    avg_alert_response_seconds: Optional[float] = None
+
+
+class LoginRequest(BaseModel):
+    badge_number: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+
+
+class MeResponse(BaseModel):
+    badge_number: str
+    name: str
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    permissions: list[str]
+
+
+class PostingSummary(BaseModel):
+    id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class OfficerOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    active_posting: Optional[PostingSummary] = None
+
+
+class PostingOut(BaseModel):
+    id: int
+    officer_id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    is_active: bool
+
+
+class PostingCreate(BaseModel):
+    officer_id: int
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class RolePermissionsOut(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    permissions: list[str]
+
+
+class RolePermissionsUpdate(BaseModel):
+    permissions: list[str]
+    reason_code: Optional[str] = None
+
+
+class PaginatedCamerasOut(BaseModel):
+    cameras: list[CameraOut]
+    next_cursor: Optional[int] = None
+
+
+class CameraSummaryOut(BaseModel):
+    total: int
+    online: int
+    degraded: int
+    offline: int
+    real_stream_count: int
+    synthetic_count: int
+    edge_node_count: int
+
+
+class DistrictCount(BaseModel):
+    district: str
+    count: int
+
+
+class DistrictSummaryOut(BaseModel):
+    districts: list[DistrictCount]
+
+
+class SyntheticDetectionEventIn(BaseModel):
+    event_id: str
+    camera_id: int
+    edge_node_id: Optional[int] = None
+    payload: Optional[dict] = None
+
+
+class SyntheticDetectionEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
+
+
+class ArchiveResult(BaseModel):
+    archived: int

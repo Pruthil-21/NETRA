@@ -20,7 +20,7 @@ sysLogPrefix: mediamtx
 dumpPackets: false
 
 # Timeout of read operations.
-readTimeout: 10s
+readTimeout: 120s
 # Timeout of write operations.
 writeTimeout: 10s
 # Size of the queue of outgoing packets.
@@ -341,7 +341,7 @@ hlsAlwaysRemux: true
 # * mpegts - uses MPEG-TS segments, for maximum compatibility.
 # * fmp4 - uses fragmented MP4 segments, more efficient.
 # * lowLatency - uses Low-Latency HLS.
-hlsVariant: lowLatency
+hlsVariant: fmp4
 # Number of HLS segments to keep on the server.
 # Segments allow to seek through the stream.
 # Their number doesn't influence latency.
