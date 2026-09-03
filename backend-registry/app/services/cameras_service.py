@@ -2,42 +2,128 @@
 from datetime import datetime, timezone
 
 
-def list_cameras(conn):
+def list_cameras(conn, dept: str | None = None):
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM cameras ORDER BY id")
+        if dept is None:
+            cur.execute("""
+                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
+                       ST_X(location::geometry) AS long, camera_type, ownership,
+                       connectivity_status, storage_type, retention_days,
+                       health_status, rtsp_url, stream_id, hls_url
+                FROM cameras
+                WHERE is_synthetic = false
+                ORDER BY id
+            """)
+        else:
+            cur.execute("""
+                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
+                       ST_X(location::geometry) AS long, camera_type, ownership,
+                       connectivity_status, storage_type, retention_days,
+                       health_status, rtsp_url, stream_id, hls_url
+                FROM cameras
+                WHERE dept = %s AND is_synthetic = false
+                ORDER BY id
+            """, (dept,))
+        cols = [c.name for c in cur.description]
         rows = cur.fetchall()
-    return [dict(r) for r in rows]
+        return [dict(zip(cols, row)) for row in rows]
+
+
+MAX_PAGE_LIMIT = 500
+
+_CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
+                     ST_X(location::geometry) AS long, camera_type, ownership,
+                     connectivity_status, storage_type, retention_days,
+                     health_status, rtsp_url, stream_id, hls_url,
+                     is_synthetic, edge_node_id"""
+
+
+def list_cameras_page(
+    conn,
+    cursor: int | None = None,
+    limit: int = 100,
+    include_synthetic: bool = False,
+    dept: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict:
+    """Keyset-paginated camera listing. bbox is (min_lat, max_lat, min_long, max_long).
+    limit is always capped server-side at MAX_PAGE_LIMIT, regardless of what's requested --
+    this endpoint must never be able to return all 80,000+ rows in one response."""
+    limit = min(limit, MAX_PAGE_LIMIT)
+    clauses = []
+    params: dict = {"limit": limit + 1}  # fetch one extra to know if there's a next page
+
+    if include_synthetic:
+        clauses.append("is_synthetic = true")
+    else:
+        clauses.append("is_synthetic = false")
+    if cursor is not None:
+        clauses.append("id > %(cursor)s")
+        params["cursor"] = cursor
+    if dept is not None:
+        clauses.append("dept = %(dept)s")
+        params["dept"] = dept
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {_CAMERA_COLUMNS} FROM cameras {where} ORDER BY id LIMIT %(limit)s",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = rows[-1]["id"]
+
+    return {"cameras": rows, "next_cursor": next_cursor}
 
 
 def get_camera(conn, camera_id: int):
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM cameras WHERE id = %s", (camera_id,))
+        cur.execute("""
+            SELECT id, name, dept, ST_Y(location::geometry) AS lat,
+                   ST_X(location::geometry) AS long, camera_type, ownership,
+                   connectivity_status, storage_type, retention_days,
+                   health_status, rtsp_url, stream_id, hls_url
+            FROM cameras
+            WHERE id = %s
+        """, (camera_id,))
         row = cur.fetchone()
-    return dict(row) if row else None
+        if row is None:
+            return None
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, row))
 
 
 def create_camera(conn, data: dict):
-    """Insert a camera and return it (with its id)."""
-    fields = {k: v for k, v in data.items() if v is not None}
-    if "lat" in fields and "long" in fields:
-        fields["location"] = f"SRID=4326;POINT({fields['long']} {fields['lat']})"
-        del fields["lat"]
-        del fields["long"]
-
-    set_clauses = [f"{key} = %({key})s" for key in fields]
     with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            INSERT INTO cameras ({', '.join(fields.keys())})
-            VALUES ({', '.join(f'%({k})s' for k in fields.keys())})
+        cur.execute("""
+            INSERT INTO cameras (
+                name, dept, location, camera_type, ownership,
+                connectivity_status, storage_type, retention_days,
+                health_status, rtsp_url, stream_id, hls_url
+            )
+            VALUES (
+                %(name)s, %(dept)s,
+                ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326),
+                %(camera_type)s, %(ownership)s, %(connectivity_status)s,
+                %(storage_type)s, %(retention_days)s, %(health_status)s,
+                %(rtsp_url)s, %(stream_id)s, %(hls_url)s
+            )
             RETURNING id
-        """,
-            fields,
-        )
-        row = cur.fetchone()
-        camera_id = row[0]
+        """, {**data, "stream_id": data.get("stream_id"), "hls_url": data.get("hls_url")})
+        new_id = cur.fetchone()[0]
         conn.commit()
-    return get_camera(conn, camera_id)
+    return get_camera(conn, new_id)
 
 
 def update_camera(conn, camera_id: int, data: dict):
@@ -115,9 +201,64 @@ def get_uptime_windows(conn, camera_id: int) -> list[dict] | None:
 
 
 def delete_camera(conn, camera_id: int) -> bool:
-    """Delete and return True if found, False otherwise."""
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM cameras WHERE id = %s", (camera_id,))
-        deleted = cur.rowcount > 0
+        cur.execute("DELETE FROM cameras WHERE id = %s RETURNING id", (camera_id,))
+        row = cur.fetchone()
         conn.commit()
-    return deleted
+        return row is not None
+
+
+def get_summary(conn) -> dict:
+    """One aggregate query against the indexes from Task 1 -- never fetches
+    individual camera rows to count in Python, so this stays fast at 80,000+ rows."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE connectivity_status = 'online') AS online,
+                COUNT(*) FILTER (WHERE connectivity_status = 'degraded') AS degraded,
+                COUNT(*) FILTER (WHERE connectivity_status = 'offline') AS offline,
+                COUNT(*) FILTER (WHERE is_synthetic = false) AS real_stream_count,
+                COUNT(*) FILTER (WHERE is_synthetic = true) AS synthetic_count
+            FROM cameras
+        """)
+        row = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM edge_nodes")
+        edge_node_count = cur.fetchone()[0]
+
+    return {
+        "total": row[0],
+        "online": row[1],
+        "degraded": row[2],
+        "offline": row[3],
+        "real_stream_count": row[4],
+        "synthetic_count": row[5],
+        "edge_node_count": edge_node_count,
+    }
+
+
+def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = None) -> list[dict]:
+    """Real SQL GROUP BY district -- this is what the zoomed-out map view
+    calls instead of counting a single truncated page of cameras client-side,
+    which would under-report any district with more cameras than fit in one
+    page. bbox is (min_lat, max_lat, min_long, max_long)."""
+    # District summary is exclusively the scale-demo's zoomed-out map panel
+    # (ScaleMap.tsx's "District Summary (Simulation)") -- it must only ever
+    # reflect synthetic data, same as the per-camera markers it sits beside.
+    clauses = ["is_synthetic = true"]
+    params: dict = {}
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+    where = f"WHERE {' AND '.join(clauses)}"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT dept AS district, COUNT(*) AS count FROM cameras {where} GROUP BY dept ORDER BY count DESC",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]

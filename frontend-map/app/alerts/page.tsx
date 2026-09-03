@@ -2,12 +2,21 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronDown, ChevronRight, Plus, Navigation, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Navigation, Search, Check, ArrowUpCircle, X } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { alertsService } from '@/services/alertsService';
-import { Alert } from '@/types/alert';
+import { Alert, AlertStatus } from '@/types/alert';
 import { AddToWatchlistModal } from '@/components/alerts/AddToWatchlistModal';
 import { getCameraCity } from '@/lib/cameraCity';
+
+// Every alert starts NEW and needs an officer to act on it -- these are the
+// only forward transitions the backend accepts (append-only history, see
+// alertsService.updateStatus); there's no path back to NEW.
+const ACTIONS: { status: AlertStatus; label: string; icon: typeof Check }[] = [
+  { status: 'ACKNOWLEDGED', label: 'Acknowledge', icon: Check },
+  { status: 'ESCALATED', label: 'Escalate', icon: ArrowUpCircle },
+  { status: 'DISMISSED', label: 'Dismiss', icon: X },
+];
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -26,6 +35,52 @@ export default function AlertsPage() {
   const [expandedCities, setExpandedCities] = useState<Set<string>>(new Set());
   const [showAddModal, setShowAddModal] = useState(false);
   const [citySearch, setCitySearch] = useState('');
+  const [updatingIds, setUpdatingIds] = useState<Set<number>>(new Set());
+  // Dismiss is the one action here that reads as final (Acknowledge/Escalate leave the
+  // alert open to further action) -- these ids are mid-confirm, waiting on a second click.
+  const [confirmDismissIds, setConfirmDismissIds] = useState<Set<number>>(new Set());
+
+  const handleUpdateStatus = async (alertId: number, status: AlertStatus) => {
+    const previous = alerts;
+    setUpdatingIds((prev) => new Set(prev).add(alertId));
+    // Optimistic: the officer's click should feel immediate, not wait on a
+    // round trip -- reverted below if the PATCH actually fails.
+    setAlerts((prev) => prev.map((a) => (a.id === alertId ? { ...a, status } : a)));
+    try {
+      await alertsService.updateStatus(alertId, status);
+    } catch (err) {
+      setAlerts(previous);
+      setError(err instanceof Error ? err.message : 'Failed to update alert');
+    } finally {
+      setUpdatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+    }
+  };
+
+  // First click arms the confirm state (auto-reverts after 4s if not followed
+  // up); second click while armed actually fires the dismiss.
+  const requestDismiss = (alertId: number) => {
+    if (confirmDismissIds.has(alertId)) {
+      setConfirmDismissIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+      handleUpdateStatus(alertId, 'DISMISSED');
+      return;
+    }
+    setConfirmDismissIds((prev) => new Set(prev).add(alertId));
+    setTimeout(() => {
+      setConfirmDismissIds((prev) => {
+        const next = new Set(prev);
+        next.delete(alertId);
+        return next;
+      });
+    }, 4000);
+  };
 
   const camerasById = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras]);
 
@@ -150,11 +205,49 @@ export default function AlertsPage() {
                             <p className="font-mono font-semibold text-white">{alert.plate_number}</p>
                             <p className="text-slate-400 truncate">{camera?.name || `Camera #${alert.camera_id}`}</p>
                             <p className="text-slate-600">{new Date(alert.matched_at).toLocaleString()}</p>
+                            {/* Owner details (VAHAN) / police records (eGujCop) -- only
+                                rendered once real access exists server-side (status "ok");
+                                until then every alert's status is "not_configured", so this
+                                stays hidden rather than repeating a placeholder on every row. */}
+                            {alert.owner_details?.vahan.status === 'ok' && (
+                              <p className="text-slate-500 truncate">
+                                Owner: {alert.owner_details.vahan.owner_name || 'Unknown'}
+                              </p>
+                            )}
+                            {alert.owner_details?.egujcop.status === 'ok' &&
+                              alert.owner_details.egujcop.has_open_case && (
+                                <p className="text-amber-400 truncate">
+                                  Open case: {alert.owner_details.egujcop.case_ids?.join(', ') || 'yes'}
+                                </p>
+                              )}
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
                             <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold ${STATUS_STYLES[alert.status] || STATUS_STYLES.DISMISSED}`}>
                               {alert.status}
                             </span>
+                            {(alert.status === 'NEW' || alert.status === 'ACKNOWLEDGED') &&
+                              ACTIONS.filter((a) => a.status !== alert.status).map(({ status, label, icon: Icon }) => {
+                                const isDismiss = status === 'DISMISSED';
+                                const armed = isDismiss && confirmDismissIds.has(alert.id);
+                                return (
+                                  <button
+                                    key={status}
+                                    type="button"
+                                    onClick={() => (isDismiss ? requestDismiss(alert.id) : handleUpdateStatus(alert.id, status))}
+                                    disabled={updatingIds.has(alert.id)}
+                                    aria-label={armed ? `Confirm dismiss for ${alert.plate_number}` : `${label} alert for ${alert.plate_number}`}
+                                    title={armed ? 'Click again to confirm' : label}
+                                    className={`flex items-center gap-1 rounded border disabled:opacity-50 disabled:cursor-wait focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command ${
+                                      armed
+                                        ? 'px-2 py-1 bg-red-950 border-red-800 text-red-200 ring-1 ring-red-400 animate-pulse'
+                                        : 'px-1.5 py-1 bg-panel-raised border-line text-slate-300 hover:text-white'
+                                    }`}
+                                  >
+                                    <Icon size={12} />
+                                    {armed && <span className="text-[10px] font-semibold whitespace-nowrap">Confirm?</span>}
+                                  </button>
+                                );
+                              })}
                             <button
                               type="button"
                               onClick={() => router.push(`/alerts/track/${encodeURIComponent(alert.plate_number)}`)}

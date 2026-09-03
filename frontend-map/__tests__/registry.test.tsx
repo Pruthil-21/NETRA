@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import { CameraRegistryProvider, useCameraRegistry } from '../context/CameraRegistryContext';
-import { organizerCameraService } from '@/services/organizerCameraService';
 import CameraCard from '@/components/registry/CameraCard';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import Badge from '@/components/common/Badge';
@@ -43,6 +42,7 @@ const MOCK_CAMERAS: Camera[] = [
 describe('P2 Frontend Map: Feature Tests', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('Feature 1: Badge component renders correct health/status variants', () => {
@@ -74,7 +74,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
   });
 
   it('Feature 3: CameraDetailDrawer displays complete PostGIS registry fields', () => {
-    vi.spyOn(organizerCameraService, 'getAll').mockResolvedValue([]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => [] }));
     render(
       <CameraRegistryProvider>
         <CameraDetailDrawer camera={MOCK_CAMERAS[0]} />
@@ -90,7 +90,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
   });
 
   it('Feature 4: CameraRegistryContext filters data accurately by Department', async () => {
-    vi.spyOn(organizerCameraService, 'getAll').mockResolvedValue(MOCK_CAMERAS);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => MOCK_CAMERAS }));
 
     function TestConsumer() {
       const { filteredCameras, setFilters } = useCameraRegistry();
@@ -129,5 +129,41 @@ describe('P2 Frontend Map: Feature Tests', () => {
       expect(screen.queryByText('Sector 10 CH Road Junction')).not.toBeInTheDocument();
       expect(screen.getByText('Gita Mandir Bus Port')).toBeInTheDocument();
     });
+  });
+
+  it('Feature 5: CameraRegistryContext deduplicates a registry camera that collides with a reserved demo id', async () => {
+    // id 101 is reserved for VEHICLE_TRACE_DEMO_CAMERAS's "Petlad Entry Checkpoint" --
+    // this simulates the registry's own auto-incrementing ids accidentally landing on
+    // it too, which produced a duplicate-key React crash on every map render.
+    const collidingRegistryCamera: Camera = { ...MOCK_CAMERAS[0], id: 101, name: 'Accidental Collision Camera' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => [collidingRegistryCamera] })
+    );
+
+    function TestConsumer() {
+      const { cameras } = useCameraRegistry();
+      return (
+        <ul>
+          {cameras.map((c: Camera) => (
+            <li key={c.id}>
+              {c.id}:{c.name}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    render(
+      <CameraRegistryProvider>
+        <TestConsumer />
+      </CameraRegistryProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('101:Petlad Entry Checkpoint')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('101:Accidental Collision Camera')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/^101:/)).toHaveLength(1);
   });
 });
