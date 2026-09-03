@@ -28,7 +28,7 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import get_conn  # noqa: E402
+from app.db import get_conn
 
 # Gujarat's rough bounding box -- plausible map scatter, not real locations.
 LAT_RANGE = (20.5, 24.5)

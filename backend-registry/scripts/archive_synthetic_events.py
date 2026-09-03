@@ -11,8 +11,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import get_conn  # noqa: E402
-from app.services.synthetic_events_service import archive_events_older_than  # noqa: E402
+from app.db import get_conn
+from app.services.synthetic_events_service import (
+    archive_events_older_than,
+)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
