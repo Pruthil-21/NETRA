@@ -102,9 +102,11 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
                 <p className="text-[10px] text-slate-500">{camera.dept}</p>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span className="text-[8px] uppercase font-bold px-1 py-0.5 rounded bg-slate-700/50 text-slate-400">
-                  Synthetic
-                </span>
+                {camera.is_synthetic && (
+                  <span className="text-[8px] uppercase font-bold px-1 py-0.5 rounded bg-slate-700/50 text-slate-400">
+                    Synthetic
+                  </span>
+                )}
                 <span
                   className={`text-[9px] uppercase font-bold px-1.5 py-0.5 rounded ${
                     camera.connectivity_status === 'online'
