@@ -17,13 +17,6 @@ export default function AddCoverageTargetModal({ onClose, onSuccess }: { onClose
   const [added, setAdded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [mapClickMode, setMapClickMode] = useState(false);
-
-  const handleMapClick = async () => {
-    setMapClickMode(true);
-    // In a real implementation, this would activate a map picker
-    // For now, we just show the instruction
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -113,10 +106,6 @@ export default function AddCoverageTargetModal({ onClose, onSuccess }: { onClose
               />
             </div>
           </div>
-
-          <p className="text-[11px] text-slate-500 leading-relaxed">
-            Click the map icon to set location by clicking on the map, or enter latitude and longitude manually.
-          </p>
 
           <div>
             <label className={labelClass}>District</label>
