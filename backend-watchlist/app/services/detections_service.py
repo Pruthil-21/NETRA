@@ -9,18 +9,22 @@ That table is non-evidentiary and never replaces the detections history
 above; it exists purely to answer "where was this plate seen today"
 without scanning detections by hand.
 """
+from datetime import datetime
+
 from psycopg2.extras import RealDictCursor
 
 from ..schemas import DetectionIn
 
 
-def _upsert_daily_sighting(db: RealDictCursor, camera_id: int, plate_number: str, detected_at):
+def _upsert_daily_sighting(
+    db: RealDictCursor, camera_id: int, plate_number: str, detected_at: datetime
+) -> None:
     db.execute(
         """
         INSERT INTO vehicle_daily_sightings
             (camera_id, plate_number, sighting_date, detection_times)
         VALUES
-            (%s, %s, (%s AT TIME ZONE 'Asia/Kolkata')::date, ARRAY[%s]::timestamptz[])
+            (%s, %s, (%s::timestamptz AT TIME ZONE 'Asia/Kolkata')::date, ARRAY[%s::timestamptz])
         ON CONFLICT (camera_id, plate_number, sighting_date)
         DO UPDATE SET detection_times =
             vehicle_daily_sightings.detection_times || EXCLUDED.detection_times

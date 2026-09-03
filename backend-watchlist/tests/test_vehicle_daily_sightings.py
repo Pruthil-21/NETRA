@@ -25,6 +25,7 @@ def test_single_detection_creates_one_summary_row_with_one_timestamp(client, int
         headers=internal_headers,
     )
     assert resp.status_code == 201
+    detected_at = datetime.fromisoformat(resp.json()["detection"]["detected_at"])
 
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -34,10 +35,12 @@ def test_single_detection_creates_one_summary_row_with_one_timestamp(client, int
         row = cur.fetchone()
         assert row is not None
         assert len(row["detection_times"]) == 1
+        assert row["detection_times"][0] == detected_at
 
 
 def test_two_detections_same_camera_plate_day_append_to_same_row(client, internal_headers):
     plate = _random_plate()
+    detected_ats = []
     for _ in range(2):
         resp = client.post(
             "/detections",
@@ -45,6 +48,7 @@ def test_two_detections_same_camera_plate_day_append_to_same_row(client, interna
             headers=internal_headers,
         )
         assert resp.status_code == 201
+        detected_ats.append(datetime.fromisoformat(resp.json()["detection"]["detected_at"]))
 
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -54,6 +58,7 @@ def test_two_detections_same_camera_plate_day_append_to_same_row(client, interna
         rows = cur.fetchall()
         assert len(rows) == 1
         assert len(rows[0]["detection_times"]) == 2
+        assert sorted(rows[0]["detection_times"]) == sorted(detected_ats)
 
 
 def test_two_different_cameras_same_plate_same_day_create_separate_rows(client, internal_headers):
