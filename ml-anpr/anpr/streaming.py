@@ -10,8 +10,10 @@ import time
 import uuid
 from concurrent.futures import wait as _wait_futures
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import cv2
+import requests
 
 # Defensive re-insert (config.py already does this, but this module is
 # sometimes reached before anything else has -- see config.py's own
@@ -154,9 +156,41 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
     both the initial open and individual frame reads can fail transiently.
     Retries with backoff instead of treating a single failure as fatal.
     """
+    def _resolve_master_playlist(url):
+        """MediaMTX (our live relay's HLS server) mints a brand-new session
+        ID on every GET of a master playlist -- confirmed directly: three
+        back-to-back curls of the same index.m3u8 URL each returned a
+        different `?session=...` variant-playlist reference. OpenCV's
+        FFmpeg backend issues more than one request while opening a
+        stream, so passing it the raw master URL means later reads can
+        land on a superseded session -- this is what caused every direct
+        cv2.VideoCapture(master_url) attempt to hang for the full 30s
+        ffmpeg stream-timeout and fail (see ALPR_IMPROVEMENT_LOG.md
+        Session 23, live cam06 test against P3's relay).
+
+        Fetching the master once ourselves and handing FFmpeg the
+        resolved, already session-scoped variant URL avoids the repeated
+        re-probing/session-mismatch entirely -- verified this reconnects
+        cleanly for multiple opens on the same resolved URL, not just the
+        first one. Falls back to the original URL unchanged if this
+        doesn't look like a master playlist (e.g. `url` is already a
+        variant playlist, or the resolve request itself fails) -- safe
+        for any plain HLS source with no master/variant split.
+        """
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            lines = [ln.strip() for ln in resp.text.splitlines() if ln.strip() and not ln.startswith("#")]
+            if lines and lines[0].split("?")[0].endswith(".m3u8"):
+                return urljoin(url, lines[0])
+        except requests.exceptions.RequestException:
+            pass
+        return url
+
     def _open():
         for attempt in range(1, max_open_attempts + 1):
-            c = cv2.VideoCapture(hls_url)
+            resolved_url = _resolve_master_playlist(hls_url)
+            c = cv2.VideoCapture(resolved_url)
             if c.isOpened():
                 return c
             c.release()
