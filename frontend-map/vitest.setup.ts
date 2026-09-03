@@ -20,6 +20,12 @@ vi.mock('next/navigation', () => ({
     push: vi.fn(),
     replace: vi.fn(),
   }),
+  // Defaults to a non-/scale path -- CameraRegistryContext gates its real-camera
+  // fetch/poll on pathname === '/scale' (see Fix 4), so this default keeps every
+  // existing test's behavior (fetch/poll fire normally) unchanged. scalePage.test.tsx
+  // renders ScaleDemoPage directly, without CameraRegistryProvider, so it never
+  // observes this value.
+  usePathname: () => '/',
 }));
 
 // jsdom doesn't implement IntersectionObserver -- components that gate rendering on
