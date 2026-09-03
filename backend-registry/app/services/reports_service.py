@@ -15,6 +15,11 @@ def get_summary(conn):
         by_dept = {row[0]: row[1] for row in cur.fetchall()}
 
         cur.execute(
+            "SELECT connectivity_status, COUNT(*) FROM cameras GROUP BY connectivity_status ORDER BY connectivity_status"
+        )
+        by_connectivity = {row[0]: row[1] for row in cur.fetchall()}
+
+        cur.execute(
             "SELECT health_status, COUNT(*) FROM cameras GROUP BY health_status ORDER BY health_status"
         )
         by_health = {row[0]: row[1] for row in cur.fetchall()}
@@ -22,6 +27,7 @@ def get_summary(conn):
     return {
         "total_cameras": total,
         "cameras_by_department": by_dept,
+        "cameras_by_connectivity_status": by_connectivity,
         "cameras_by_health_status": by_health,
         "alerts_last_24h": _count_last_24h(conn, "alerts", "matched_at"),
         "detections_last_24h": _count_last_24h(conn, "detections", "detected_at"),
@@ -68,4 +74,5 @@ def _count_last_24h(conn, table: str, ts_column: str):
             )
             return cur.fetchone()[0]
     except psycopg.Error:
+        conn.rollback()
         return None
