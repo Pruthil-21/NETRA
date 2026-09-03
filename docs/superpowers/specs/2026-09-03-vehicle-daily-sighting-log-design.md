@@ -66,7 +66,7 @@ New table, additive only:
 ```sql
 CREATE TABLE vehicle_daily_sightings (
     id BIGSERIAL PRIMARY KEY,
-    camera_id INT NOT NULL REFERENCES cameras(id),
+    camera_id INTEGER NOT NULL,
     plate_number TEXT NOT NULL,
     sighting_date DATE NOT NULL,
     detection_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}',
@@ -75,6 +75,11 @@ CREATE TABLE vehicle_daily_sightings (
 CREATE INDEX idx_vehicle_daily_sightings_plate
     ON vehicle_daily_sightings (plate_number, sighting_date);
 ```
+
+`camera_id` is a bare `INTEGER`, not a foreign key — matching the existing
+`detections.camera_id` and `alerts.camera_id` columns in this same schema,
+which are also unreferenced integers because `cameras` is owned by
+backend-registry, a separate service.
 
 `detection_times` holds the exact `detected_at` value of every sighting
 that landed on that camera+plate+day — full timestamp precision, nothing
@@ -87,11 +92,15 @@ what makes "one row per camera+plate+day" hold and the upsert target below.
 ## Write path
 
 Lives in `detections_service.record_detection`, in the same DB transaction
-as the raw `detections` insert, and runs **only when a raw `detections` row
-was genuinely newly inserted** (`is_duplicate == False` from the
-event_id-idempotency check already in place) — a retried `event_id` must
-not append a second timestamp for a sighting that never actually happened
-twice.
+as the raw `detections` insert, and runs unconditionally after that insert
+succeeds. This branch (`feature/anpr-detection`) has no event_id
+idempotency layer — that exists only on the separate
+`feature/camera-scale-testing` branch — so every call to
+`record_detection` here is, by construction, a genuinely new sighting; there
+is no duplicate-retry case to guard against yet. If idempotency is merged
+into this branch later, that merge is responsible for adding the
+is-genuinely-new guard around this insert too (see Global Constraints in
+the implementation plan).
 
 ```sql
 INSERT INTO vehicle_daily_sightings
@@ -128,8 +137,6 @@ missing, or vice versa).
 - Two detections, same camera + plate, one at 23:59 IST and one at 00:01
   IST → two separate summary rows (day-boundary correctness across
   midnight IST, not midnight UTC).
-- Retried `event_id` (duplicate per existing idempotency logic) → no new
-  timestamp appended, row unchanged.
 - Two different cameras, same plate, same day → two separate summary rows
   (per-camera granularity preserved, not merged across cameras).
 - Existing `detections`-table and idempotency tests untouched and still
