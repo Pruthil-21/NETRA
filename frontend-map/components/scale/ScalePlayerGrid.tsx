@@ -32,13 +32,17 @@ export function ScalePlayerGrid({ cameras, onClose }: ScalePlayerGridProps) {
           >
             <X size={12} />
           </button>
-          {/* Every panel on this page shows a camera the /scale route sourced
-              from scaleCameraService, which only ever returns is_synthetic=true
-              rows -- the badge is unconditional, not tied to whether hls_url
-              happens to be set. */}
-          <span className="absolute top-1 left-1 z-10 text-[8px] uppercase font-bold px-1.5 py-0.5 rounded bg-black/60 text-amber-400">
-            Synthetic
-          </span>
+          {/* The backend now enforces is_synthetic=true for every row
+              scaleCameraService's include_synthetic=true calls return (see
+              cameras_service.list_cameras_page), so every panel on this page
+              should always be synthetic in practice -- but this check is
+              defense-in-depth, not the sole enforcement, so the badge stays
+              tied to the camera's actual flag rather than being unconditional. */}
+          {camera.is_synthetic && (
+            <span className="absolute top-1 left-1 z-10 text-[8px] uppercase font-bold px-1.5 py-0.5 rounded bg-black/60 text-amber-400">
+              Synthetic
+            </span>
+          )}
           {camera.hls_url ? (
             <HlsPlayer src={camera.hls_url} />
           ) : (

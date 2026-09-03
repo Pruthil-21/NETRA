@@ -124,11 +124,16 @@ export function ScaleMap({ onSelectCamera, onInteraction }: ScaleMapProps) {
 }
 
 function SyntheticMarker({ camera, onSelect }: { camera: ScaleCamera; onSelect: (c: ScaleCamera) => void }) {
+  // Defense-in-depth: the backend now enforces is_synthetic=true for every
+  // row this page's include_synthetic=true calls return (see
+  // cameras_service.list_cameras_page), so a non-synthetic camera reaching
+  // this component should never happen in practice -- but if it does, it
+  // must not be mislabeled/mis-iconed as synthetic.
   return (
     <Marker
       position={[camera.lat, camera.long]}
-      icon={SYNTHETIC_ICON}
-      title={`${camera.name} (Synthetic)`}
+      icon={camera.is_synthetic ? SYNTHETIC_ICON : undefined}
+      title={camera.is_synthetic ? `${camera.name} (Synthetic)` : camera.name}
       eventHandlers={{ click: () => onSelect(camera) }}
     />
   );

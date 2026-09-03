@@ -53,7 +53,9 @@ def list_cameras_page(
     clauses = []
     params: dict = {"limit": limit + 1}  # fetch one extra to know if there's a next page
 
-    if not include_synthetic:
+    if include_synthetic:
+        clauses.append("is_synthetic = true")
+    else:
         clauses.append("is_synthetic = false")
     if cursor is not None:
         clauses.append("id > %(cursor)s")
@@ -240,7 +242,10 @@ def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = 
     calls instead of counting a single truncated page of cameras client-side,
     which would under-report any district with more cameras than fit in one
     page. bbox is (min_lat, max_lat, min_long, max_long)."""
-    clauses = []
+    # District summary is exclusively the scale-demo's zoomed-out map panel
+    # (ScaleMap.tsx's "District Summary (Simulation)") -- it must only ever
+    # reflect synthetic data, same as the per-camera markers it sits beside.
+    clauses = ["is_synthetic = true"]
     params: dict = {}
     if bbox is not None:
         min_lat, max_lat, min_long, max_long = bbox
@@ -248,7 +253,7 @@ def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = 
             "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
         )
         params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    where = f"WHERE {' AND '.join(clauses)}"
 
     with conn.cursor() as cur:
         cur.execute(
