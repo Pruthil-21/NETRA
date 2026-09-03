@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+import { AlertTriangle } from 'lucide-react';
 import { MapContainer, TileLayer, Marker, useMap, useMapEvents } from 'react-leaflet';
 import { MarkerClusterGroup } from '@/components/map/MarkerClusterGroup';
 import { scaleCameraService } from '@/services/scaleCameraService';
@@ -58,6 +59,7 @@ export function ScaleMap({ onSelectCamera, onInteraction }: ScaleMapProps) {
   const [cameras, setCameras] = useState<ScaleCamera[]>([]);
   const [zoom, setZoom] = useState(7);
   const [districts, setDistricts] = useState<DistrictCount[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Guards against an old, slow request's response landing after a newer,
   // faster one -- without this, panning quickly could leave the map showing
@@ -70,25 +72,40 @@ export function ScaleMap({ onSelectCamera, onInteraction }: ScaleMapProps) {
     const requestId = ++latestRequestId.current;
     const interactionStart = performance.now();
 
-    if (currentZoom < CLUSTER_ONLY_MIN_ZOOM) {
-      // Zoomed out: don't fetch individual cameras at all -- a real
-      // aggregate GROUP BY query (Task 4), not a client-side count over one
-      // possibly-truncated page.
-      const result = await scaleCameraService.getDistrictSummary(bbox);
-      if (requestId !== latestRequestId.current) return; // a newer request has since superseded this one
-      setZoom(currentZoom);
-      setDistricts(result);
-      setCameras([]);
-      onInteraction?.('map-bounds-change', performance.now() - interactionStart);
-      return;
-    }
+    try {
+      if (currentZoom < CLUSTER_ONLY_MIN_ZOOM) {
+        // Zoomed out: don't fetch individual cameras at all -- a real
+        // aggregate GROUP BY query (Task 4), not a client-side count over one
+        // possibly-truncated page.
+        const result = await scaleCameraService.getDistrictSummary(bbox);
+        if (requestId !== latestRequestId.current) return; // a newer request has since superseded this one
+        setZoom(currentZoom);
+        setDistricts(result);
+        setCameras([]);
+        setError(null);
+        onInteraction?.('map-bounds-change', performance.now() - interactionStart);
+        return;
+      }
 
-    setDistricts(null);
-    const page = await scaleCameraService.listPage({ bbox, limit: MAX_MARKERS_RENDERED });
-    if (requestId !== latestRequestId.current) return; // stale -- discard
-    setZoom(currentZoom);
-    setCameras(page.cameras);
-    onInteraction?.('map-bounds-change', performance.now() - interactionStart);
+      setDistricts(null);
+      const page = await scaleCameraService.listPage({ bbox, limit: MAX_MARKERS_RENDERED });
+      if (requestId !== latestRequestId.current) return; // stale -- discard
+      setZoom(currentZoom);
+      setCameras(page.cameras);
+      setError(null);
+      onInteraction?.('map-bounds-change', performance.now() - interactionStart);
+    } catch (err) {
+      // Without this, a fetch failure here becomes a genuinely unhandled
+      // promise rejection (this callback is invoked fire-and-forget from
+      // BoundsWatcher, never awaited) and leaves stale markers on screen
+      // with zero indication -- surface it instead: log it, flag it in the
+      // UI, and still fire onInteraction so the metrics panel doesn't
+      // silently under-count this interaction.
+      if (requestId !== latestRequestId.current) return; // a newer request already superseded this one
+      console.error('ScaleMap: failed to load data for the current viewport', err);
+      setError(err instanceof Error ? err.message : 'Failed to load map data');
+      onInteraction?.('map-bounds-change-error', performance.now() - interactionStart);
+    }
   }, [onInteraction]);
 
   return (
@@ -107,6 +124,13 @@ export function ScaleMap({ onSelectCamera, onInteraction }: ScaleMapProps) {
           can assert on the currently-loaded camera count without reaching
           into mocked Marker internals. */}
       <span data-testid="scale-map-camera-count" className="sr-only">{cameras.length}</span>
+
+      {error && (
+        <div className="absolute top-3 right-3 z-[1000] flex items-center gap-2 px-3 py-1.5 rounded-lg border border-signal-red/30 bg-panel/90 text-signal-red text-[11px]">
+          <AlertTriangle size={14} />
+          Map data may be stale — {error}
+        </div>
+      )}
 
       {zoom < CLUSTER_ONLY_MIN_ZOOM && districts && (
         <div className="absolute top-3 left-3 z-[1000] bg-panel/90 border border-line rounded-lg p-3 max-h-64 overflow-y-auto text-[11px]">

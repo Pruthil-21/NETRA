@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Camera as CameraIcon } from 'lucide-react';
+import { AlertTriangle, Camera as CameraIcon } from 'lucide-react';
 import { scaleCameraService } from '@/services/scaleCameraService';
 import { ScaleCamera } from '@/types/scaleCamera';
 
@@ -26,6 +26,7 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
   const [cameras, setCameras] = useState<ScaleCamera[]>([]);
   const [nextCursor, setNextCursor] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const loadingMoreRef = useRef(false);
   const parentRef = useRef<HTMLDivElement>(null);
 
@@ -35,7 +36,9 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
       .then((page) => {
         setCameras(page.cameras);
         setNextCursor(page.next_cursor);
+        setError(null);
       })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load cameras'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -47,7 +50,9 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
       .then((page) => {
         setCameras((prev) => [...prev, ...page.cameras]);
         setNextCursor(page.next_cursor);
+        setError(null);
       })
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load more cameras'))
       .finally(() => {
         loadingMoreRef.current = false;
       });
@@ -76,6 +81,15 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
     return <div className="animate-pulse h-64 bg-panel-raised rounded" aria-label="Loading cameras" />;
   }
 
+  if (error && cameras.length === 0) {
+    return (
+      <div className="flex items-center gap-2.5 p-4 rounded-lg border border-signal-red/30 bg-signal-red/10 text-signal-red text-xs">
+        <AlertTriangle size={16} />
+        Failed to load cameras — {error}
+      </div>
+    );
+  }
+
   if (cameras.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2 py-12 text-slate-500">
@@ -86,7 +100,14 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
   }
 
   return (
-    <div ref={parentRef} className="h-full overflow-y-auto border border-line rounded-lg bg-panel">
+    <div className="h-full flex flex-col">
+      {error && (
+        <div className="flex items-center gap-2 px-3 py-1.5 mb-1 rounded border border-signal-red/30 bg-signal-red/10 text-signal-red text-[10px] shrink-0">
+          <AlertTriangle size={12} />
+          Failed to load more cameras — {error}
+        </div>
+      )}
+      <div ref={parentRef} className="flex-1 min-h-0 overflow-y-auto border border-line rounded-lg bg-panel">
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualItems.map((virtualRow) => {
           const camera = cameras[virtualRow.index];
@@ -122,6 +143,7 @@ export function ScaleCameraList({ onSelectCamera, onLoadMoreReady }: ScaleCamera
             </button>
           );
         })}
+      </div>
       </div>
     </div>
   );
