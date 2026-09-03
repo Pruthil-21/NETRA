@@ -201,3 +201,24 @@ class CoverageTargetUpdate(BaseModel):
 
 class CoverageTargetOut(CoverageTargetCreate):
     id: int
+
+
+class UncoveredZone(BaseModel):
+    target_id: int
+    name: str
+    district: str
+    nearest_camera_id: Optional[int] = None
+    distance_meters: Optional[float] = None
+
+
+class AgeingCamera(BaseModel):
+    camera_id: int
+    name: str
+    district: str
+    age_days: int
+    degraded_transition_count_90d: int
+
+
+class GapAnalysisReport(BaseModel):
+    uncovered_zones: list[UncoveredZone]
+    ageing_infrastructure: list[AgeingCamera]

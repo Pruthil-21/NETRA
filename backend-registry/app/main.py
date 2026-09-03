@@ -21,6 +21,7 @@ from .schemas import (
     CoverageTargetCreate,
     CoverageTargetOut,
     CoverageTargetUpdate,
+    GapAnalysisReport,
     LoginRequest,
     LoginResponse,
     MeResponse,
@@ -39,6 +40,7 @@ from .services import (
     auth_service,
     cameras_service,
     coverage_targets_service,
+    gap_analysis_service,
     rbac_service,
     reports_service,
     synthetic_events_service,
@@ -317,6 +319,24 @@ def delete_coverage_target(target_id: int, user=Depends(require_permission("mana
         if not deleted:
             raise HTTPException(status_code=404, detail="Coverage target not found")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "coverage_target", target_id)
+
+
+@app.get("/reports/gap-analysis", response_model=GapAnalysisReport)
+def gap_analysis_report(
+    threshold_m: int = 100,
+    age_threshold_days: int = 1095,
+    user=Depends(get_current_user),
+):
+    with get_conn() as conn:
+        try:
+            uncovered = gap_analysis_service.compute_uncovered_zones(conn, threshold_m)
+        except Exception:
+            uncovered = []
+        try:
+            ageing = gap_analysis_service.compute_ageing_infrastructure(conn, age_threshold_days)
+        except Exception:
+            ageing = []
+        return {"uncovered_zones": uncovered, "ageing_infrastructure": ageing}
 
 
 @app.get("/reports/summary", response_model=ReportSummary)
