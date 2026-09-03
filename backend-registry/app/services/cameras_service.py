@@ -11,6 +11,7 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url
                 FROM cameras
+                WHERE is_synthetic = false
                 ORDER BY id
             """)
         else:
@@ -20,12 +21,70 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url
                 FROM cameras
-                WHERE dept = %s
+                WHERE dept = %s AND is_synthetic = false
                 ORDER BY id
             """, (dept,))
         cols = [c.name for c in cur.description]
         rows = cur.fetchall()
         return [dict(zip(cols, row)) for row in rows]
+
+
+MAX_PAGE_LIMIT = 500
+
+_CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
+                     ST_X(location::geometry) AS long, camera_type, ownership,
+                     connectivity_status, storage_type, retention_days,
+                     health_status, rtsp_url, stream_id, hls_url,
+                     is_synthetic, edge_node_id"""
+
+
+def list_cameras_page(
+    conn,
+    cursor: int | None = None,
+    limit: int = 100,
+    include_synthetic: bool = False,
+    dept: str | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> dict:
+    """Keyset-paginated camera listing. bbox is (min_lat, max_lat, min_long, max_long).
+    limit is always capped server-side at MAX_PAGE_LIMIT, regardless of what's requested --
+    this endpoint must never be able to return all 80,000+ rows in one response."""
+    limit = min(limit, MAX_PAGE_LIMIT)
+    clauses = []
+    params: dict = {"limit": limit + 1}  # fetch one extra to know if there's a next page
+
+    if include_synthetic:
+        clauses.append("is_synthetic = true")
+    else:
+        clauses.append("is_synthetic = false")
+    if cursor is not None:
+        clauses.append("id > %(cursor)s")
+        params["cursor"] = cursor
+    if dept is not None:
+        clauses.append("dept = %(dept)s")
+        params["dept"] = dept
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT {_CAMERA_COLUMNS} FROM cameras {where} ORDER BY id LIMIT %(limit)s",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    next_cursor = None
+    if len(rows) > limit:
+        rows = rows[:limit]
+        next_cursor = rows[-1]["id"]
+
+    return {"cameras": rows, "next_cursor": next_cursor}
 
 
 def get_camera(conn, camera_id: int):
@@ -147,3 +206,59 @@ def delete_camera(conn, camera_id: int) -> bool:
         row = cur.fetchone()
         conn.commit()
         return row is not None
+
+
+def get_summary(conn) -> dict:
+    """One aggregate query against the indexes from Task 1 -- never fetches
+    individual camera rows to count in Python, so this stays fast at 80,000+ rows."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE connectivity_status = 'online') AS online,
+                COUNT(*) FILTER (WHERE connectivity_status = 'degraded') AS degraded,
+                COUNT(*) FILTER (WHERE connectivity_status = 'offline') AS offline,
+                COUNT(*) FILTER (WHERE is_synthetic = false) AS real_stream_count,
+                COUNT(*) FILTER (WHERE is_synthetic = true) AS synthetic_count
+            FROM cameras
+        """)
+        row = cur.fetchone()
+        cur.execute("SELECT COUNT(*) FROM edge_nodes")
+        edge_node_count = cur.fetchone()[0]
+
+    return {
+        "total": row[0],
+        "online": row[1],
+        "degraded": row[2],
+        "offline": row[3],
+        "real_stream_count": row[4],
+        "synthetic_count": row[5],
+        "edge_node_count": edge_node_count,
+    }
+
+
+def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = None) -> list[dict]:
+    """Real SQL GROUP BY district -- this is what the zoomed-out map view
+    calls instead of counting a single truncated page of cameras client-side,
+    which would under-report any district with more cameras than fit in one
+    page. bbox is (min_lat, max_lat, min_long, max_long)."""
+    # District summary is exclusively the scale-demo's zoomed-out map panel
+    # (ScaleMap.tsx's "District Summary (Simulation)") -- it must only ever
+    # reflect synthetic data, same as the per-camera markers it sits beside.
+    clauses = ["is_synthetic = true"]
+    params: dict = {}
+    if bbox is not None:
+        min_lat, max_lat, min_long, max_long = bbox
+        clauses.append(
+            "location && ST_MakeEnvelope(%(min_long)s, %(min_lat)s, %(max_long)s, %(max_lat)s, 4326)::geography"
+        )
+        params.update(min_lat=min_lat, max_lat=max_lat, min_long=min_long, max_long=max_long)
+    where = f"WHERE {' AND '.join(clauses)}"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT dept AS district, COUNT(*) AS count FROM cameras {where} GROUP BY dept ORDER BY count DESC",
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
