@@ -42,3 +42,13 @@ def test_rbac_token_without_permission_is_rejected_on_a_gated_endpoint(client):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 403
+
+
+def test_require_role_accepts_rbac_role_names(client):
+    import jwt
+    from app.config import settings
+
+    for rbac_role in ["super_admin", "district_command", "station_officer", "control_room_operator", "auditor"]:
+        token = jwt.encode({"sub": "rbac-test", "role": rbac_role}, settings.jwt_secret, algorithm="HS256")
+        resp = client.get("/cameras", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, f"role {rbac_role} was rejected"

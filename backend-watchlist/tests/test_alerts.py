@@ -89,3 +89,13 @@ def test_multiple_status_changes_append_multiple_rows(client, officer_headers, s
 def test_status_update_missing_alert_404(client, officer_headers):
     resp = client.patch("/alerts/999999", json={"status": "ACKNOWLEDGED"}, headers=officer_headers)
     assert resp.status_code == 404
+
+
+def test_require_role_accepts_rbac_role_names(client):
+    import jwt
+    from app.config import settings
+
+    for rbac_role in ["super_admin", "district_command", "station_officer", "control_room_operator", "auditor"]:
+        token = jwt.encode({"sub": "rbac-test", "role": rbac_role}, settings.jwt_secret, algorithm="HS256")
+        resp = client.get("/alerts", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, f"role {rbac_role} was rejected"
