@@ -14,6 +14,7 @@ def compute_uncovered_zones(conn, threshold_m: int = 100) -> list[dict]:
             LEFT JOIN LATERAL (
                 SELECT c.id AS camera_id, ST_Distance(t.location, c.location) AS distance_meters
                 FROM cameras c
+                WHERE c.is_synthetic = false
                 ORDER BY t.location <-> c.location
                 LIMIT 1
             ) nearest ON true
@@ -49,6 +50,7 @@ def compute_ageing_infrastructure(conn, age_threshold_days: int = 1095) -> list[
             FROM cameras c
             LEFT JOIN camera_status_history h ON h.camera_id = c.id
             WHERE c.created_at < now() - (%s || ' days')::interval
+            AND c.is_synthetic = false
             GROUP BY c.id, c.name, c.dept, c.created_at
             ORDER BY degraded_transition_count_90d DESC, age_days DESC
             """,
