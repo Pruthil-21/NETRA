@@ -330,11 +330,13 @@ def gap_analysis_report(
     with get_conn() as conn:
         try:
             uncovered = gap_analysis_service.compute_uncovered_zones(conn, threshold_m)
-        except Exception:
+        except psycopg.Error:
+            conn.rollback()
             uncovered = []
         try:
             ageing = gap_analysis_service.compute_ageing_infrastructure(conn, age_threshold_days)
-        except Exception:
+        except psycopg.Error:
+            conn.rollback()
             ageing = []
         return {"uncovered_zones": uncovered, "ageing_infrastructure": ageing}
 

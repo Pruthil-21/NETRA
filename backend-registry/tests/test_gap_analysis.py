@@ -66,21 +66,23 @@ def test_target_beyond_threshold_is_a_gap():
 
 
 def test_target_with_zero_cameras_reports_none():
+    """Uses a transaction that is explicitly rolled back, never committed --
+    this test must never actually delete real camera data from the shared
+    dev database (see incident notes: an earlier version of this test did
+    exactly that and required manual recovery from backup CSVs)."""
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM cameras")  # isolated: relies on test DB being otherwise empty of cameras
-            target_id = _insert_target(cur, "Orphan Target", 5.0, 5.0)
-            conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cameras")
+                target_id = _insert_target(cur, "Orphan Target", 5.0, 5.0)
 
-        zones = gap_analysis_service.compute_uncovered_zones(conn, threshold_m=100)
-        matching = [z for z in zones if z["target_id"] == target_id]
-        assert len(matching) == 1
-        assert matching[0]["nearest_camera_id"] is None
-        assert matching[0]["distance_meters"] is None
-
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM coverage_targets WHERE id = %s", (target_id,))
-        conn.commit()
+            zones = gap_analysis_service.compute_uncovered_zones(conn, threshold_m=100)
+            matching = [z for z in zones if z["target_id"] == target_id]
+            assert len(matching) == 1
+            assert matching[0]["nearest_camera_id"] is None
+            assert matching[0]["distance_meters"] is None
+        finally:
+            conn.rollback()
 
 
 def test_ageing_infrastructure_ranks_unstable_old_cameras_first():
