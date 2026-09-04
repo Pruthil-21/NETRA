@@ -20,9 +20,11 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
 
   const load = () => {
     setLoading(true);
+    setError(null);
     circlesService
       .listCircles()
       .then(setCircles)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load circles'))
       .finally(() => setLoading(false));
   };
 

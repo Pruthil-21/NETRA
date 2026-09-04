@@ -31,6 +31,12 @@ describe('CircleManagementSection', () => {
     expect(screen.queryByLabelText(/add circle to a different district/i)).not.toBeInTheDocument();
   });
 
+  it('surfaces an error when the initial circles load fails', async () => {
+    (circlesService.listCircles as any).mockRejectedValue(new Error('Failed to fetch circles: HTTP 500'));
+    render(<CircleManagementSection districtScope={null} />);
+    await waitFor(() => expect(screen.getByText(/Failed to fetch circles/)).toBeInTheDocument());
+  });
+
   it('disables delete when a circle would need confirmation (camera count > 0 is out of this component\'s scope; here it just calls the service and surfaces its error)', async () => {
     (circlesService.listCircles as any).mockResolvedValue([
       { id: 1, name: 'In-Use Circle', district: 'Anand', created_at: '2026-01-01T00:00:00Z' },
