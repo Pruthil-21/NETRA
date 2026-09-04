@@ -103,3 +103,16 @@ def gap_analysis_test_targets():
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM coverage_targets WHERE id = ANY(%s)", (created_ids,))
             conn.commit()
+
+
+@pytest.fixture
+def police_station_test_rows():
+    """Guaranteed cleanup for police_stations rows a test creates, even if
+    an assertion fails first."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM police_stations WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()

@@ -29,6 +29,9 @@ from .schemas import (
     LoginResponse,
     MeResponse,
     OfficerOut,
+    PoliceStationCreate,
+    PoliceStationOut,
+    PoliceStationUpdate,
     PostingCreate,
     PostingOut,
     ReportSummary,
@@ -45,6 +48,7 @@ from .services import (
     cameras_service,
     coverage_targets_service,
     gap_analysis_service,
+    police_stations_service,
     rbac_service,
     reports_service,
     synthetic_events_service,
@@ -363,6 +367,48 @@ def list_audit_logs(
             conn, badge_number, resource_type, date_from, date_to, district, cursor, limit
         )
         return {"logs": logs, "next_cursor": next_cursor}
+
+
+@app.get("/police-stations", response_model=list[PoliceStationOut])
+def list_police_stations(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        return police_stations_service.list_stations(conn)
+
+
+@app.get("/police-stations/{station_id}", response_model=PoliceStationOut)
+def get_police_station(station_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        station = police_stations_service.get_station(conn, station_id)
+        if station is None:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        return station
+
+
+@app.post("/police-stations", response_model=PoliceStationOut, status_code=201)
+def create_police_station(body: PoliceStationCreate, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        created = police_stations_service.create_station(conn, body.model_dump())
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "police_station", created["id"])
+        return created
+
+
+@app.put("/police-stations/{station_id}", response_model=PoliceStationOut)
+def update_police_station(station_id: int, body: PoliceStationUpdate, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        updated = police_stations_service.update_station(conn, station_id, body.model_dump(exclude_unset=True))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "police_station", station_id)
+        return updated
+
+
+@app.delete("/police-stations/{station_id}", status_code=204)
+def delete_police_station(station_id: int, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        deleted = police_stations_service.delete_station(conn, station_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "police_station", station_id)
 
 
 @app.get("/reports/summary", response_model=ReportSummary)

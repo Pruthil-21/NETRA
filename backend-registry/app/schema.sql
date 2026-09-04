@@ -188,3 +188,16 @@ CREATE TABLE IF NOT EXISTS coverage_targets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_coverage_targets_location ON coverage_targets USING GIST (location);
+
+-- Admin-managed police station locations, shown as map pins and used for
+-- nearest-station alert enrichment (see backend-watchlist's alerts_service).
+CREATE TABLE IF NOT EXISTS police_stations (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    location   GEOGRAPHY(POINT, 4326) NOT NULL,
+    district   TEXT NOT NULL,
+    contact    TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_police_stations_location ON police_stations USING GIST (location);
