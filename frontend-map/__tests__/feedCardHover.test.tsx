@@ -23,6 +23,22 @@ describe('FeedCard hover-to-play', () => {
 
     vi.advanceTimersByTime(2000);
     expect(onHoverStart).toHaveBeenCalledWith(FEED.id);
+    expect(screen.queryByTestId('hls-player')).not.toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it('hoverOnly mode calls onHoverEnd after the grace period following mouse-leave', () => {
+    vi.useFakeTimers();
+    const onHoverEnd = vi.fn();
+    render(<FeedCard feed={FEED} mode="hoverOnly" onHoverStart={() => {}} onHoverEnd={onHoverEnd} />);
+
+    fireEvent.mouseEnter(screen.getByTestId('feed-card-viewport'));
+    vi.advanceTimersByTime(2000); // past the hold delay, hover is now "active"
+    fireEvent.mouseLeave(screen.getByTestId('feed-card-viewport'));
+    expect(onHoverEnd).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1200); // past the grace period
+    expect(onHoverEnd).toHaveBeenCalledWith(FEED.id);
     vi.useRealTimers();
   });
 
