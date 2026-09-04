@@ -51,6 +51,38 @@ def test_district_command_cannot_create_circle_outside_own_district(client, circ
     assert resp.status_code == 403
 
 
+def test_district_command_cannot_update_circle_outside_own_district_even_with_matching_body(
+    client, officer_headers, circle_test_rows
+):
+    """Regression test for a cross-district guard bypass: a district_command
+    scoped to "Anand" must not be able to PUT a circle whose actual district
+    is "Vadodara" by claiming district "Anand" in the request body -- the
+    guard must check the circle's real existing district, not just the
+    body's claimed value."""
+    create_resp = client.post(
+        "/circles", json={"name": "Vadodara HQ Circle", "district": "Vadodara"}, headers=officer_headers
+    )
+    circle_id = create_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    update_resp = client.put(
+        f"/circles/{circle_id}", json={"name": "Renamed Circle", "district": "Anand"},
+        headers=_district_command_headers("Anand"),
+    )
+    assert update_resp.status_code == 403
+
+
+def test_district_command_cannot_delete_circle_outside_own_district(client, officer_headers, circle_test_rows):
+    create_resp = client.post(
+        "/circles", json={"name": "Vadodara Delete Test Circle", "district": "Vadodara"}, headers=officer_headers
+    )
+    circle_id = create_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    delete_resp = client.delete(f"/circles/{circle_id}", headers=_district_command_headers("Anand"))
+    assert delete_resp.status_code == 403
+
+
 def test_delete_circle_blocked_while_camera_assigned(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
     circle_resp = client.post("/circles", json={"name": "In-Use Circle", "district": "Anand"}, headers=officer_headers)
     circle_id = circle_resp.json()["id"]

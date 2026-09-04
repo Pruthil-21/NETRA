@@ -456,7 +456,9 @@ def update_circle(circle_id: int, body: CircleUpdate, user=Depends(require_permi
         existing = circles_service.get_circle(conn, circle_id)
         if existing is None:
             raise HTTPException(status_code=404, detail="Circle not found")
-        _guard_circle_district(user, body.district or existing["district"])
+        _guard_circle_district(user, existing["district"])
+        if body.district is not None:
+            _guard_circle_district(user, body.district)
         try:
             updated = circles_service.update_circle(conn, circle_id, body.model_dump(exclude_unset=True))
         except circles_service.DuplicateCircleError as exc:
