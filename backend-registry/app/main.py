@@ -20,6 +20,9 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    CircleCreate,
+    CircleOut,
+    CircleUpdate,
     CoverageTargetCreate,
     CoverageTargetOut,
     CoverageTargetUpdate,
@@ -45,6 +48,7 @@ from .services import (
     audit_service,
     auth_service,
     cameras_service,
+    circles_service,
     coverage_targets_service,
     gap_analysis_service,
     police_stations_service,
@@ -408,6 +412,73 @@ def delete_police_station(station_id: int, user=Depends(require_permission("mana
         if not deleted:
             raise HTTPException(status_code=404, detail="Police station not found")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "police_station", station_id)
+
+
+def _guard_circle_district(user: dict, district: str):
+    """District-scoped users may only create/edit/delete circles in their
+    own district -- same cross-district guard create_posting already
+    applies for postings."""
+    if user.get("scope_type") == "district" and district != user.get("scope_value"):
+        raise HTTPException(status_code=403, detail="Cannot manage circles outside your own district")
+
+
+@app.get("/circles", response_model=list[CircleOut])
+def list_circles(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        district = user.get("scope_value") if user.get("scope_type") == "district" else None
+        return circles_service.list_circles(conn, district)
+
+
+@app.get("/circles/{circle_id}", response_model=CircleOut)
+def get_circle(circle_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        circle = circles_service.get_circle(conn, circle_id)
+        if circle is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        return circle
+
+
+@app.post("/circles", response_model=CircleOut, status_code=201)
+def create_circle(body: CircleCreate, user=Depends(require_permission("manage_circles"))):
+    _guard_circle_district(user, body.district)
+    with get_conn() as conn:
+        try:
+            created = circles_service.create_circle(conn, body.model_dump())
+        except circles_service.DuplicateCircleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "circle", created["id"])
+        return created
+
+
+@app.put("/circles/{circle_id}", response_model=CircleOut)
+def update_circle(circle_id: int, body: CircleUpdate, user=Depends(require_permission("manage_circles"))):
+    with get_conn() as conn:
+        existing = circles_service.get_circle(conn, circle_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        _guard_circle_district(user, body.district or existing["district"])
+        try:
+            updated = circles_service.update_circle(conn, circle_id, body.model_dump(exclude_unset=True))
+        except circles_service.DuplicateCircleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "circle", circle_id)
+        return updated
+
+
+@app.delete("/circles/{circle_id}", status_code=204)
+def delete_circle(circle_id: int, user=Depends(require_permission("manage_circles"))):
+    with get_conn() as conn:
+        existing = circles_service.get_circle(conn, circle_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        _guard_circle_district(user, existing["district"])
+        try:
+            deleted = circles_service.delete_circle(conn, circle_id)
+        except circles_service.CircleInUseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "circle", circle_id)
 
 
 @app.get("/reports/summary", response_model=ReportSummary)

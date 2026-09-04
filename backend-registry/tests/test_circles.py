@@ -1,4 +1,74 @@
+import jwt
+from app.config import settings
 from app.db import get_conn
+
+
+def _district_command_headers(district: str):
+    token = jwt.encode(
+        {"sub": "dc-test", "role": "district_command", "scope_type": "district",
+         "scope_value": district, "permissions": ["manage_circles"]},
+        settings.jwt_secret, algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_create_list_get_circle(client, officer_headers, circle_test_rows):
+    resp = client.post(
+        "/circles", json={"name": "APC Circle", "district": "Anand"}, headers=officer_headers
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    circle_test_rows.append(body["id"])
+    assert body["name"] == "APC Circle"
+    assert body["district"] == "Anand"
+
+    list_resp = client.get("/circles", headers=officer_headers)
+    assert list_resp.status_code == 200
+    assert any(c["id"] == body["id"] for c in list_resp.json())
+
+    get_resp = client.get(f"/circles/{body['id']}", headers=officer_headers)
+    assert get_resp.status_code == 200
+    assert get_resp.json()["name"] == "APC Circle"
+
+
+def test_create_circle_requires_manage_circles_permission(client, viewer_headers):
+    resp = client.post("/circles", json={"name": "X", "district": "Anand"}, headers=viewer_headers)
+    assert resp.status_code == 403
+
+
+def test_duplicate_circle_name_in_same_district_rejected(client, officer_headers, circle_test_rows):
+    first = client.post("/circles", json={"name": "Dup Circle", "district": "Anand"}, headers=officer_headers)
+    circle_test_rows.append(first.json()["id"])
+    second = client.post("/circles", json={"name": "Dup Circle", "district": "Anand"}, headers=officer_headers)
+    assert second.status_code == 409
+
+
+def test_district_command_cannot_create_circle_outside_own_district(client, circle_test_rows):
+    resp = client.post(
+        "/circles", json={"name": "Cross-District Circle", "district": "Vadodara"},
+        headers=_district_command_headers("Anand"),
+    )
+    assert resp.status_code == 403
+
+
+def test_delete_circle_blocked_while_camera_assigned(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
+    circle_resp = client.post("/circles", json={"name": "In-Use Circle", "district": "Anand"}, headers=officer_headers)
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    camera_resp = client.post(
+        "/cameras",
+        json={
+            "name": "Circle Test Camera", "dept": "Anand", "lat": 22.56, "long": 72.94,
+            "camera_type": "ip", "ownership": "traffic-police", "storage_type": "nvr",
+            "retention_days": 15, "circle_id": circle_id,
+        },
+        headers=officer_headers,
+    )
+    gap_analysis_test_cameras.append(camera_resp.json()["id"])
+
+    delete_resp = client.delete(f"/circles/{circle_id}", headers=officer_headers)
+    assert delete_resp.status_code == 400
 
 
 def test_circles_table_and_camera_column_exist():

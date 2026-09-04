@@ -223,6 +223,21 @@ class PoliceStationOut(PoliceStationCreate):
     id: int
 
 
+class CircleCreate(BaseModel):
+    name: str
+    district: str
+
+
+class CircleUpdate(BaseModel):
+    name: Optional[str] = None
+    district: Optional[str] = None
+
+
+class CircleOut(CircleCreate):
+    id: int
+    created_at: datetime
+
+
 class UncoveredZone(BaseModel):
     target_id: int
     name: str
