@@ -3301,3 +3301,36 @@ cooldown-suppression behavior, forces a cooldown entry's timestamp into
 the past directly (no slow real sleep) to simulate "long after
 confirmation," asserts the cooldown check correctly reports expired,
 and asserts `confirmed_plates` is unaffected by that pruning. Passes.
+
+# Session 27 -- presentation-ready counts: vehicles tracked, plate candidates, confirmed-by-tier
+
+Real ask, not speculative: needed real numbers for the presentation --
+how many vehicles were seen, how many plate candidates were read, how
+many confirmed and in which tier (pattern match / fallback / VLM). None
+of this existed before except "confirmed_plates" itself; "vehicles
+tracked" wasn't counted anywhere at all.
+
+`VehicleTracker` gains three new counters: `total_vehicles_tracked`
+(incremented once per new track created -- a distinct vehicle sighting,
+same "sighting not unique physical car" caveat `confirmed_plates`
+already documents), `total_plate_candidates` (every per-frame OCR read
+with a non-empty plate guess, confirmed or not), and `confirmed_by_tier`
+(note -> count, e.g. `{"ok - pattern match": 10, "ok - fallback,
+unverified pattern": 1}`). `_mark_confirmed()` now takes `note` to feed
+the tier dict.
+
+`anpr/streaming.py`'s three separate summary prints replaced with one
+shared `_print_summary()` helper so all three entry points
+(`process_stream`/`process_video_file`/`process_hls_stream`) report the
+same four lines consistently.
+
+Verified live against `dashcam_trimmed.mp4`: `Vehicles tracked: 34`,
+`Plate candidates read: 88`, `Confirmed plates by tier: {'ok - pattern
+match': 10, 'ok - fallback, unverified pattern': 1}`, plus the existing
+`Total confirmed plates` set (11 unique). Real counts, not estimated.
+
+Explicitly NOT an accuracy number -- these are raw counts of what the
+pipeline did, not a check against ground truth. Still cannot answer "did
+accuracy improve vs. the ~59% Mac figure" without a fresh human-verified
+comparison; these numbers answer a different, legitimately useful
+question (volume/composition, for the presentation) instead.
