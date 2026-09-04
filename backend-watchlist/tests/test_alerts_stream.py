@@ -94,6 +94,34 @@ def test_invalid_token_closes_connection(client):
     assert exc_info.value.code == 4401
 
 
+def test_viewer_role_rejected_at_connect(client):
+    # Every other alert-reading route (GET /alerts, GET /alerts/{id}) 403s a
+    # "viewer" role via require_role("officer"); the WS route must reject it
+    # the same way -- closed immediately, no partial handshake -- rather than
+    # handing a live full-detail alert feed to a role that has no read access
+    # anywhere else.
+    token = jwt.encode(
+        {"sub": "1", "role": "viewer", "scope_type": "platform"},
+        settings.jwt_secret, algorithm="HS256",
+    )
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/alerts/stream?token={token}"):
+            pass
+    assert exc_info.value.code == 4403
+
+
+def test_missing_scope_type_rejected_at_connect(client):
+    # A legacy/pre-RBAC token with no scope_type claim at all -- exactly what
+    # conftest.py's make_token('officer') helper produces -- must be rejected,
+    # not silently promoted to platform-wide scope (the old `.get("scope_type",
+    # "platform")` default failed open here).
+    token = jwt.encode({"sub": "1", "role": "officer"}, settings.jwt_secret, algorithm="HS256")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/alerts/stream?token={token}"):
+            pass
+    assert exc_info.value.code == 4403
+
+
 def test_district_scoped_connection_receives_matching_district_alert(
     client, officer_headers, internal_headers, scoping_test_cameras
 ):

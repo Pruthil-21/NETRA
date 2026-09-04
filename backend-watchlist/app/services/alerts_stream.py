@@ -7,6 +7,8 @@ import json
 
 from fastapi import WebSocket
 
+from ..logging_config import logger
+
 
 def _json_default(value):
     """alert dicts come straight from a RealDictCursor row (see
@@ -45,9 +47,16 @@ class AlertsConnectionManager:
             try:
                 await ws.send_text(json.dumps(alert, default=_json_default))
             except Exception:
+                logger.exception(f"alert broadcast send failed for connection scope={scope}; evicting")
                 dead.append(ws)
         for ws in dead:
             self._connections.pop(ws, None)
+            try:
+                await ws.close()
+            except Exception:
+                # Best-effort -- a failure to close one dead connection must
+                # not block evicting the rest.
+                pass
 
     def broadcast_sync(self, alert: dict, camera_district: str | None) -> None:
         """Safe to call from sync code (e.g. alerts_service.process_detection,
@@ -59,7 +68,17 @@ class AlertsConnectionManager:
         recording over."""
         if self.loop is None:
             return
-        asyncio.run_coroutine_threadsafe(self._broadcast_async(alert, camera_district), self.loop)
+        future = asyncio.run_coroutine_threadsafe(self._broadcast_async(alert, camera_district), self.loop)
+
+        def _log_if_failed(fut: "asyncio.Future"):
+            # _broadcast_async's own try/except already handles per-send
+            # failures -- this only catches a bug in the coroutine itself
+            # (e.g. _matches raising), which would otherwise just log a
+            # silent "exception was never retrieved" warning at GC time.
+            if not fut.cancelled() and fut.exception() is not None:
+                logger.exception("alert broadcast coroutine raised", exc_info=fut.exception())
+
+        future.add_done_callback(_log_if_failed)
 
 
 manager = AlertsConnectionManager()
