@@ -1,4 +1,6 @@
+import concurrent.futures
 import contextlib
+import json
 import uuid
 
 import anyio
@@ -8,6 +10,42 @@ import psycopg2.extras
 import pytest
 from app.config import settings
 from starlette.websockets import WebSocketDisconnect
+
+# WebSocketTestSession.receive()/receive_json()/receive_text() in this
+# Starlette version (1.6.0) are unbounded, timeout-less blocking calls:
+# `self.portal.call(self._send_rx.receive)` waits forever for a message.
+# If a broadcast never arrives -- a scoping bug, a re-broken datetime
+# serialization, a loop-capture failure -- the test hangs indefinitely
+# instead of failing. A hung pytest process then has to be killed
+# out-of-band, which bypasses normal fixture teardown and leaks whatever a
+# fixture's guaranteed-cleanup-on-exception path would otherwise have
+# removed (see scoping_test_cameras, and the leaked
+# "Alerts Stream Test Cam (WS Scoping Test District A)" rows this exact
+# hang produced before the datetime-serialization fix). Every blocking
+# receive in this file goes through this bounded helper instead, so a
+# broken broadcast fails the test cleanly.
+_WS_RECEIVE_TIMEOUT = 5.0
+
+
+def _receive_json_with_timeout(ws, timeout: float = _WS_RECEIVE_TIMEOUT):
+    """Bounded stand-in for WebSocketTestSession.receive_json().
+
+    Uses the portal task's own concurrent.futures.Future timeout (rather
+    than portal.call(), which has none) so a missing broadcast raises a
+    clean test failure instead of hanging the process forever.
+    """
+    future = ws.portal.start_task_soon(ws._send_rx.receive)
+    try:
+        message = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        pytest.fail(
+            f"Timed out after {timeout}s waiting for a WebSocket message "
+            "-- the expected broadcast never arrived (see module docstring "
+            "comment on _WS_RECEIVE_TIMEOUT for why this is bounded)."
+        )
+    ws._raise_on_close(message)
+    return json.loads(message["text"])
 
 
 def _rbac_token(role, scope_type, scope_value=None):
@@ -76,7 +114,7 @@ def test_district_scoped_connection_receives_matching_district_alert(
         )
         assert detect_resp.status_code == 201
 
-        message = ws.receive_json()
+        message = _receive_json_with_timeout(ws)
         assert message["plate_number"] == plate
 
 
@@ -121,7 +159,7 @@ def test_non_matching_district_connection_does_not_receive_alert(
         # `await send_json` was even reached. So by the time this returns,
         # ws_other's fate for this alert is already decided; no message was
         # ever, or will ever be, queued for it.
-        message = ws_match.receive_json()
+        message = _receive_json_with_timeout(ws_match)
         assert message["plate_number"] == plate
 
         with pytest.raises(anyio.WouldBlock):
@@ -148,5 +186,5 @@ def test_platform_scoped_connection_receives_any_district_alert(
         )
         assert detect_resp.status_code == 201
 
-        message = ws.receive_json()
+        message = _receive_json_with_timeout(ws)
         assert message["plate_number"] == plate
