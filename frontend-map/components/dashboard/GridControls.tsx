@@ -11,9 +11,6 @@ interface GridControlsProps {
   setLayout: (layout: "grid-4" | "grid-9" | "focus") => void;
   searchTerm: string;
   setSearchTerm: (term: string) => void;
-  departments: string[];
-  departmentFilter: string;
-  setDepartmentFilter: (dept: string) => void;
   statusFilter: StatusFilter;
   setStatusFilter: (status: StatusFilter) => void;
   playAllMode: boolean;
@@ -33,9 +30,6 @@ export const GridControls: React.FC<GridControlsProps> = ({
   setLayout,
   searchTerm,
   setSearchTerm,
-  departments,
-  departmentFilter,
-  setDepartmentFilter,
   statusFilter,
   setStatusFilter,
   playAllMode,
@@ -55,20 +49,6 @@ export const GridControls: React.FC<GridControlsProps> = ({
             className="w-full pl-9 pr-4 py-2 bg-gray-900 border border-brand-border rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
           />
         </div>
-
-        <select
-          value={departmentFilter}
-          onChange={(e) => setDepartmentFilter(e.target.value)}
-          aria-label="Filter by department"
-          className="w-full sm:w-48 py-2 px-3 bg-gray-900 border border-brand-border rounded-md text-sm text-gray-200 focus:outline-none focus:border-blue-500"
-        >
-          <option value="all">All departments</option>
-          {departments.map((dept) => (
-            <option key={dept} value={dept}>
-              {dept}
-            </option>
-          ))}
-        </select>
 
         <select
           value={statusFilter}

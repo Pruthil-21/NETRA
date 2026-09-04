@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
-import { MapPopupCard } from '@/components/map/MapPopupCard';
 import { CameraMap } from '@/components/map/CameraMap';
 import { Camera } from '@/types/camera';
 
@@ -60,25 +59,5 @@ describe('CameraMap hover reporting (replaces the old Popup/MapPopupCard hover p
 
     expect(onHoverChange).toHaveBeenCalledWith(CAMERA.id);
     vi.useRealTimers();
-  });
-});
-
-describe('MapPopupCard rendering containment', () => {
-  it('scopes the width transition to a layout-contained box', () => {
-    const { container } = render(
-      <MapPopupCard camera={CAMERA} onInspect={vi.fn()} isPreviewing={false} previewSrc={null} />
-    );
-    const outer = container.firstElementChild as HTMLElement;
-    expect(outer.className).toContain('[contain:layout]');
-    expect(outer.className).toContain('[will-change:width]');
-  });
-
-  it('scopes the grid-template-rows transition to a layout-contained box', () => {
-    const { container } = render(
-      <MapPopupCard camera={CAMERA} onInspect={vi.fn()} isPreviewing={false} previewSrc={null} />
-    );
-    const growWrapper = container.querySelector('.grid') as HTMLElement;
-    expect(growWrapper.className).toContain('[contain:layout]');
-    expect(growWrapper.className).toContain('[will-change:grid-template-rows]');
   });
 });

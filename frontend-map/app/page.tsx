@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { GridControls } from "@/components/dashboard/GridControls";
 import { AlertLog } from "@/components/dashboard/AlertLog";
@@ -33,7 +33,7 @@ export default function DashboardPage() {
   const [circles, setCircles] = useState<Circle[]>([]);
   const [hoveredCameraId, setHoveredCameraId] = useState<string | null>(null);
 
-  const { activeCameraIds, openPlayer, closePlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
+  const { activeCameraIds, openPlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
 
   useEffect(() => {
     circlesService.listCircles().then(setCircles).catch(() => {
@@ -106,22 +106,47 @@ export default function DashboardPage() {
     }
   }, [allFeeds]);
 
+  // Tracks whether the cursor is currently over the shared CameraInfoOverlay
+  // itself (set by that component's onMouseEnterOverlay/onMouseLeaveOverlay
+  // below). The overlay renders fixed inset-0 over whatever tile it opened
+  // on top of, so that tile's own onMouseLeave fires as soon as the overlay
+  // appears -- without this check, handleHoverEnd would clear
+  // hoveredCameraId right back out (closing the overlay) the moment its own
+  // hover-grace timer elapsed, only for the tile to "re-enter" once the
+  // overlay closes and reopen it a moment later: an open/close/reopen
+  // flicker loop. The overlay's own onMouseLeaveOverlay is what actually
+  // closes it once the cursor truly leaves.
+  const overlayHoveredRef = useRef(false);
+
   const handleHoverStart = useCallback(
     (id: string) => setHoveredCameraId(id),
     []
   );
   const handleHoverEnd = useCallback(
-    (id: string) => setHoveredCameraId((current) => (current === id ? null : current)),
+    (id: string) =>
+      setHoveredCameraId((current) => (current === id && !overlayHoveredRef.current ? null : current)),
     []
   );
 
   // Play-All mode opens every currently-visible tile through the shared
   // concurrency-limited player pool instead of an unbounded number of
   // simultaneous HLS decoders (see Global Constraints — the relay reliably
-  // holds ~6 at once; useLimitedPlayers evicts the oldest past that).
+  // holds ~6 at once; useLimitedPlayers evicts the oldest past that). Capped
+  // client-side to the same MAX_CONCURRENT_PLAYERS instead of opening every
+  // visible feed and letting useLimitedPlayers evict down to the last six --
+  // that eviction order left whichever six were opened *last* active and
+  // showed a permanent "Queued" message on the earlier tiles even though
+  // they'd actually been played-then-evicted, not genuinely queued.
   useEffect(() => {
     if (!playAllMode) return;
-    visibleFeeds.forEach((feed) => openPlayer(Number(feed.id)));
+    visibleFeeds.slice(0, MAX_CONCURRENT_PLAYERS).forEach((feed) => {
+      // TEST_FEEDS entries can carry a non-numeric string id (e.g.
+      // "xiaomi-camera") -- Number(...) on those is NaN, which would
+      // otherwise occupy one of the six player slots and never resolve back
+      // to a real feed.
+      const numericId = Number(feed.id);
+      if (!Number.isNaN(numericId)) openPlayer(numericId);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playAllMode, visibleFeeds]);
 
@@ -157,9 +182,6 @@ export default function DashboardPage() {
             setLayout={setLayout}
             searchTerm={searchTerm}
             setSearchTerm={setSearchTerm}
-            departments={[]}
-            departmentFilter="all"
-            setDepartmentFilter={() => {}}
             statusFilter={statusFilter}
             setStatusFilter={setStatusFilter}
             playAllMode={playAllMode}
@@ -214,6 +236,12 @@ export default function DashboardPage() {
         camera={hoveredCamera}
         circleName={hoveredCircleName}
         onClose={() => setHoveredCameraId(null)}
+        onMouseEnterOverlay={() => {
+          overlayHoveredRef.current = true;
+        }}
+        onMouseLeaveOverlay={() => {
+          overlayHoveredRef.current = false;
+        }}
       />
     </main>
   );

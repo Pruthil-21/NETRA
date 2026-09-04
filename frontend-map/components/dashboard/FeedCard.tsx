@@ -67,6 +67,11 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
 
   useEffect(() => hoverController.cancel, [hoverController]);
 
+  // `isPlaying` (Play-All mode) is gated upstream by useLimitedPlayers -- the
+  // streaming relay can only hold a handful (~6) of concurrent HLS decoders
+  // reliably, so only that many tiles are ever actually playing at once; the
+  // rest render the "Queued" placeholder below instead of a player. See
+  // useLimitedPlayers.ts for the actual cap/eviction logic.
   const shouldRenderPlayer = mode === 'playAll' && isPlaying && isPlayable && inView;
 
   return (
