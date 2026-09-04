@@ -45,10 +45,27 @@ def test_rbac_token_without_permission_is_rejected_on_a_gated_endpoint(client):
 
 
 def test_require_role_accepts_rbac_role_names(client):
+    # POST /cameras/bulk is gated by Depends(require_role("officer")) -- the
+    # only require_role usage in this service. An empty list body is valid
+    # enough to pass CameraBulkResult response validation (it just yields an
+    # empty results list) while still exercising the role gate itself; the
+    # only thing under test here is that require_role doesn't 403 these roles.
     import jwt
     from app.config import settings
 
     for rbac_role in ["super_admin", "district_command", "station_officer", "control_room_operator", "auditor"]:
         token = jwt.encode({"sub": "rbac-test", "role": rbac_role}, settings.jwt_secret, algorithm="HS256")
-        resp = client.get("/cameras", headers={"Authorization": f"Bearer {token}"})
-        assert resp.status_code == 200, f"role {rbac_role} was rejected"
+        resp = client.post("/cameras/bulk", json=[], headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code != 403, f"role {rbac_role} was rejected by require_role"
+
+
+def test_require_role_rejects_non_rbac_role(client):
+    # Sanity check for the accept-path test above: a role outside the 5 RBAC
+    # names (and not the legacy "officer"/"admin") must still be rejected by
+    # require_role on the same endpoint.
+    import jwt
+    from app.config import settings
+
+    token = jwt.encode({"sub": "rbac-test", "role": "viewer"}, settings.jwt_secret, algorithm="HS256")
+    resp = client.post("/cameras/bulk", json=[], headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
