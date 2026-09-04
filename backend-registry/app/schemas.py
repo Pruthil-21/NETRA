@@ -203,6 +203,26 @@ class CoverageTargetOut(CoverageTargetCreate):
     id: int
 
 
+class PoliceStationCreate(BaseModel):
+    name: str
+    lat: float
+    long: float
+    district: str
+    contact: Optional[str] = None
+
+
+class PoliceStationUpdate(BaseModel):
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    long: Optional[float] = None
+    district: Optional[str] = None
+    contact: Optional[str] = None
+
+
+class PoliceStationOut(PoliceStationCreate):
+    id: int
+
+
 class UncoveredZone(BaseModel):
     target_id: int
     name: str
