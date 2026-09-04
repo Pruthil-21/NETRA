@@ -26,6 +26,16 @@ CREATE TABLE cameras (
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 
+CREATE TABLE circles (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    district    TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (district, name)
+);
+
+ALTER TABLE cameras ADD COLUMN circle_id INTEGER REFERENCES circles(id);
+
 -- Mirrors backend-watchlist's alert_status_history: append-only, one row per
 -- real connectivity transition. Written by cameras_service.update_camera()
 -- only when the new status differs from the current one -- repeated PUTs
