@@ -259,3 +259,26 @@ def test_platform_scoped_search_sees_all_districts(client, internal_headers, sco
     resp = client.get("/detections", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert any(d["plate_number"] == plate for d in resp.json())
+
+
+def test_csv_export_requires_export_data_permission(client, internal_headers):
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": 1, "plate_number": plate}, headers=internal_headers)
+
+    no_export_token = _make_rbac_token("station_officer", "district", "Traffic Police")
+    resp = client.get("/detections?format=csv", headers={"Authorization": f"Bearer {no_export_token}"})
+    assert resp.status_code == 403
+
+
+def test_csv_export_returns_csv_with_matching_rows(client, internal_headers):
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": 1, "plate_number": plate}, headers=internal_headers)
+
+    export_token = _make_rbac_token("district_command", "platform")
+    resp = client.get(f"/detections?format=csv&plate_number={plate}", headers={"Authorization": f"Bearer {export_token}"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/csv")
+    lines = resp.text.strip().split("\r\n")
+    assert lines[0] == "id,plate_number,camera_id,detected_at,confidence"
+    assert len(lines) == 2  # header + 1 row
+    assert plate in lines[1]
