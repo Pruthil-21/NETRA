@@ -88,12 +88,23 @@ export default function DashboardPage() {
     [circles, hoveredCamera]
   );
 
+  // Jumping to a camera (from an alert's "View Camera"/plate link) must always land on
+  // that camera, regardless of what's currently selected in the tree -- otherwise the
+  // tree-selection gate either shows the "pick a district" empty state (nothing selected
+  // yet) or silently falls back to the first camera in a different district/circle's
+  // filtered list (something else selected). Selecting the target's whole *district*
+  // (not resolving its circle) guarantees inclusion without a circle lookup, since
+  // district-selection already covers every camera in it regardless of circle assignment.
   const handleSelectFocus = useCallback((id: string) => {
     setFocusedId(id);
     setLayout("focus");
     setStatusFilter("all");
     setSearchTerm("");
-  }, []);
+    const targetFeed = allFeeds.find((f) => f.id === id);
+    if (targetFeed) {
+      setTreeSelection({ type: "district", value: targetFeed.department });
+    }
+  }, [allFeeds]);
 
   const handleHoverStart = useCallback(
     (id: string) => setHoveredCameraId(id),
