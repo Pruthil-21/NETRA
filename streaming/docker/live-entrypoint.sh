@@ -91,16 +91,16 @@ authenticate() {
 
   rm -f "$temporary_cookie" "$temporary_manifest"
 
-  curl -fsSL \
+  curl -4 -fsSL \
     --connect-timeout 10 \
-    --max-time 20 \
+    --max-time 60 \
     -c "$temporary_cookie" \
     -o /dev/null \
     "$PORTAL_URL/" || return 1
 
-  curl -fsSL \
+  curl -4 -fsSL \
     --connect-timeout 10 \
-    --max-time 20 \
+    --max-time 60 \
     -b "$temporary_cookie" \
     -c "$temporary_cookie" \
     --data-urlencode "email=$email" \
@@ -110,9 +110,9 @@ authenticate() {
 
   unset email password
 
-  curl -fsSL \
+  curl -4 -fsSL \
     --connect-timeout 10 \
-    --max-time 30 \
+    --max-time 60 \
     -b "$temporary_cookie" \
     -c "$temporary_cookie" \
     -o "$temporary_manifest" \
