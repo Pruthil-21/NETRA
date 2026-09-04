@@ -51,7 +51,32 @@ def enhance_low_light(img):
     ALPR_IMPROVEMENT_LOG.md Session 6 for the actual measured result on
     real video, not just the reasoning.
     """
-    denoised = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+    # fastNlMeansDenoisingColored is the real cost here, not CLAHE --
+    # measured directly on a real 1920x1080 dark frame: 0.43s for denoise
+    # alone vs 0.003s for CLAHE + color conversion combined.
+    #
+    # First attempt at speeding this up was downscaling the frame before
+    # denoising and upscaling back (3.5x faster) -- rejected after real
+    # testing found it shifts YOLO's detected box boundaries slightly
+    # (a coarser full-frame image changes exactly where YOLO draws the
+    # vehicle box), which on one real frame cost a previously-successful
+    # plate read entirely (box moved just enough to crop the plate
+    # differently). Spatial resolution matters for box precision, so
+    # changing it was the wrong lever.
+    #
+    # searchWindowSize (last param, default 21) is NLM's own dominant
+    # cost driver and, unlike resizing, doesn't touch spatial resolution
+    # at all -- can't shift box positions the way resizing did. Single
+    # static frames turned out too noisy to judge this by, though: one
+    # specific hard frame with two vehicles gave a DIFFERENT partial
+    # result (one vehicle read, the other not) at searchWindowSize=21,
+    # =15, and =11 each -- three different outcomes from three parameter
+    # choices on the same frame, meaning that frame sits right at an OCR
+    # knife-edge for at least one vehicle regardless of this parameter.
+    # Real validation is the same live-video, aggregate comparison used
+    # for the raw+enhanced merge fix (see ALPR_IMPROVEMENT_LOG.md) --
+    # trust the aggregate over any one frame's outcome.
+    denoised = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 15)
     lab = cv2.cvtColor(denoised, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))

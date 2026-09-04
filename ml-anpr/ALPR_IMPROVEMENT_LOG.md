@@ -3582,3 +3582,82 @@ back into one track downstream.
   verified entirely on the Mac against a local copy of the same
   cam07.mp4 file; the real 30-camera/GPU-server picture (with this fix
   in place) is still open.
+
+# Session 31 -- tackled the denoising bottleneck itself: two rejected attempts, one that held up under real testing
+
+The GPU server run in Session 29 showed cam07's per-frame inference
+latency stuck at 7,000-11,000ms even on a Quadro RTX 8000 with 49GB
+free -- pointed at `enhance_low_light()`'s
+`cv2.fastNlMeansDenoisingColored` call, a CPU-only OpenCV function that
+gets zero benefit from GPU hardware. Measured directly, not assumed:
+0.43-1.7s for denoise alone on a real 1920x1080 frame (real-world
+variance observed between isolated single-call timing and 3x-replicated
+timing -- treat single measurements as unreliable, replicate before
+trusting a number), vs. 0.003s for CLAHE, confirming denoise as the
+real cost.
+
+## Attempt 1, rejected: downscale before denoising, upscale after
+
+3.5x faster (0.43s -> 0.12s) in isolation. Real testing on the exact
+frame that motivated Session 30's fix found a real regression, though:
+YOLO's detected box boundaries shifted slightly on the coarser
+full-frame image (measured: box moved from `(1089,294,1364,535)` to
+`(1076,297,1371,628)` on the same frame), which changed what got
+cropped for OCR and cost a previously-successful plate read (`GJ11AS4498`)
+entirely. Spatial resolution matters for box precision; downscaling was
+the wrong lever. Reverted.
+
+## Attempt 2, rejected: searchWindowSize 21 -> 11
+
+NLM's own dominant cost parameter, doesn't touch spatial resolution at
+all (can't shift box positions the way resizing did) -- 3.1x faster
+(0.43s -> 0.14s) in isolation. Tested on the same problem frame: found
+a *different* regression (lost a box entirely this time, not just a
+misread). Too aggressive a reduction in denoising quality, apparently
+letting CLAHE amplify more residual noise (echoing Session 5's original
+finding that CLAHE alone amplifies noise -- an under-denoised frame
+seems to partially reproduce that same failure mode).
+
+## What held up: searchWindowSize 21 -> 15, validated by aggregate live video, not single frames
+
+Single-frame testing turned out to be too noisy to trust here: the same
+problem frame gave three *different* partial outcomes across
+searchWindowSize 21 (baseline), 15, and 11 -- meaning at least one of
+its two vehicles sits right at an OCR knife-edge where minor
+preprocessing changes tip the result either way, regardless of which
+change. A single frame's outcome isn't a reliable signal for a
+noise-sensitive edge case like this.
+
+Switched to the same real, aggregate validation method Session 30 used
+for the raw+enhanced merge fix: same `cam07.mp4`, same 240s wall-clock
+window, before vs. after.
+
+| | Original (searchWindowSize=21) | Fix (searchWindowSize=15) |
+|---|---|---|
+| Video reached in 240s | frame 2910 | frame 3330 (~14% more) |
+| Confirmed plates | 1 | 4 (3 real: `GJ32B9799`, `GJ27YG1876`, `GJ12CP8888`) |
+
+Real, measured, aggregate improvement -- more throughput AND more
+confirmed plates in the same wall-clock time, not a tradeoff. The
+single-frame "regression" that would have blocked this if trusted in
+isolation doesn't hold up against the real aggregate picture.
+
+## Verification
+
+No regression on `tests/test_pipeline_smoke.py` (3/3 exact matches,
+unaffected since these are well-lit images that never hit this code
+path) or `tests/test_reconfirm_cooldown.py`.
+
+## What's not done / open
+
+- Only this one parameter tuned; `templateWindowSize` (currently 7) and
+  the two `h` (strength) parameters weren't explored -- searchWindowSize
+  was the measured dominant cost driver, so it was the first and only
+  lever tried given time.
+- Not yet re-tested on the real GPU server -- developed and validated
+  entirely on the Mac, same open item as Session 30's fix.
+- The CPU-bound nature of `fastNlMeansDenoisingColored` itself is
+  unchanged -- this reduces its cost, doesn't move it to the GPU. A real
+  GPU-accelerated denoise (e.g. OpenCV's CUDA module, if the server's
+  OpenCV build even includes it) would be a bigger, separate project,
+  not attempted here.
