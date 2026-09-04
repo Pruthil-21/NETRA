@@ -1,6 +1,8 @@
 """Per-plate confidence-weighted-voting confirmation, and per-vehicle IoU
 tracking so that confirmation runs independently per physical vehicle."""
+import time
 from concurrent.futures import ThreadPoolExecutor
+
 
 from .plate_format import INDIAN_PLATE_PATTERN, _plate_similarity
 from . import vlm_fallback
@@ -153,11 +155,22 @@ class VehicleTracker:
     IOU_MATCH_THRESHOLD = 0.3
     MAX_MISSED_FRAMES = 5
 
+    # A track can lose and re-acquire the same physical vehicle -- e.g.
+    # another car briefly blocking it for more than MAX_MISSED_FRAMES.
+    # PlateConfirmationTracker only refuses to re-confirm within ITS OWN
+    # track, so the broken-and-reformed track for the same real vehicle
+    # would otherwise log it a second time. This window suppresses that
+    # without suppressing a genuinely later, separate sighting of the same
+    # plate on this camera (e.g. the same car passing again hours later) --
+    # bounded, not a permanent "never again".
+    RECONFIRM_COOLDOWN_SEC = 45
+
     # A track seen only once or twice before losing it is as likely to be
     # a spurious/noise detection as a real missed vehicle -- not worth an
     # expensive VLM call. Two real matches is the same bar
     # PlateConfirmationTracker's own default confirm_threshold uses.
     VLM_FALLBACK_MIN_MATCHES = 2
+
 
     def __init__(self, window_size=10, confirm_threshold=2):
         self.window_size = window_size
@@ -167,7 +180,9 @@ class VehicleTracker:
         # Persists across track pruning -- a confirmed plate must not
         # silently disappear from the summary just because the vehicle
         # that produced it later left frame and its track got pruned.
-        self.confirmed = set()
+        # plate -> last-confirmed monotonic timestamp, not a plain set --
+        # see RECONFIRM_COOLDOWN_SEC.
+        self.confirmed = {}
 
         # BLPR-style last-resort fallback (see vlm_fallback.py): dispatched
         # in the background because measured Ollama latency (0.48s warm /
@@ -176,6 +191,20 @@ class VehicleTracker:
         # natural rate limit if many tracks get pruned in the same burst.
         self._vlm_executor = ThreadPoolExecutor(max_workers=2)
         self._vlm_pending = []
+
+    def _recently_confirmed(self, plate):
+        """True if `plate` (or something close enough to be the same real
+        plate) was confirmed on this camera within RECONFIRM_COOLDOWN_SEC.
+        Also prunes expired entries while it's here, so self.confirmed
+        stays bounded over a long-running stream without a separate
+        cleanup pass."""
+        now = time.monotonic()
+        self.confirmed = {p: t for p, t in self.confirmed.items() if now - t < self.RECONFIRM_COOLDOWN_SEC}
+        return any(_plate_similarity(plate, p) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
+                   for p in self.confirmed)
+
+    def _mark_confirmed(self, plate):
+        self.confirmed[plate] = time.monotonic()
 
     def update(self, detections, raw_frame=None):
         """
@@ -243,9 +272,9 @@ class VehicleTracker:
             if not plate:
                 continue
             confirmed = best_track["tracker"].add(plate, det["confidence"], det["note"])
-            if confirmed:
+            if confirmed and not self._recently_confirmed(confirmed["plate_number"]):
                 confirmed_events.append(confirmed)
-                self.confirmed.add(confirmed["plate_number"])
+                self._mark_confirmed(confirmed["plate_number"])
 
         for t in self.tracks:
             if id(t) not in matched:
@@ -302,14 +331,13 @@ class VehicleTracker:
             if result is None:
                 continue
             plate, confidence, note = result
-            # Same dedup rule PlateConfirmationTracker.add() uses --
-            # refuse to re-confirm something already close to an
-            # already-confirmed plate (e.g. a different track's normal
-            # OCR path confirmed the same vehicle in the meantime).
-            if any(_plate_similarity(plate, c) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
-                   for c in self.confirmed):
+            # Same cooldown rule update() uses -- refuse to re-confirm
+            # something already close to a recently-confirmed plate (e.g.
+            # a different track's normal OCR path confirmed the same
+            # vehicle in the meantime).
+            if self._recently_confirmed(plate):
                 continue
-            self.confirmed.add(plate)
+            self._mark_confirmed(plate)
             ready.append({"plate_number": plate, "confidence": confidence, "note": note})
         self._vlm_pending = still_pending
         return ready
