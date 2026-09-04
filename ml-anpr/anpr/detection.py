@@ -30,6 +30,18 @@ def plate_region_crop(vehicle_img):
     project's own discipline is to fix what's actually been measured
     broken, not everything that theoretically could be.
 
+    Top edge widened 55% -> 35% (real Anand CCTV footage evaluation,
+    officially provided, 269 real frames): auto-rickshaws' plates sit
+    much higher in the vehicle box than a car's -- measured directly on
+    a real rickshaw crop where the plate ("GJ23...25916") occupies
+    roughly 40-60% of the box height, entirely above the old 55% start.
+    A car's body proportions put its plate near the bumper (still
+    covered by the unchanged 98% bottom edge); a rickshaw's compact,
+    boxy shape puts it just below the windshield instead. 35% gives
+    margin above the measured 40% without needing a vehicle-type
+    classifier -- one wider band that covers both shapes, at the cost
+    of slightly more non-plate clutter in what OCR has to search.
+
     Safe against the dashcam-overlay false positive this project has
     already fixed once (Session 3: a close/large vehicle box pulling in
     the dashcam's own burned-in timestamp, misread as a sequence of
@@ -45,11 +57,20 @@ def plate_region_crop(vehicle_img):
     reasoned about (see ALPR_IMPROVEMENT_LOG.md).
     """
     h, w = vehicle_img.shape[:2]
-    y1, y2 = int(0.55 * h), int(0.98 * h)
+    y1, y2 = int(0.35 * h), int(0.98 * h)
     x1, x2 = int(0.12 * w), int(0.90 * w)
     if y2 - y1 < 10 or x2 - x1 < 20:
         return None
-    return vehicle_img[y1:y2, x1:x2]
+    region = vehicle_img[y1:y2, x1:x2]
+
+    # 2x upscale before OCR -- measured directly, not assumed: on a real
+    # rickshaw plate crop this project's evaluation found, OCR at native
+    # resolution read one stray garbage character; at 2x it read the
+    # plate's two segments correctly ("GJZJ" ~ GJ23, confidence 0.76;
+    # "75916", confidence 0.92). No upscaling existed anywhere in this
+    # pipeline before this -- despite this function's own docstring
+    # already implying "what gets upscaled," nothing actually did.
+    return cv2.resize(region, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
 
 MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
@@ -167,6 +188,35 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
             # "starts with a digit" text (dashcam brand/sticker text like
             # "1008ELECTRIC") was confirming as a false-positive plate.
             fallback_candidates.append((cleaned, conf))
+
+    # A real plate can come back from OCR as two separate fragments
+    # instead of one string -- confirmed directly on a real auto-rickshaw
+    # plate ("GJ23...75916"), which PaddleOCR split into "GJZJ" and
+    # "75916". Also run each concatenation through the same
+    # _correct_plate_positions() confusable-character fix used for single
+    # strings below (Z/2, O/0, etc.) -- a split fragment is exactly as
+    # likely to have a wrong-type character at a fixed position as a
+    # whole-string read is. _ocr_readtext doesn't preserve bounding-box
+    # position (always returns bbox=None, see anpr/ocr.py), so there's no
+    # real spatial signal to confirm two fragments are actually adjacent
+    # on the plate -- only trying ADJACENT entries in the returned list
+    # (not every pair) keeps this bounded, and trying both concatenation
+    # orders covers OCR not guaranteeing a consistent top-to-bottom
+    # sequence. Held to the same strict INDIAN_PLATE_PATTERN bar as any
+    # other candidate, never added to the weaker fallback tier -- two
+    # unrelated fragments are very unlikely to accidentally concatenate
+    # into something that matches that specific structure by chance, but
+    # this is a real, if bounded, false-positive risk worth stating
+    # plainly rather than glossing over.
+    for i in range(len(ocr_results) - 1):
+        clean_a = re.sub(r'[^A-Z0-9]', '', ocr_results[i][1].upper())
+        clean_b = re.sub(r'[^A-Z0-9]', '', ocr_results[i + 1][1].upper())
+        conf_a, conf_b = ocr_results[i][2], ocr_results[i + 1][2]
+        for combined in (clean_a + clean_b, clean_b + clean_a):
+            if INDIAN_PLATE_PATTERN.match(combined):
+                candidates.append((combined, min(conf_a, conf_b)))
+            elif (corrected := _correct_plate_positions(combined)) is not None:
+                candidates.append((corrected, min(conf_a, conf_b)))
 
     if candidates:
         candidates.sort(key=lambda x: x[1], reverse=True)

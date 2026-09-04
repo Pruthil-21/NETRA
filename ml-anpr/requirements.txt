@@ -18,6 +18,14 @@
 #
 # See ALPR_IMPROVEMENT_LOG.md Session 3 ("Setup problem, fixed properly
 # this time") for the full diagnosis.
+#
+# Same gotcha, different trigger: `pip install fiftyone` (evaluation
+# tooling, not a pipeline dependency -- not listed below on purpose)
+# also pulls in its own opencv-python-headless and silently shadowed
+# opencv-python again (5.0.0 -> 4.14.0 observed) -- hit directly
+# installing fiftyone/mlflow for a real dataset evaluation. Any future
+# `pip install` of anything (not just paddleocr) should be followed by
+# the same re-pin + verify steps above before trusting results.
 
 opencv-python==5.0.0.93
 torch==2.8.0

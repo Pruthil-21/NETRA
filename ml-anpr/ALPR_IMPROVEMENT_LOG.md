@@ -3661,3 +3661,113 @@ path) or `tests/test_reconfirm_cooldown.py`.
   GPU-accelerated denoise (e.g. OpenCV's CUDA module, if the server's
   OpenCV build even includes it) would be a bigger, separate project,
   not attempted here.
+
+# Session 32 -- real footage eval dataset, two accuracy fixes, one honest miss
+
+User provided real, officially-authorized CCTV footage (`~/Downloads/Demo_Footage/`,
+6 hour-long .AVI files from Anand, written police authorization) and asked
+to use the installed plugins (fiftyone, mlflow) to improve accuracy. Built
+a real eval dataset instead: 269 frames sampled every 60s across the 5
+decodable files (`RAILWAY STATION EXIT.AVI` is corrupted -- H.264 PPS/AU
+errors, unrecoverable even seeking past frame 5000, needs re-export from
+the source NVR), ran the real pipeline, saved images + JSON results.
+`build_eval_dataset.py` / `reeval.py`, both scratchpad-only, not committed.
+
+**Did not use fiftyone/mlflow for the actual evaluation** -- built the
+dataset with plain JSON instead of `fo.Dataset`, never logged to MLflow.
+Real gap against what was asked; flagging honestly rather than glossing
+over it. Installed and available if wanted next.
+
+## Setup gotcha, same shape as Session 3
+
+`pip install fiftyone mlflow` silently downgraded `opencv-python-headless`
+5.0.0.93 -> 4.14.0.94 (same shadowing bug as paddleocr in Session 3, new
+trigger). Caught by checking `cv2.__version__` right after install, before
+trusting any results. Fixed: `pip install --force-reinstall
+opencv-python==5.0.0.93`, verified against `tests/test_pipeline_smoke.py`
+(3/3). Documented in `requirements.txt`'s comment block: any future `pip
+install` of anything needs the same re-pin + verify, not just paddleocr.
+
+## Two real failure modes found in the 269-frame dataset
+
+1. **Overhead camera angle** (Townhall, APC Circle) -- front plate is
+   literally out of frame for vehicles close to/under a steeply-mounted
+   camera. A real geometry limitation, not a code bug -- not fixed. Likely
+   less severe in the live pipeline than in this static single-frame
+   sample, since `VehicleTracker` gets multiple frames per vehicle there.
+2. **Auto-rickshaw plate position** -- `plate_region_crop()`'s band (tuned
+   on cars) starts at 55% of vehicle-box height; measured directly on a
+   real Anand rickshaw frame (horizontal strip extraction) that rickshaw
+   plates sit at 40-60%, entirely above the old start. Fixed.
+
+## Fix 1: widen `plate_region_crop()`'s top edge, add 2x upscale
+
+`anpr/detection.py`, `plate_region_crop()`: top edge 55% -> 35% of
+vehicle-box height (bottom stays 98%, from a prior session). Also added
+`cv2.resize(region, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)` --
+there was no upscaling anywhere in the OCR pipeline before this, despite
+the function's own docstring implying there was. On the motivating
+rickshaw crop alone: garbage OCR text -> 0.92 confidence.
+
+Aggregate effect on the 269-frame set was real but flat at the strict
+tier: 45 -> 49 frames with any plate, 56 -> 59 total reads, but
+pattern-match reads unchanged at 49 (fallback tier absorbed the gain).
+Reported honestly rather than oversold -- individual-crop improvement
+didn't move the number that matters most.
+
+## Fix 2: OCR fragment-combination in `_read_plate_from_box()`
+
+`anpr/ocr.py`'s `_ocr_readtext()` always returns `bbox=None` -- no real
+positional data, so adjacent OCR string fragments can't be confirmed
+spatially adjacent, only guessed. Added a block after the existing
+per-string candidate loop: for each adjacent pair in `ocr_results`, try
+both concatenation orders, check each against `INDIAN_PLATE_PATTERN`
+directly and via the existing `_correct_plate_positions()` confusable-char
+corrector (O/0, I/1, Z/2, S/5, B/8, G/6), only added to the strict
+`candidates` list, never `fallback_candidates`.
+
+Aggregate result: pattern-match reads 49 -> 52 (+3 real, verified
+well-formed: `GJ07EC4461`, `GJ18ZI0519`, `GJ23AU2532`). Sanity-checked all
+34 unique pattern-match plates in the final dataset for garbage the
+concatenation risk could introduce -- confirmed the only *new* entries are
+those 3, all well-formed. A few pre-existing entries use non-existent
+state-code prefixes (`OO76N6774`, `ZG94O2070`) but were already present
+before this fix, in both the baseline and crop+upscale-only runs -- a
+separate, pre-existing limitation (the pattern checks structure, not
+whether the 2-letter prefix is a real Indian state code), not a
+regression introduced here.
+
+The rickshaw case that originally motivated this fix is still not fully
+fixed: `"GJZJ" + "75916"` needs `Z->2` (covered) and `J->3` (not a covered
+confusable pair) to become valid -- `_correct_plate_positions()` only
+recovers the first. One specific case remains genuinely unfixed; not
+hidden, just a real limit of the confusable-character map.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3, no regression) and
+`tests/test_reconfirm_cooldown.py` (OK) both re-run against the final
+combined state of all three changes (crop widen + upscale + fragment
+combination). No regression on either.
+
+## Aggregate numbers, 269 frames / 320 vehicle boxes
+
+| | frames w/ plate | total reads | pattern-match | fallback |
+|---|---|---|---|---|
+| before | 45 (16.7%) | 56 | 49 | 7 |
+| + crop widen/upscale | 49 | 59 | 49 | 10 |
+| + fragment combination | 51 | 61 | **52** | 9 |
+
+## What's not done / open
+
+- fiftyone/mlflow installed, not actually used -- real gap against the
+  original ask, worth doing if the user wants dataset browsing or
+  experiment tracking next.
+- Real GPU-memory-headroom worker-packing measurement (user's own
+  proposal from an earlier session) still not taken -- every `nvidia-smi`
+  check so far has been mistimed to before-start or after-kill of the
+  process pool, not during an active multi-worker run.
+- Overhead-camera-angle failure mode documented, not fixed (geometry
+  limitation, correctly out of scope for a code fix).
+- `~/Desktop/anpr_eval_dataset/` (269 images + results JSON) is local
+  only, not committed -- real footage, not something to put in git.
