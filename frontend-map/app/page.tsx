@@ -1,47 +1,67 @@
 "use client";
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { GridControls } from "@/components/dashboard/GridControls";
 import { AlertLog } from "@/components/dashboard/AlertLog";
 import { AlertBanner, Alert } from "@/components/AlertBanner";
 import { StaleIndicator, useStaleness } from "@/components/common/StaleIndicator";
 import { useCameraFeeds, FEED_STALE_THRESHOLD_MS } from "@/hooks/useCameraFeeds";
+import { useLimitedPlayers } from "@/hooks/useLimitedPlayers";
+import { useCameraRegistry } from "@/context/CameraRegistryContext";
 import { CameraFeed } from "@/types/stream";
 import { TEST_FEEDS } from "@/config/streams";
+import { DistrictCircleTree, TreeSelection } from "@/components/tree/DistrictCircleTree";
+import { CameraInfoOverlay } from "@/components/overlay/CameraInfoOverlay";
+import { circlesService, Circle } from "@/services/circlesService";
+import { filterFeedsByTreeSelection } from "@/lib/dashboardTreeFilter";
 
 type StatusFilter = CameraFeed["status"] | "all";
+const MAX_CONCURRENT_PLAYERS = 6;
 
-// Ported from frontend-dashboard (previously its own app on :3001), now this
-// app's home page -- same components, same behavior, just running inside
-// this app/port instead of a second one. The only deliberate change: no
-// page-own <Header> here, since AppShell already renders one persistent top
-// bar (branding, live clock, online/offline ticker, alerts bell) for every
-// route -- stacking a second one under it would just be a duplicate banner.
 export default function DashboardPage() {
   const { feeds, loading, error, refetch, lastUpdated } = useCameraFeeds();
+  const { cameras } = useCameraRegistry();
   const { isStale } = useStaleness(lastUpdated, !!error, FEED_STALE_THRESHOLD_MS);
   const [layout, setLayout] = useState<"grid-4" | "grid-9" | "focus">("grid-9");
   const [searchTerm, setSearchTerm] = useState("");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [allAlerts, setAllAlerts] = useState<Alert[]>([]);
+  const [playAllMode, setPlayAllMode] = useState(false);
+  const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
+  const [circles, setCircles] = useState<Circle[]>([]);
+  const [hoveredCameraId, setHoveredCameraId] = useState<string | null>(null);
 
-  // TEST_FEEDS are manually-verified streams that aren't in backend-registry yet —
-  // shown regardless of registry health, since verifying one specific stream shouldn't
-  // depend on the registry being up.
+  const { activeCameraIds, openPlayer, closePlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
+
+  useEffect(() => {
+    circlesService.listCircles().then(setCircles).catch(() => {
+      // Non-fatal: the tree just shows no circles until this succeeds/retries.
+    });
+  }, []);
+
   const allFeeds = useMemo(() => [...feeds, ...TEST_FEEDS], [feeds]);
 
-  const departments = useMemo(
+  const districts = useMemo(
     () => Array.from(new Set(allFeeds.map((f) => f.department))).sort(),
     [allFeeds]
   );
 
+  const circleIdByCameraId = useMemo(() => {
+    const map: Record<string, number | null> = {};
+    for (const cam of cameras) map[String(cam.id)] = cam.circle_id ?? null;
+    return map;
+  }, [cameras]);
+
+  const treeFilteredFeeds = useMemo(
+    () => filterFeedsByTreeSelection(allFeeds, treeSelection, circleIdByCameraId),
+    [allFeeds, treeSelection, circleIdByCameraId]
+  );
+
   const filteredFeeds = useMemo(() => {
     const term = searchTerm.trim().toLowerCase();
-    return allFeeds.filter((feed) => {
-      if (departmentFilter !== "all" && feed.department !== departmentFilter) return false;
+    return treeFilteredFeeds.filter((feed) => {
       if (statusFilter !== "all" && feed.status !== statusFilter) return false;
       if (!term) return true;
       return (
@@ -51,94 +71,139 @@ export default function DashboardPage() {
         feed.department.toLowerCase().includes(term)
       );
     });
-  }, [allFeeds, searchTerm, departmentFilter, statusFilter]);
+  }, [treeFilteredFeeds, searchTerm, statusFilter]);
 
-  // Focus mode shows exactly one camera — the one explicitly picked via a FeedCard's
-  // "Focus this camera" button, an alert's "View Camera"/plate link, or the first
-  // filtered result if none was picked yet.
   const visibleFeeds = useMemo(() => {
     if (layout !== "focus") return filteredFeeds;
     const focused = filteredFeeds.find((f) => f.id === focusedId);
     return focused ? [focused] : filteredFeeds.slice(0, 1);
   }, [layout, filteredFeeds, focusedId]);
 
+  const hoveredCamera = useMemo(
+    () => (hoveredCameraId ? cameras.find((c) => String(c.id) === hoveredCameraId) ?? null : null),
+    [cameras, hoveredCameraId]
+  );
+  const hoveredCircleName = useMemo(
+    () => circles.find((c) => c.id === hoveredCamera?.circle_id)?.name ?? null,
+    [circles, hoveredCamera]
+  );
+
   const handleSelectFocus = useCallback((id: string) => {
     setFocusedId(id);
     setLayout("focus");
-    // Clear filters so jumping to a camera from an alert always works, even if the
-    // alert fired on a camera the current department/status/search filters would
-    // otherwise exclude.
-    setDepartmentFilter("all");
     setStatusFilter("all");
     setSearchTerm("");
   }, []);
 
+  const handleHoverStart = useCallback(
+    (id: string) => setHoveredCameraId(id),
+    []
+  );
+  const handleHoverEnd = useCallback(
+    (id: string) => setHoveredCameraId((current) => (current === id ? null : current)),
+    []
+  );
+
+  // Play-All mode opens every currently-visible tile through the shared
+  // concurrency-limited player pool instead of an unbounded number of
+  // simultaneous HLS decoders (see Global Constraints — the relay reliably
+  // holds ~6 at once; useLimitedPlayers evicts the oldest past that).
+  useEffect(() => {
+    if (!playAllMode) return;
+    visibleFeeds.forEach((feed) => openPlayer(Number(feed.id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playAllMode, visibleFeeds]);
+
   return (
-    <main className="flex-1 overflow-y-auto min-h-0 w-full flex flex-col">
-      <AlertBanner onAlertsUpdate={setAllAlerts} onJumpToCamera={handleSelectFocus} />
+    <main className="flex-1 flex overflow-hidden min-h-0 w-full">
+      <DistrictCircleTree
+        districts={districts}
+        circles={circles}
+        selected={treeSelection}
+        onSelect={setTreeSelection}
+      />
 
-      <div className="flex-1 p-4 sm:p-6">
-        <div className="mb-6 flex justify-between items-center">
-          <div className={isStale ? "opacity-60 transition-opacity" : "transition-opacity"}>
-            <h2 className="text-lg font-semibold text-white">Live Operations Feeds</h2>
-            <p className="text-xs text-gray-400">
-              {loading
-                ? "Connecting to camera registry..."
-                : `${feeds.length} camera${feeds.length === 1 ? "" : "s"} registered`}
-            </p>
-          </div>
-          {!loading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={FEED_STALE_THRESHOLD_MS} />}
-        </div>
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+        <AlertBanner onAlertsUpdate={setAllAlerts} onJumpToCamera={handleSelectFocus} />
 
-        <AlertLog alerts={allAlerts} onJumpToCamera={handleSelectFocus} />
-
-        <GridControls
-          layout={layout}
-          setLayout={setLayout}
-          searchTerm={searchTerm}
-          setSearchTerm={setSearchTerm}
-          departments={departments}
-          departmentFilter={departmentFilter}
-          setDepartmentFilter={setDepartmentFilter}
-          statusFilter={statusFilter}
-          setStatusFilter={setStatusFilter}
-        />
-
-        {loading && (
-          <div className="flex items-center justify-center p-12 text-gray-400 text-sm">
-            Loading camera feeds...
-          </div>
-        )}
-
-        {!loading && error && (
-          <div className="bg-brand-card border border-red-800/60 text-red-400 p-4 rounded-lg mb-6 flex items-center justify-between gap-4">
-            <div>
-              <p className="font-semibold text-sm">Camera registry unavailable</p>
-              <p className="text-xs text-gray-400 mt-1">{error}</p>
+        <div className="flex-1 p-4 sm:p-6">
+          <div className="mb-6 flex justify-between items-center">
+            <div className={isStale ? "opacity-60 transition-opacity" : "transition-opacity"}>
+              <h2 className="text-lg font-semibold text-white">Live Operations Feeds</h2>
+              <p className="text-xs text-gray-400">
+                {loading
+                  ? "Connecting to camera registry..."
+                  : `${feeds.length} camera${feeds.length === 1 ? "" : "s"} registered`}
+              </p>
             </div>
-            <button
-              onClick={refetch}
-              className="shrink-0 px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-900 text-red-200 text-xs font-semibold transition-colors"
-            >
-              Retry
-            </button>
+            {!loading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={FEED_STALE_THRESHOLD_MS} />}
           </div>
-        )}
 
-        {/* Rendered even when the registry errored — TEST_FEEDS (and any previously
-            fetched real feeds) shouldn't disappear just because the registry is down;
-            the error banner above already communicates that separately. */}
-        {!loading && (
-          <div className={isStale ? "opacity-60 grayscale-[30%] transition-all" : "transition-all"}>
-            <CameraGrid
-              feeds={visibleFeeds}
-              layout={layout}
-              onSelectFocus={handleSelectFocus}
-              registryEmpty={allFeeds.length === 0}
-            />
-          </div>
-        )}
+          <AlertLog alerts={allAlerts} onJumpToCamera={handleSelectFocus} />
+
+          <GridControls
+            layout={layout}
+            setLayout={setLayout}
+            searchTerm={searchTerm}
+            setSearchTerm={setSearchTerm}
+            departments={[]}
+            departmentFilter="all"
+            setDepartmentFilter={() => {}}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            playAllMode={playAllMode}
+            setPlayAllMode={setPlayAllMode}
+          />
+
+          {loading && (
+            <div className="flex items-center justify-center p-12 text-gray-400 text-sm">
+              Loading camera feeds...
+            </div>
+          )}
+
+          {!loading && error && (
+            <div className="bg-brand-card border border-red-800/60 text-red-400 p-4 rounded-lg mb-6 flex items-center justify-between gap-4">
+              <div>
+                <p className="font-semibold text-sm">Camera registry unavailable</p>
+                <p className="text-xs text-gray-400 mt-1">{error}</p>
+              </div>
+              <button
+                onClick={refetch}
+                className="shrink-0 px-3 py-1.5 rounded bg-red-900/60 hover:bg-red-900 text-red-200 text-xs font-semibold transition-colors"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {!loading && treeSelection === null ? (
+            <div className="text-center py-16 border border-dashed border-gray-800 rounded-lg">
+              <p className="text-gray-400 text-sm">Pick a district (or a circle within it) from the tree to view its cameras.</p>
+            </div>
+          ) : (
+            !loading && (
+              <div className={isStale ? "opacity-60 grayscale-[30%] transition-all" : "transition-all"}>
+                <CameraGrid
+                  feeds={visibleFeeds}
+                  layout={layout}
+                  onSelectFocus={handleSelectFocus}
+                  registryEmpty={allFeeds.length === 0}
+                  mode={playAllMode ? 'playAll' : 'hoverOnly'}
+                  activeIds={new Set(Array.from(activeCameraIds).map(String))}
+                  onHoverStart={handleHoverStart}
+                  onHoverEnd={handleHoverEnd}
+                />
+              </div>
+            )
+          )}
+        </div>
       </div>
+
+      <CameraInfoOverlay
+        camera={hoveredCamera}
+        circleName={hoveredCircleName}
+        onClose={() => setHoveredCameraId(null)}
+      />
     </main>
   );
 }
