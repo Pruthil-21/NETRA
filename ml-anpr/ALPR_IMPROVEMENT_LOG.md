@@ -3771,3 +3771,154 @@ combination). No regression on either.
   limitation, correctly out of scope for a code fix).
 - `~/Desktop/anpr_eval_dataset/` (269 images + results JSON) is local
   only, not committed -- real footage, not something to put in git.
+
+# Session 33 -- dedicated plate-detector model, and the regression it introduced (found and fixed the same session)
+
+Session 32's 269-frame eval showed 81% of vehicle boxes produced no
+usable plate read, dominated by "no text read" (44%) and "text found,
+none plate-shaped" (37%). Visually inspecting real failing crops (not
+just the note strings) explained why: `plate_region_crop()` is a
+percentage-of-vehicle-box *guess*, not a real plate detector -- a
+distant van's genuinely legible plate measured ~20x8px inside a 140px
+crop (too small for a fixed-band heuristic no matter how the
+percentages are tuned), and a TATA truck's tailgate brand text got read
+and correctly rejected as non-plate-shaped, wasting an OCR pass on a
+region with no plate in it at all.
+
+## The fix: a real, pretrained plate-detector model
+
+`Koushim/yolov8-license-plate-detection` (Hugging Face, MIT licensed,
+YOLOv8n, single class `license_plate`) -- confirmed real and currently
+published via WebSearch before using it, not assumed. Fetched once and
+cached to `~/.cache/netra_lp_detect/`, same lazy-load-on-first-use
+pattern `enhancement._get_nafnet_model()` already established for
+NAFNet's checkpoint. `detection.detect_plate_box_crop()`: runs the
+model on the vehicle crop, takes the highest-confidence box, pads it
+8% (a trained detector's box can sit right at character edges, unlike
+the already-generous percentage band), then scales to a fixed 240px
+target *width* rather than plate_region_crop()'s flat 2x multiplier --
+a tiny distant plate needs much more zoom than a close one, a flat
+multiplier gives both the same. Wired in as a third, additive OCR pass
+in `_read_plate_from_box()` alongside the existing whole-crop and
+band-crop passes -- same "never lose what another pass would still
+have found" philosophy already used there.
+
+## First result: real net gain, but a real regression found by actually checking
+
+Aggregate looked like a clean win: pattern-match reads 52->64, unique
+plates 35->44, "no text read" 138->129. Diffing every (frame, box) pair
+against Session 32's baseline directly -- not just comparing the
+before/after unique-plate sets, which hides same-box disagreements --
+found two confirmed character-level regressions on the exact same box
+in both runs:
+
+- `GJ23CG2045` (before) -> `GI23CG2045` (after) -- J misread as I.
+- `GJ07EC4461` (before) -> `GJ07EL4461` (after), at *higher* confidence
+  (0.95 vs 0.77) than the correct original -- C misread as L. Traced
+  this crop directly: it's a genuine two-line plate (state+series on
+  one line, number below) on a scooter -- contradicts what this project
+  told itself in Session 32 ("didn't see evidence of two-line plates in
+  this footage"), which was wrong, just from too small a sample.
+
+Root cause, not just the two symptoms: candidate selection across all
+three OCR passes picks whichever result has the single highest raw OCR
+confidence, with no check on whether the *result itself* is plausible.
+Adding a third pass means a wrong-but-confident read from the new pass
+can now beat a correct one from an existing pass -- a real, structural
+side effect of "additive passes, trust confidence," not a one-off fluke.
+
+Reported this honestly to the user (net gain vs. two *confidently
+wrong* regressions -- worse than a miss, since a wrong plate can reach
+`send_detection_to_watchlist` as if verified) instead of leading with
+the headline number. User asked to dig deeper before committing.
+
+## Digging deeper: a full per-box diff, not just the two examples already found
+
+Diffed all 316 boxes present in both runs directly (not sampled):
+0 losses (no box that had a real read lost it entirely), 51 identical,
+10 with a different plate string, 9 newly gained. Classifying all 19
+disagreements individually (not just eyeballing the aggregate) found:
+7 clear improvements, 2 confirmed regressions (the two above), 2
+fallback-tier garbage-to-garbage (no real signal either way), and,
+critically, among the 9 gained reads, 2 *more* instances of the exact
+same GJ->GI misread (`GI35N8419`, `GI23CG2049`) -- a third and fourth
+occurrence of the identical failure mode, on different frames/vehicles.
+Three-plus occurrences of the same specific confusion is a real,
+systematic signal, not noise -- worth a targeted fix, unlike a single
+unexplained case.
+
+## The targeted fix: real Indian state-code validation
+
+`plate_format.VALID_STATE_CODES` -- the complete real set of ~35
+current Indian state/UT registration codes (Wikipedia's "Vehicle
+registration plates of India", used as the source rather than
+guessed). `INDIAN_PLATE_PATTERN` only checks character *class*
+(letter/letter/digit/digit/...), never whether the first two letters
+are a code that actually exists -- so `GI23CG2045` and Session 32's own
+leftover `OO76N6774`/`ZG94O2070` all passed it untouched. Added
+`_correct_state_code()`: if a pattern-matched plate's 2-letter code
+isn't real, but a single I<->J swap at either letter position would
+make it real, correct it; otherwise return None so the caller demotes
+that candidate to the fallback tier instead of trusting an invalid code
+at pattern-match confidence. Deliberately narrow -- only I<->J, because
+that's the only pair with real repeated evidence (3 occurrences); not
+extended to other visually-similar letters (the still-open C/L case
+above included) without the same kind of direct evidence, per this
+project's own established discipline against fixing what hasn't
+actually been measured broken.
+
+Wired into every place `_read_plate_from_box()` already trusts a
+pattern-matched string (single-string loop, `_correct_plate_positions()`
+branch, and the fragment-combination loop from Session 32).
+
+## Final result, re-verified with a full re-diff, not assumed from the first pass
+
+Pattern-match reads 52->61 (net -3 vs. the uncorrected run -- expected:
+3 boxes with an invalid code and no valid alternative candidate now
+correctly land in fallback instead of pattern-match, verified in the
+note-count breakdown: fallback tier went 6->9, matching exactly).
+0 losses, still. All three GI-prefix cases now read correctly as GJ.
+The one C/L regression (`GJ07EC4461`) remains open, left as a known
+limitation rather than force-fixed without evidence -- documented, not
+hidden.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3, no regression) and
+`tests/test_reconfirm_cooldown.py` (OK), both re-run after the
+plate-detector integration AND again after the state-code fix, not
+just once at the end.
+
+## Aggregate numbers, 269 frames / 316 vehicle boxes
+
+| | frames w/ plate | pattern-match | fallback | no text read |
+|---|---|---|---|---|
+| Session 32 baseline | 51 (19.0%) | 52 | 9 | 138 |
+| + plate-detector (uncorrected) | 56 (20.8%) | 64 | 6 | 129 |
+| + state-code validation | 56 (20.8%) | 61 | 9 | 129 |
+
+## What's not done / open
+
+- `GJ07EC4461` / `GJ07EL4461` (C/L confusion at a series-letter
+  position, on a two-line plate) remains an open, known regression --
+  no fix attempted without more than one example.
+- Two-line plate handling in general is still not a first-class case
+  anywhere in the pipeline -- this session found real evidence it
+  exists (contradicting Session 32's "no evidence" claim on a too-small
+  sample), but a structural fix (detecting and reading each line
+  separately, then joining) is a bigger, separate project, not
+  attempted here.
+- `LP_DETECT_CONFIDENCE` (0.25, ultralytics' own default) and
+  `LP_DETECT_BOX_MARGIN_FRACTION` (0.08) are untuned against this
+  project's own footage beyond today's aggregate result -- real levers
+  to revisit with more data.
+- Candidate selection across OCR passes still has no plausibility check
+  beyond the new state-code validation specifically -- the general
+  "highest confidence wins across all passes regardless of source"
+  design is the root cause class, of which the state-code fix only
+  covers one specific, evidenced symptom.
+- `Koushim/yolov8-license-plate-detection` weights are not committed to
+  git (cached to `~/.cache/netra_lp_detect/`, fetched on first use,
+  same as NAFNet's checkpoint) -- a machine with no cache and no network
+  at first use degrades to the existing plate_region_crop() heuristic,
+  not a crash (see `_get_lp_model()`'s docstring).
