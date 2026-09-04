@@ -3922,3 +3922,77 @@ just once at the end.
   same as NAFNet's checkpoint) -- a machine with no cache and no network
   at first use degrades to the existing plate_region_crop() heuristic,
   not a crash (see `_get_lp_model()`'s docstring).
+
+# Session 34 -- motion-predicted IoU tracking
+
+`VehicleTracker`'s own docstring had flagged this since Session 7:
+`process_video_file`/`process_stream` only examine every Nth frame, so
+real displacement between *processed* frames is larger than true
+frame-to-frame motion -- exactly the condition greedy best-IoU matching
+against a track's last-seen box is weakest under. Never revisited until
+now.
+
+## The fix
+
+`tracking._predict_box(track)`: linear extrapolation from a track's
+last two observed boxes (constant-velocity assumption), used in place
+of the raw last-seen box when computing match IoU. A track only matched
+once so far has no velocity yet and falls back to its last-seen box
+unchanged -- identical to the old behavior, so a brand-new track is
+never worse off. Velocity itself is always derived from two real
+observed boxes, never from a previous prediction, so extrapolation
+error can't compound frame over frame.
+
+Deliberately the smallest fix that targets the exact weakness already
+named in the docstring -- not a tracker swap (ByteTrack etc., already
+flagged as the heavier fallback if this proved insufficient) and not a
+change to confirmation logic itself, which stays completely
+untouched -- same reasoning already applied to keep this project's
+riskier open items (DL52GD0882) separate from anything that could
+regress a clean, already-working track like HR98E4959.
+
+## Verification: real A/B, not reasoned about
+
+Built a same-input A/B test (`tracking_ab_test.py`, scratchpad) rather
+than trusting the design alone: ran real `detect_plate_from_frame` over
+150 processed frames (process_every_n_frames=10, the actual production
+default) from real Anand CCTV footage (161 APC Circle), collected once,
+then fed the *identical* detection sequence into two separate
+`VehicleTracker` instances -- one with `_predict_box` monkeypatched
+back to the old last-seen-box behavior, one running the real new code
+unmodified. Isolates the tracker's matching logic as the only variable;
+OCR/detection results are identical in both runs since they're computed
+once and replayed.
+
+| | total_vehicles_tracked | confirmed plates |
+|---|---|---|
+| OLD (last-seen-box) | 21 | 3 (`GJ07DE4937`, `GJ23CJ8`, `MH12MW9177`) |
+| NEW (motion-predicted) | 17 | 4 (+ `GJ99OS8043`) |
+
+Track count dropping (21->17) is the expected signal of fewer
+spuriously-fragmented tracks for the same physical vehicle. The
+important check is what happens to confirmed plates alongside that --
+over-matching (merging two actually-different vehicles into one track)
+would show up as *fewer* confirmed plates, since PlateConfirmationTracker's
+voting would blend two vehicles' readings together and likely never
+clear its confidence floor for either. Instead confirmed plates went
+*up* (3->4, zero losses, all 3 original plates preserved exactly) --
+the clean result that rules out over-matching as what's actually
+happening here.
+
+## Verification (regression)
+
+`tests/test_pipeline_smoke.py` (3/3), `tests/test_reconfirm_cooldown.py`
+(OK), and `tests/test_pipeline_mp_smoke.py` (real process-based pipeline
+run against dashcam_trimmed.mp4, produced a real confirmed plate,
+no crash) -- all re-run after this change, not assumed unaffected.
+
+## What's not done / open
+
+- Only one real video segment (150 frames, one location) A/B tested --
+  a real result, not a synthetic one, but a single segment nonetheless.
+  Worth a second segment if time allows before fully trusting this at
+  scale.
+- Still greedy per-detection matching within a frame (first sufficiently-
+  good IoU wins, no global optimal assignment like Hungarian matching) --
+  not revisited here since it wasn't the weakness this fix targeted.

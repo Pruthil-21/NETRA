@@ -130,6 +130,23 @@ def _iou(box_a, box_b):
     return inter / (area_a + area_b - inter)
 
 
+def _predict_box(track):
+    """Extrapolates a track's box one step forward using the displacement
+    between its last two observed boxes (constant-velocity assumption) --
+    matching against where a vehicle is expected to be next, not just
+    where it last was, directly targets the "real displacement between
+    *processed* frames is larger than true frame-to-frame motion"
+    weakness VehicleTracker's own docstring already names. Falls back to
+    the last-seen box unchanged (zero velocity) for a track only matched
+    once so far, which is exactly the old, unpredicted behavior -- so a
+    brand-new track is never worse off than before this existed."""
+    if track["velocity"] is None:
+        return track["box"]
+    x1, y1, x2, y2 = track["box"]
+    vx1, vy1, vx2, vy2 = track["velocity"]
+    return (x1 + vx1, y1 + vy1, x2 + vx2, y2 + vy2)
+
+
 class VehicleTracker:
     """
     Associates per-frame vehicle detections (detection.detect_plate_from_frame's
@@ -147,9 +164,16 @@ class VehicleTracker:
     design before testing: process_video_file/process_stream only
     examine every Nth frame, so real displacement between *processed*
     frames is larger than true frame-to-frame motion -- this is
-    exactly the condition IoU matching is weakest under. See Session 7
-    for whether this held up on the real dashcam clip's actual sampling
-    rate.
+    exactly the condition IoU matching is weakest under.
+
+    Session 33: addressed with a linear motion prediction (see
+    _predict_box() below) rather than a heavier tracker swap -- matching
+    against where a track is *expected* to be next (extrapolated from
+    its last two observed boxes), not just where it last was, directly
+    targets the gap-between-processed-frames weakness stated above
+    without the cross-cutting risk of changing the confirmation logic
+    itself (see the DL52GD0882 discussion elsewhere in the log for why
+    that's deliberately avoided).
     """
     IOU_MATCH_THRESHOLD = 0.3
     MAX_MISSED_FRAMES = 5
@@ -261,13 +285,14 @@ class VehicleTracker:
             for t in self.tracks:
                 if id(t) in matched:
                     continue
-                iou = _iou(t["box"], box)
+                iou = _iou(_predict_box(t), box)
                 if iou >= self.IOU_MATCH_THRESHOLD and iou > best_iou:
                     best_track, best_iou = t, iou
 
             if best_track is None:
                 best_track = {
                     "box": box,
+                    "velocity": None,
                     "tracker": PlateConfirmationTracker(
                         window_size=self.window_size, confirm_threshold=self.confirm_threshold
                     ),
@@ -279,6 +304,13 @@ class VehicleTracker:
                 }
                 self.tracks.append(best_track)
                 self.total_vehicles_tracked += 1
+            else:
+                # Displacement since the last *observed* box, not the
+                # predicted one -- velocity should track real motion, and
+                # re-deriving it from a prediction would compound
+                # extrapolation error frame over frame.
+                old_box = best_track["box"]
+                best_track["velocity"] = tuple(n - o for n, o in zip(box, old_box))
 
             best_track["box"] = box
             best_track["missed"] = 0
