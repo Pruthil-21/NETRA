@@ -29,17 +29,46 @@ def _with_owner_details(alert):
     return alert
 
 
+def _with_nearest_station(db, alert):
+    if alert is not None:
+        # police_stations is owned by backend-registry but lives in the
+        # same physical Postgres instance (same convention as cameras.dept
+        # lookups elsewhere in this codebase).
+        db.execute(
+            """
+            SELECT nearest.name, nearest.distance_meters
+            FROM cameras c
+            LEFT JOIN LATERAL (
+                SELECT ps.name, ST_Distance(c.location, ps.location) AS distance_meters
+                FROM police_stations ps
+                ORDER BY c.location <-> ps.location
+                LIMIT 1
+            ) nearest ON true
+            WHERE c.id = %s
+            """,
+            (alert["camera_id"],),
+        )
+        row = db.fetchone()
+        alert["nearest_station"] = (
+            {"name": row["name"], "distance_meters": row["distance_meters"]}
+            if row is not None and row["name"] is not None
+            else None
+        )
+    return alert
+
+
 def list_alerts(db: RealDictCursor):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " ORDER BY a.matched_at DESC")
     alerts = db.fetchall()
     for alert in alerts:
         _with_owner_details(alert)
+        _with_nearest_station(db, alert)
     return alerts
 
 
 def get_alert(db: RealDictCursor, alert_id: int):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.id = %s", (alert_id,))
-    return _with_owner_details(db.fetchone())
+    return _with_nearest_station(db, _with_owner_details(db.fetchone()))
 
 
 def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
@@ -49,7 +78,7 @@ def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
     process_detection again and creating a second one for the same
     underlying sighting."""
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.detection_id = %s", (detection_id,))
-    return _with_owner_details(db.fetchone())
+    return _with_nearest_station(db, _with_owner_details(db.fetchone()))
 
 
 def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, detection_id: int):

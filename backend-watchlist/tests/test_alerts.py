@@ -99,3 +99,56 @@ def test_require_role_accepts_rbac_role_names(client):
         token = jwt.encode({"sub": "rbac-test", "role": rbac_role}, settings.jwt_secret, algorithm="HS256")
         resp = client.get("/alerts", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, f"role {rbac_role} was rejected"
+
+
+def test_alert_includes_nearest_station(client, internal_headers):
+    with psycopg2.connect(settings.database_url) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS long FROM cameras WHERE id = 1")
+        cam = cur.fetchone()
+        cur.execute(
+            "INSERT INTO police_stations (name, location, district) "
+            "VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'Traffic Police') RETURNING id",
+            ("Test Nearby Station", cam["long"], cam["lat"]),
+        )
+        station_id = cur.fetchone()["id"]
+        conn.commit()
+
+    try:
+        # _seed_watchlist_and_detection (defined above) already produces a
+        # real matched alert against camera_id 1 -- the same camera used
+        # above -- via the watchlist-insert + POST /detections flow this
+        # file's other tests exercise, so it's reused here rather than
+        # duplicating that flow with a POST /watchlist call this file
+        # doesn't otherwise use.
+        alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+        assert alert["nearest_station"]["name"] == "Test Nearby Station"
+        assert alert["nearest_station"]["distance_meters"] < 50
+    finally:
+        with psycopg2.connect(settings.database_url) as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM police_stations WHERE id = %s", (station_id,))
+            conn.commit()
+
+
+def test_alert_nearest_station_is_none_with_zero_stations():
+    """Uses a transaction that is explicitly rolled back, never committed --
+    must never actually delete real police_stations data (see this session's
+    incident history with unscoped DELETEs on shared tables). Calls
+    alerts_service._with_nearest_station DIRECTLY on the same connection the
+    delete ran on, rather than through a live HTTP round-trip -- the running
+    app process uses its own separate pooled connection, which would never
+    see an uncommitted delete from a different connection, so an HTTP-based
+    version of this test could not actually observe the "zero stations"
+    condition at all."""
+    from app.services import alerts_service
+
+    conn = psycopg2.connect(settings.database_url)
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("DELETE FROM police_stations")
+            # camera_id 1 is expected to exist in this environment's seed data.
+            alert = {"camera_id": 1}
+            result = alerts_service._with_nearest_station(cur, alert)
+            assert result["nearest_station"] is None
+    finally:
+        conn.rollback()
+        conn.close()
