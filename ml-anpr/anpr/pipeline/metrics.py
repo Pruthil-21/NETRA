@@ -11,6 +11,21 @@ import time
 from collections import deque
 
 
+def safe_qsize(q):
+    """multiprocessing.Queue.qsize() raises NotImplementedError on macOS
+    (missing sem_getvalue()) -- a real platform limitation hit developing
+    this locally (InferenceWorker's frame/stats queues are multiprocessing
+    ones now), not a bug. Works fine on Linux, where this actually
+    deploys. Returns None (honestly "unmeasurable here", not "empty") on
+    that platform rather than crashing a report()/snapshot() call."""
+    if q is None:
+        return None
+    try:
+        return q.qsize()
+    except NotImplementedError:
+        return None
+
+
 def _percentile(sorted_values, pct):
     """Nearest-rank percentile on an already-sorted list. Returns None on
     empty input rather than raising -- callers snapshot metrics that may
@@ -117,6 +132,6 @@ class Metrics:
                 "send_latency_avg_ms": round(1000 * sum(send_sorted) / len(send_sorted), 2) if send_sorted else None,
                 "send_latency_p95_ms": round(1000 * _percentile(send_sorted, 95), 2) if send_sorted else None,
                 "error_rate": round(error_rate, 4),
-                "frame_queue_depth": frame_queue.qsize() if frame_queue is not None else None,
-                "event_queue_depth": event_queue.qsize() if event_queue is not None else None,
+                "frame_queue_depth": safe_qsize(frame_queue),
+                "event_queue_depth": safe_qsize(event_queue),
             }

@@ -3334,3 +3334,99 @@ pipeline did, not a check against ground truth. Still cannot answer "did
 accuracy improve vs. the ~59% Mac figure" without a fresh human-verified
 comparison; these numbers answer a different, legitimately useful
 question (volume/composition, for the presentation) instead.
+
+# Session 28 -- InferenceWorkers moved from threads to processes: real GPU-server test proved threading doesn't work, not even on 49GB of headroom
+
+Real evidence, not a guess: ran 2 cameras concurrently through
+`ScalablePipeline` on the Dell server's Quadro RTX 8000 (49GB, confirmed
+near-empty via `nvidia-smi` before the run). Result: 3,300-5,500ms per
+frame and 96% of frames dropped -- worse than useless, since the same
+GPU running ONE camera alone (a prior real run) hit 100+ fps. This
+matches Session 21's original open item ("true multi-GPU distribution
+... not exercised on this hardware") but proves it's not a nice-to-have
+gap -- it's a hard blocker, and the failure mode is worse than "no
+speedup," it's active thrashing.
+
+## Root cause: Python's GIL, not GPU memory
+
+`InferenceWorkerPool` used `threading.Thread` per worker. Only one
+thread runs Python bytecode at a time in CPython regardless of core
+count or GPU memory -- confirmed this is the actual mechanism (not
+guessed) by the GPU-memory evidence itself: near-zero VRAM used
+throughout the failing run, ruling out a capacity problem. PaddleOCR's
+CPU-bound pre/post-processing plus unmanaged concurrent CUDA stream
+usage across threads is the likely source of the severe (not just
+absent) speedup -- real contention, not just missed opportunity.
+
+## Fix: InferenceWorker now runs in a separate OS process
+
+`anpr/pipeline/inference_worker.py` rewritten: each `InferenceWorker` is
+a `multiprocessing.Process` (context: `spawn`, not the Linux default
+`fork` -- CUDA does not support a fork()'d process safely once a CUDA
+context exists in the parent). Processes bypass the GIL entirely --
+genuine parallel execution, each with its own interpreter and CUDA
+context.
+
+Real cost, not hidden: no shared memory across the process boundary.
+- Frame queue: `queue.Queue` -> `multiprocessing.Queue` (per worker) --
+  FrameReader (still a thread, still in the main process) is unaffected,
+  since `multiprocessing.Queue` raises the same `queue.Full`/`Empty`.
+- Event queue: `ScalablePipeline.event_queue` is now the same
+  `multiprocessing.Queue` type, for the same reason -- EventSender
+  (still a thread) is unaffected, same reasoning.
+- Metrics: `Metrics` uses a `threading.Lock`, which doesn't cross a
+  process boundary. Each worker process now reports
+  (inference-latency, event-produced/dropped) over a small internal
+  `_stats_queue`; a thread in the main process drains that into the
+  real, shared `Metrics` object. Net effect: `Metrics`'s own public API
+  (`snapshot()`, used by `report()`) is completely unchanged for
+  external callers.
+- Per-camera tracker state (`VehicleTracker.total_vehicles_tracked` etc,
+  Session 27): only exists in the child process's memory. Each worker
+  now reports its trackers' final state over `_stats_queue` right before
+  exiting; `ScalablePipeline.tracker_summary()` reads
+  `worker.tracker_summary` (populated on `stop()`) instead of reaching
+  into `worker.trackers` directly, which no longer lives in the main
+  process at all.
+
+## A real macOS-only bug found and fixed along the way
+
+`multiprocessing.Queue.qsize()` raises `NotImplementedError` on macOS
+(missing `sem_getvalue()`) -- hit directly while testing this locally,
+confirmed it works fine on Linux (the actual deploy target). Added
+`metrics.safe_qsize()` (returns `None`, not 0 -- honestly "couldn't
+measure this," not "empty," distinguished on purpose) used everywhere
+`.qsize()` used to be called directly, including `orchestrator.py`'s
+busiest-queue selection logic (which independently called `.qsize()` in
+its `max()` key and would have hit the same crash).
+
+## Verification
+
+New `tests/test_pipeline_mp_smoke.py` (real models, real child process,
+matches this project's existing `test_pipeline_smoke.py`
+run-directly-not-in-CI convention): asserts frames were actually
+processed, the camera's tracker summary made it back across the process
+boundary, vehicles were tracked, and plates were confirmed. Ran twice
+for real on this Mac (CPU/MPS, not CUDA -- proves the multiprocessing
+plumbing itself works, does NOT reprove the GPU-contention fix, which
+can only be verified on the real server): both times, real confirmed
+plates (`HR38AC7748`, `HR98E4959`, `HR26EO6477` -- all previously
+verified real plates from this same test clip), clean exit, no hangs,
+no crashes. `tests/test_reconfirm_cooldown.py` still passes unmodified.
+
+## What's not done / open
+
+- Not yet re-tested on the real GPU server -- this fix directly targets
+  the exact failure Session 28's own opening evidence describes, but
+  "should fix it" isn't "confirmed fixed." Needs a real re-run of the
+  same 2-camera test that failed, watching for real throughput and real
+  confirmed events this time.
+- Per-process GPU memory footprint not yet measured. The user's own
+  scaling idea (pack N workers into one GPU based on real memory
+  headroom, e.g. "if one video uses 2GB, use the rest for more") is
+  sound and is exactly what a process-based design enables -- but it
+  needs a real `nvidia-smi` reading per worker process on the server to
+  turn into an actual worker-count recommendation, not a guess.
+- Startup cost per worker (fresh interpreter + fresh model load under
+  `spawn`) not measured on the server -- real but one-time, matters more
+  as camera/worker count grows toward 30.
