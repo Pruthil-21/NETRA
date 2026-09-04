@@ -175,12 +175,22 @@ class VehicleTracker:
         self.confirm_threshold = confirm_threshold
         self.tracks = []  # each: {"box", "tracker": PlateConfirmationTracker, "missed",
                            #        "best_crop", "best_crop_area", "match_count", "vlm_dispatched"}
-        # Persists across track pruning -- a confirmed plate must not
-        # silently disappear from the summary just because the vehicle
-        # that produced it later left frame and its track got pruned.
-        # plate -> last-confirmed monotonic timestamp, not a plain set --
-        # see RECONFIRM_COOLDOWN_SEC.
-        self.confirmed = {}
+        # Two different lifetimes, two different structures -- conflating
+        # them into one caused a real bug (see ALPR_IMPROVEMENT_LOG.md):
+        # a long real run's final "Total confirmed plates" print showed
+        # only ~13 of ~85 actually-confirmed plates, because the dict
+        # backing it was being pruned down to the last
+        # RECONFIRM_COOLDOWN_SEC the whole time.
+        #
+        # _recent_confirmations: plate -> last-confirmed monotonic
+        # timestamp, pruned continuously -- internal, cooldown-suppression
+        # only (see RECONFIRM_COOLDOWN_SEC). Never read externally.
+        self._recent_confirmations = {}
+        # confirmed_plates: every plate confirmed this whole session,
+        # permanent, never pruned -- persists across track pruning too, so
+        # a confirmed plate doesn't vanish from the summary just because
+        # its vehicle later left frame. This is what callers should read.
+        self.confirmed_plates = set()
 
         # BLPR-style last-resort fallback (see vlm_fallback.py): dispatched
         # in the background because measured Ollama latency (0.48s warm /
@@ -193,16 +203,19 @@ class VehicleTracker:
     def _recently_confirmed(self, plate):
         """True if `plate` (or something close enough to be the same real
         plate) was confirmed on this camera within RECONFIRM_COOLDOWN_SEC.
-        Also prunes expired entries while it's here, so self.confirmed
-        stays bounded over a long-running stream without a separate
-        cleanup pass."""
+        Also prunes expired entries while it's here, so
+        _recent_confirmations stays bounded over a long-running stream
+        without a separate cleanup pass."""
         now = time.monotonic()
-        self.confirmed = {p: t for p, t in self.confirmed.items() if now - t < self.RECONFIRM_COOLDOWN_SEC}
+        self._recent_confirmations = {
+            p: t for p, t in self._recent_confirmations.items() if now - t < self.RECONFIRM_COOLDOWN_SEC
+        }
         return any(_plate_similarity(plate, p) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
-                   for p in self.confirmed)
+                   for p in self._recent_confirmations)
 
     def _mark_confirmed(self, plate):
-        self.confirmed[plate] = time.monotonic()
+        self._recent_confirmations[plate] = time.monotonic()
+        self.confirmed_plates.add(plate)
 
     def update(self, detections, raw_frame=None):
         """
