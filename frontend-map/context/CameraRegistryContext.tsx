@@ -111,6 +111,14 @@ interface RegistryContextType {
   addCamera: (raw: OrganizerCamera) => void;
   /** Bulk-imports many cameras at once (CSV/JSON upload), same id rules as addCamera. */
   importCameras: (raws: OrganizerCamera[]) => void;
+  /** Reflects a real registry camera's circle_id in local state after the
+   * caller (CameraDetailDrawer) has already confirmed the write succeeded via
+   * cameraService.updateCameraCircle -- mirrors updateCameraConnectivity's
+   * "patch the one changed camera in place" shape, but doesn't make the
+   * network call itself: the caller needs to await the request and surface
+   * its own failure (e.g. a cross-district rejection) inline, which a
+   * fire-and-forget update here couldn't do. */
+  applyCameraCircleAssignment: (id: number, circleId: number | null) => void;
 }
 
 const initialFilters: CameraFilters = {
@@ -284,6 +292,19 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     );
   }, []);
 
+  const applyCameraCircleAssignment = useCallback((id: number, circleId: number | null) => {
+    setCameras((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1 || prev[idx].circle_id === circleId) return prev;
+      const next = prev.slice();
+      next[idx] = { ...prev[idx], circle_id: circleId };
+      return next;
+    });
+    setSelectedCamera((prev) =>
+      prev && prev.id === id && prev.circle_id !== circleId ? { ...prev, circle_id: circleId } : prev
+    );
+  }, []);
+
   // Real-time online/offline for every camera — list, badges, and map pins
   // all read connectivity_status off shared state, so this one poller is
   // what keeps all of them current instead of only whichever camera an
@@ -355,6 +376,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         updateCameraConnectivity,
         addCamera,
         importCameras,
+        applyCameraCircleAssignment,
       }}
     >
       {children}
