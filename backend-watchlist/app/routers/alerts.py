@@ -6,7 +6,14 @@ detected and the alert row created in the same request that records the
 underlying detection, so ml-anpr only ever calls one endpoint.
 """
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from psycopg2.extras import RealDictCursor  # type: ignore
 
 from ..auth import _RBAC_ROLES, require_role
