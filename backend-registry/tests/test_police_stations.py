@@ -46,3 +46,26 @@ def test_list_and_delete_police_station(client, officer_headers, police_station_
 
     get_resp = client.get(f"/police-stations/{station_id}", headers=officer_headers)
     assert get_resp.status_code == 404
+
+
+def test_update_police_station_with_lone_lat_does_not_500(client, officer_headers, police_station_test_rows):
+    create_resp = client.post(
+        "/police-stations",
+        json={"name": "Lone Lat PS", "lat": 23.01, "long": 72.55, "district": "Traffic Police"},
+        headers=officer_headers,
+    )
+    station_id = create_resp.json()["id"]
+    police_station_test_rows.append(station_id)
+
+    update_resp = client.put(
+        f"/police-stations/{station_id}",
+        json={"lat": 23.5},
+        headers=officer_headers,
+    )
+    assert update_resp.status_code == 200
+    body = update_resp.json()
+    assert body["id"] == station_id
+    # Lone lat with no partner long is a no-op update -- original coordinates
+    # are preserved rather than corrupted or partially applied.
+    assert body["lat"] == 23.01
+    assert body["long"] == 72.55

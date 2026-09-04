@@ -54,6 +54,12 @@ def update_station(conn, station_id: int, data: dict) -> dict | None:
     if "lat" in fields and "long" in fields:
         set_clauses.append("location = ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326)")
 
+    if not set_clauses:
+        # A lone lat or long (no partner coordinate, and nothing else to set)
+        # falls through with nothing to update -- treat it as a no-op rather
+        # than issuing "UPDATE ... SET  WHERE ..." (a SQL syntax error).
+        return get_station(conn, station_id)
+
     with conn.cursor() as cur:
         cur.execute(
             f"UPDATE police_stations SET {', '.join(set_clauses)} WHERE id = %(station_id)s RETURNING id",
