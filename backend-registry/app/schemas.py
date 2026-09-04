@@ -222,3 +222,18 @@ class AgeingCamera(BaseModel):
 class GapAnalysisReport(BaseModel):
     uncovered_zones: list[UncoveredZone]
     ageing_infrastructure: list[AgeingCamera]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    badge_number: Optional[str] = None
+    action: str
+    resource_type: str
+    resource_id: Optional[int] = None
+    reason_code: Optional[str] = None
+    timestamp: datetime
+
+
+class AuditLogsPage(BaseModel):
+    logs: list[AuditLogOut]
+    next_cursor: Optional[int] = None

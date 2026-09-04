@@ -1,5 +1,7 @@
+from datetime import datetime
+
 import psycopg
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
@@ -13,6 +15,7 @@ from .auth import (
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
+    AuditLogsPage,
     CameraBulkResult,
     CameraCreate,
     CameraOut,
@@ -36,6 +39,7 @@ from .schemas import (
 )
 from .services import (
     admin_service,
+    audit_logs_service,
     audit_service,
     auth_service,
     cameras_service,
@@ -341,6 +345,24 @@ def gap_analysis_report(
             logger.error("gap-analysis: ageing-infrastructure computation failed", exc_info=True)
             ageing = []
         return {"uncovered_zones": uncovered, "ageing_infrastructure": ageing}
+
+
+@app.get("/audit-logs", response_model=AuditLogsPage)
+def list_audit_logs(
+    badge_number: str | None = None,
+    resource_type: str | None = None,
+    date_from: datetime | None = Query(None, alias="from"),
+    date_to: datetime | None = Query(None, alias="to"),
+    cursor: int | None = None,
+    limit: int = 50,
+    user=Depends(require_permission("view_audit_logs")),
+):
+    district = user.get("scope_value") if user.get("scope_type") == "district" else None
+    with get_conn() as conn:
+        logs, next_cursor = audit_logs_service.list_logs(
+            conn, badge_number, resource_type, date_from, date_to, district, cursor, limit
+        )
+        return {"logs": logs, "next_cursor": next_cursor}
 
 
 @app.get("/reports/summary", response_model=ReportSummary)
