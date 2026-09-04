@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from psycopg2.extras import RealDictCursor
 
-from ..auth import has_permission, require_internal_key, require_role
+from ..auth import has_permission, require_internal_key, require_permission
 from ..database import get_db
 from ..logging_config import logger
 from ..schemas import DetectionIn, DetectionOut, DetectionResult
@@ -25,7 +25,20 @@ from ..services import alerts_service, audit_service, detections_service
 router = APIRouter(prefix="/detections", tags=["detections"])
 
 
-@router.get("")
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _csv_safe(value):
+    """Prefix any cell value starting with a character Excel/Sheets would
+    interpret as the start of a formula with a leading single-quote, so a
+    plate/value like "=cmd(...)" is written as literal text, not executed."""
+    text = str(value)
+    if text.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + text
+    return text
+
+
+@router.get("", responses={200: {"model": list[DetectionOut]}})
 def search_detections(
     plate_number: Optional[str] = Query(None),
     camera_id: Optional[int] = Query(None),
@@ -33,7 +46,7 @@ def search_detections(
     date_to: Optional[datetime] = Query(None, alias="to"),
     format: Optional[str] = Query(None),
     db: RealDictCursor = Depends(get_db),
-    user=Depends(require_role("officer")),
+    user=Depends(require_permission("search_vehicles")),
 ):
     dept = user.get("scope_value") if user.get("scope_type") == "district" else None
     results = detections_service.search_detections(db, plate_number, camera_id, date_from, date_to, dept)
@@ -48,7 +61,10 @@ def search_detections(
     writer = csv.writer(buffer)
     writer.writerow(["id", "plate_number", "camera_id", "detected_at", "confidence"])
     for r in results:
-        writer.writerow([r["id"], r["plate_number"], r["camera_id"], r["detected_at"], r["confidence"]])
+        writer.writerow([
+            _csv_safe(r["id"]), _csv_safe(r["plate_number"]), _csv_safe(r["camera_id"]),
+            _csv_safe(r["detected_at"]), _csv_safe(r["confidence"]),
+        ])
     return Response(content=buffer.getvalue(), media_type="text/csv")
 
 

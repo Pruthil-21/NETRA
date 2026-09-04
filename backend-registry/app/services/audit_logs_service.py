@@ -13,6 +13,11 @@ def list_logs(
     cursor: int | None = None,
     limit: int = 50,
 ) -> tuple[list[dict], int | None]:
+    # Clamp defensively even though the route also constrains this with
+    # ge=1, le=200 -- mirrors cameras_service.list_cameras_page's server-side
+    # cap so this function is safe to call directly (e.g. from a script or
+    # future caller) without relying on FastAPI's query validation.
+    limit = max(1, min(limit, 200))
     clauses = []
     params: list = []
     joins = ""

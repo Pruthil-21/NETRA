@@ -9,7 +9,6 @@ from .auth import (
     get_current_user,
     has_permission,
     require_permission,
-    require_role,
     require_scale_demo_enabled,
 )
 from .db import get_conn
@@ -260,7 +259,7 @@ def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_
 
 
 @app.post("/cameras/bulk", response_model=list[CameraBulkResult])
-def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"))):
+def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("manage_cameras"))):
     """Validates and inserts each row independently -- one bad row reports an
     error for its own index instead of failing the whole batch."""
     results = []
@@ -358,7 +357,7 @@ def list_audit_logs(
     date_from: datetime | None = Query(None, alias="from"),
     date_to: datetime | None = Query(None, alias="to"),
     cursor: int | None = None,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     user=Depends(require_permission("view_audit_logs")),
 ):
     district = user.get("scope_value") if user.get("scope_type") == "district" else None

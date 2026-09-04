@@ -1,4 +1,7 @@
+import contextlib
+
 import jwt
+import psycopg2
 import pytest
 from app.config import settings
 from app.main import app
@@ -32,10 +35,14 @@ def internal_headers():
 @pytest.fixture
 def scoping_test_cameras():
     """Guaranteed cleanup for cameras a scoping test creates in the shared
-    cameras table, even if an assertion fails first."""
-    from tests.test_detections import _delete_test_camera
-
+    cameras table, even if an assertion fails first. Uses a single batched
+    DELETE (matching backend-registry/tests/conftest.py's synthetic_test_cameras
+    pattern) rather than one delete call per id, so one failing delete can't
+    abandon the rest of the cleanup."""
     created_ids: list[int] = []
     yield created_ids
-    for camera_id in created_ids:
-        _delete_test_camera(camera_id)
+    if created_ids:
+        with contextlib.closing(psycopg2.connect(settings.database_url)) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cameras WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()
