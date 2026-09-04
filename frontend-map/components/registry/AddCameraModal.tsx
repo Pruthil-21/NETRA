@@ -1,14 +1,24 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, UploadCloud, Plus, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { OrganizerCamera } from '@/types/organizerCamera';
 import { parseCameraCsv, parseCameraJson } from '@/lib/manualCameras';
+import { circlesService, Circle } from '@/services/circlesService';
 
 type Tab = 'single' | 'bulk';
 
-const emptyForm: OrganizerCamera = { id: '', name: '', location: '', status: '', rtsp_url: '', stream_path: undefined, hls_url: undefined };
+const emptyForm: OrganizerCamera = {
+  id: '',
+  name: '',
+  location: '',
+  status: '',
+  rtsp_url: '',
+  stream_path: undefined,
+  hls_url: undefined,
+  circleId: undefined,
+};
 
 export default function AddCameraModal({ onClose }: { onClose: () => void }) {
   const { addCamera, importCameras } = useCameraRegistry();
@@ -17,6 +27,13 @@ export default function AddCameraModal({ onClose }: { onClose: () => void }) {
   // --- Single camera form ---
   const [form, setForm] = useState<OrganizerCamera>(emptyForm);
   const [added, setAdded] = useState(false);
+  const [circles, setCircles] = useState<Circle[]>([]);
+
+  useEffect(() => {
+    circlesService.listCircles().then(setCircles).catch(() => {
+      // Non-fatal: the dropdown just shows no circles until this succeeds/retries.
+    });
+  }, []);
 
   const handleSingleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,6 +143,23 @@ export default function AddCameraModal({ onClose }: { onClose: () => void }) {
                 value={form.location}
                 onChange={(e) => setForm({ ...form, location: e.target.value })}
               />
+            </div>
+            <div>
+              <label className={labelClass} htmlFor="camera-circle">Circle (optional)</label>
+              <select
+                id="camera-circle"
+                aria-label="Circle"
+                className={inputClass}
+                value={form.circleId ?? ''}
+                onChange={(e) => setForm({ ...form, circleId: e.target.value ? Number(e.target.value) : undefined })}
+              >
+                <option value="">No circle</option>
+                {circles.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.district} — {c.name}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className={labelClass}>RTSP URL</label>
