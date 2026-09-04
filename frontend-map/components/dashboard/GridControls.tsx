@@ -16,6 +16,8 @@ interface GridControlsProps {
   setDepartmentFilter: (dept: string) => void;
   statusFilter: StatusFilter;
   setStatusFilter: (status: StatusFilter) => void;
+  playAllMode: boolean;
+  setPlayAllMode: (value: boolean) => void;
 }
 
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
@@ -36,6 +38,8 @@ export const GridControls: React.FC<GridControlsProps> = ({
   setDepartmentFilter,
   statusFilter,
   setStatusFilter,
+  playAllMode,
+  setPlayAllMode,
 }) => {
   return (
     <div className="flex flex-col lg:flex-row gap-4 justify-between items-center mb-6 bg-brand-card p-4 rounded-lg border border-brand-border">
@@ -106,6 +110,16 @@ export const GridControls: React.FC<GridControlsProps> = ({
         >
           <LayoutGrid className="w-4 h-4" />
         </button>
+        <div className="h-5 w-px bg-brand-border mx-1" />
+        <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={playAllMode}
+            onChange={(e) => setPlayAllMode(e.target.checked)}
+            className="accent-blue-600 w-3.5 h-3.5"
+          />
+          Play All
+        </label>
       </div>
     </div>
   );

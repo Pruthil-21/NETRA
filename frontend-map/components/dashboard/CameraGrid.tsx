@@ -7,13 +7,17 @@ import { FeedCard } from "@/components/dashboard/FeedCard";
 interface CameraGridProps {
   feeds: CameraFeed[];
   layout: "grid-4" | "grid-9" | "focus";
-  /** Called with a camera's id when its "Focus this camera" button is clicked. */
   onSelectFocus?: (id: string) => void;
-  /** True when the registry itself returned zero cameras (vs. filters excluding all of them). */
   registryEmpty?: boolean;
+  mode: 'playAll' | 'hoverOnly';
+  activeIds: Set<string>;
+  onHoverStart: (id: string) => void;
+  onHoverEnd: (id: string) => void;
 }
 
-export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectFocus, registryEmpty }) => {
+export const CameraGrid: React.FC<CameraGridProps> = ({
+  feeds, layout, onSelectFocus, registryEmpty, mode, activeIds, onHoverStart, onHoverEnd,
+}) => {
   const getGridClass = () => {
     switch (layout) {
       case "focus":
@@ -44,6 +48,10 @@ export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectF
           feed={feed}
           onFocus={layout !== "focus" ? onSelectFocus : undefined}
           startPlaying={layout === "focus"}
+          mode={layout === "focus" ? 'playAll' : mode}
+          isPlaying={layout === "focus" ? true : activeIds.has(feed.id)}
+          onHoverStart={onHoverStart}
+          onHoverEnd={onHoverEnd}
         />
       ))}
     </div>
