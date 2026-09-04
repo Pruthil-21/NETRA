@@ -181,9 +181,11 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // every render, which makes React detach-then-reattach every marker's ref on every
   // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
   // background connectivity poller in CameraRegistryContext, whether or not this
-  // specific camera's own data changed). Built via useMemo (keyed on `cameras`) rather
+  // specific camera's own data changed). Built via useMemo (keyed on the stable set of
+  // camera ids, not the `cameras` array reference -- see below) rather
   // than a lazy ref-cache read during render -- the closures themselves only touch
   // markerRefs.current when React actually calls them (mount/unmount), never here.
+  const cameraIdKey = useMemo(() => cameras.map((cam) => cam.id).join(','), [cameras]);
   const markerRefCallbacks = useMemo(() => {
     const map = new Map<number, (marker: L.Marker | null) => void>();
     for (const cam of cameras) {
@@ -199,7 +201,18 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       });
     }
     return map;
-  }, [cameras]);
+    // Keyed on the stable set of camera ids (cameraIdKey), not the `cameras`
+    // array reference -- that reference still changes on every real
+    // connectivity-status flip (see updateCameraConnectivity in
+    // CameraRegistryContext.tsx), which previously forced every marker's ref
+    // to detach/reattach on every such flip. During a hover, if the 20s
+    // background health-poll flipped even one *other* camera's status, all
+    // marker refs churned and Leaflet closed whatever popup was open --
+    // this is the actual cause of the reported "hover flickers and shows
+    // nothing" bug. Keying on ids-only means a status-only update never
+    // touches marker refs; only cameras actually being added/removed does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraIdKey]);
   // One hover-grace controller per camera id, created lazily on first hover and
   // reused after -- mirrors the per-marker-ref cache above for the same reason
   // (this component manages every marker from one instance, so per-marker state
