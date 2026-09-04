@@ -23,6 +23,7 @@ class CameraCreate(BaseModel):
     # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraUpdate(BaseModel):
@@ -39,6 +40,7 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraOut(CameraCreate):

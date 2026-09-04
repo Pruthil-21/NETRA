@@ -9,7 +9,7 @@ def list_cameras(conn, dept: str | None = None):
                 SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                        ST_X(location::geometry) AS long, camera_type, ownership,
                        connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url
+                       health_status, rtsp_url, stream_id, hls_url, circle_id
                 FROM cameras
                 WHERE is_synthetic = false
                 ORDER BY id
@@ -19,7 +19,7 @@ def list_cameras(conn, dept: str | None = None):
                 SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                        ST_X(location::geometry) AS long, camera_type, ownership,
                        connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url
+                       health_status, rtsp_url, stream_id, hls_url, circle_id
                 FROM cameras
                 WHERE dept = %s AND is_synthetic = false
                 ORDER BY id
@@ -34,7 +34,7 @@ MAX_PAGE_LIMIT = 500
 _CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
                      ST_X(location::geometry) AS long, camera_type, ownership,
                      connectivity_status, storage_type, retention_days,
-                     health_status, rtsp_url, stream_id, hls_url,
+                     health_status, rtsp_url, stream_id, hls_url, circle_id,
                      is_synthetic, edge_node_id"""
 
 
@@ -93,7 +93,7 @@ def get_camera(conn, camera_id: int):
             SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                    ST_X(location::geometry) AS long, camera_type, ownership,
                    connectivity_status, storage_type, retention_days,
-                   health_status, rtsp_url, stream_id, hls_url
+                   health_status, rtsp_url, stream_id, hls_url, circle_id
             FROM cameras
             WHERE id = %s
         """, (camera_id,))
@@ -110,17 +110,18 @@ def create_camera(conn, data: dict):
             INSERT INTO cameras (
                 name, dept, location, camera_type, ownership,
                 connectivity_status, storage_type, retention_days,
-                health_status, rtsp_url, stream_id, hls_url
+                health_status, rtsp_url, stream_id, hls_url, circle_id
             )
             VALUES (
                 %(name)s, %(dept)s,
                 ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326),
                 %(camera_type)s, %(ownership)s, %(connectivity_status)s,
                 %(storage_type)s, %(retention_days)s, %(health_status)s,
-                %(rtsp_url)s, %(stream_id)s, %(hls_url)s
+                %(rtsp_url)s, %(stream_id)s, %(hls_url)s, %(circle_id)s
             )
             RETURNING id
-        """, {**data, "stream_id": data.get("stream_id"), "hls_url": data.get("hls_url")})
+        """, {**data, "stream_id": data.get("stream_id"), "hls_url": data.get("hls_url"),
+              "circle_id": data.get("circle_id")})
         new_id = cur.fetchone()[0]
         conn.commit()
     return get_camera(conn, new_id)

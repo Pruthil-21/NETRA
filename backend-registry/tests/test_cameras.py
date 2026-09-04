@@ -69,3 +69,118 @@ def test_get_missing_camera_404(client, viewer_headers):
 def test_delete_missing_camera_404(client, officer_headers):
     resp = client.delete("/cameras/999999", headers=officer_headers)
     assert resp.status_code == 404
+
+
+def test_create_camera_with_circle_id(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
+    circle_resp = client.post(
+        "/circles", json={"name": "Circle Field Test", "district": "Traffic Police"}, headers=officer_headers
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    camera_resp = client.post(
+        "/cameras",
+        json={**NEW_CAMERA, "circle_id": circle_id},
+        headers=officer_headers,
+    )
+    assert camera_resp.status_code == 201
+    camera_id = camera_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+    assert camera_resp.json()["circle_id"] == circle_id
+
+    get_resp = client.get(f"/cameras/{camera_id}", headers=officer_headers)
+    assert get_resp.json()["circle_id"] == circle_id
+
+
+def test_create_camera_with_circle_from_different_district_rejected(
+    client, officer_headers, gap_analysis_test_cameras, circle_test_rows
+):
+    circle_resp = client.post(
+        "/circles", json={"name": "Wrong District Circle", "district": "Some Other District"}, headers=officer_headers
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    camera_resp = client.post(
+        "/cameras", json={**NEW_CAMERA, "circle_id": circle_id}, headers=officer_headers
+    )
+    assert camera_resp.status_code == 400
+
+
+def test_create_camera_with_missing_circle_404(client, officer_headers):
+    camera_resp = client.post(
+        "/cameras", json={**NEW_CAMERA, "circle_id": 999999}, headers=officer_headers
+    )
+    assert camera_resp.status_code == 404
+
+
+def test_update_camera_circle_id(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
+    """circle_id set alone, dept unchanged -- exercises the
+    effective_dept = fields.get("dept", existing["dept"]) fallback branch."""
+    create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+
+    circle_resp = client.post(
+        "/circles", json={"name": "Update Circle Test", "district": NEW_CAMERA["dept"]}, headers=officer_headers
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": circle_id}, headers=officer_headers)
+    assert update_resp.status_code == 200
+    assert update_resp.json()["circle_id"] == circle_id
+
+
+def test_update_camera_circle_id_with_dept_change_same_request(
+    client, officer_headers, circle_test_rows, gap_analysis_test_cameras
+):
+    """circle_id and dept set together in the same PUT -- exercises the
+    effective_dept = fields["dept"] branch (the new dept, not the camera's
+    existing one, is what the circle's district must match)."""
+    create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+
+    circle_resp = client.post(
+        "/circles", json={"name": "Retitled District Circle", "district": "Ahmedabad"}, headers=officer_headers
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    update_resp = client.put(
+        f"/cameras/{camera_id}",
+        json={"dept": "Ahmedabad", "circle_id": circle_id},
+        headers=officer_headers,
+    )
+    assert update_resp.status_code == 200
+    body = update_resp.json()
+    assert body["circle_id"] == circle_id
+    assert body["dept"] == "Ahmedabad"
+
+
+def test_update_camera_circle_from_different_district_rejected(
+    client, officer_headers, gap_analysis_test_cameras, circle_test_rows
+):
+    create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+
+    circle_resp = client.post(
+        "/circles", json={"name": "Mismatched District Circle", "district": "Some Other District"},
+        headers=officer_headers,
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": circle_id}, headers=officer_headers)
+    assert update_resp.status_code == 400
+
+
+def test_update_camera_with_missing_circle_404(client, officer_headers, gap_analysis_test_cameras):
+    create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+
+    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": 999999}, headers=officer_headers)
+    assert update_resp.status_code == 404
