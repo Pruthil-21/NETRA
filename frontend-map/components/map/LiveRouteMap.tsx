@@ -22,16 +22,39 @@ interface LiveRouteMapProps {
   destination: { name: string; lat: number; long: number };
 }
 
-const FitRoute: React.FC<{ coordinates: [number, number][] }> = ({ coordinates }) => {
+// Fits the WHOLE route into view exactly once per destination -- a genuinely
+// new sighting/camera, not the officer's own GPS ticking. Previously this
+// re-fit on every change to either route endpoint, including the officer's
+// own position updating every few seconds -- so zooming in on yourself got
+// immediately overridden by a zoom-out to the whole route on the next GPS
+// tick. Destination is the only thing that should trigger a re-fit now.
+const FitRoute: React.FC<{ coordinates: [number, number][]; destinationKey: string }> = ({
+  coordinates,
+  destinationKey,
+}) => {
   const map = useMap();
   useEffect(() => {
     if (coordinates.length === 0) return;
     map.flyToBounds(L.latLngBounds(coordinates), { padding: [64, 64], duration: 1 });
-    // Only re-fit when the route's endpoints move meaningfully, not on
-    // every 10s refresh with a near-identical path -- keeps the map from
-    // yanking the view while an officer is reading it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coordinates[0]?.[0], coordinates[0]?.[1], coordinates.at(-1)?.[0], coordinates.at(-1)?.[1], map]);
+  }, [destinationKey, map]);
+  return null;
+};
+
+// Follow-me: recenters on the officer's own live position as it updates,
+// preserving whatever zoom level the officer has chosen -- like turn-by-turn
+// navigation, not a repeated fit-to-bounds. Skips the very first position
+// (FitRoute already frames that) so the two don't fight on mount.
+const FollowOfficer: React.FC<{ officerPosition: GeoPosition }> = ({ officerPosition }) => {
+  const map = useMap();
+  const hasFramedInitial = useRef(false);
+  useEffect(() => {
+    if (!hasFramedInitial.current) {
+      hasFramedInitial.current = true;
+      return;
+    }
+    map.panTo([officerPosition.lat, officerPosition.long], { animate: true, duration: 0.8 });
+  }, [officerPosition.lat, officerPosition.long, map]);
   return null;
 };
 
@@ -79,7 +102,8 @@ export const LiveRouteMap: React.FC<LiveRouteMapProps> = ({ officerPosition, des
         <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
         <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
 
-        <FitRoute coordinates={path} />
+        <FitRoute coordinates={path} destinationKey={`${destination.lat},${destination.long}`} />
+        <FollowOfficer officerPosition={officerPosition} />
 
         <Polyline
           positions={path}

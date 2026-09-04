@@ -257,6 +257,13 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // fails, LiveFeedPlayer reports the real outcome here so the map pin
   // reflects reality instead of staying stuck on the preliminary guess.
   const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
+    // .map() always returns a brand-new array, even when no element actually
+    // changed -- with ~30 cameras each independently reporting a health-check
+    // result every 20s, that meant a fresh `cameras` array (and everything
+    // downstream that depends on its reference: filteredCameras, the map's
+    // marker list) on nearly every tick, even when nothing was actually
+    // different. That is what showed up as map flicker. Bail out to the same
+    // `prev` reference when there is genuinely nothing to update.
     setCameras((prev) => {
       const idx = prev.findIndex((c) => c.id === id);
       if (idx === -1 || prev[idx].connectivity_status === status) return prev;
