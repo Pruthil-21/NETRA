@@ -32,7 +32,8 @@ def search_detections(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    return detections_service.search_detections(db, plate_number, camera_id, date_from, date_to)
+    dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+    return detections_service.search_detections(db, plate_number, camera_id, date_from, date_to, dept)
 
 
 @router.post("", response_model=DetectionResult, status_code=201)

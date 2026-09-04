@@ -27,3 +27,15 @@ def second_officer_headers():
 @pytest.fixture
 def internal_headers():
     return {"X-Internal-Key": settings.internal_service_key}
+
+
+@pytest.fixture
+def scoping_test_cameras():
+    """Guaranteed cleanup for cameras a scoping test creates in the shared
+    cameras table, even if an assertion fails first."""
+    from tests.test_detections import _delete_test_camera
+
+    created_ids: list[int] = []
+    yield created_ids
+    for camera_id in created_ids:
+        _delete_test_camera(camera_id)
