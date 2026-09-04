@@ -3200,3 +3200,72 @@ events fire the second time. Passes.
 - 45s is a reasoned default (covers a traffic-light/blocked-view delay),
   not tuned against real measured occlusion durations -- worth revisiting
   if real footage shows blocks lasting meaningfully longer.
+
+# Session 25 -- P3 handoff: 30 real Organizer cameras, cam01-30 -- real exponential backoff, configurable multi-camera runner, two honest blockers found
+
+P3's handoff: Organizer's HLS relay now serves genuine live feeds only
+(recorded fallback disabled), `direct-cam01` through `direct-cam30`,
+same `.../stream/direct-camNN/index.m3u8?cookieCheck=1` pattern as
+Session 23's single-camera test. Explicit asks: treat a missing/timed-out/
+404 playlist as an unavailable camera and retry with backoff, no portal
+credentials needed, keep the base URL configurable (temporary tunnel).
+
+## Fixed: backoff wasn't actually exponential
+
+`process_hls_stream()`'s `_open()` docstring already claimed "retries
+with backoff," but the real implementation was a flat
+`time.sleep(reconnect_interval_sec)` on every attempt -- not backoff at
+all. Changed to real exponential backoff (`reconnect_interval_sec * 2 **
+(attempt-1)`, capped at 30s so `max_open_attempts=10` can't add up to an
+absurd total wait), matching the doubling pattern `event_sender.py`
+already uses elsewhere in this codebase. A 404/timeout/missing camera
+already fell through to this same retry loop generically (via
+`cv2.VideoCapture.isOpened()` returning False) -- confirmed correct
+before touching anything, only the delay itself needed fixing.
+
+## Built: `run_organizer_cameras.py`, a configurable multi-camera runner
+
+New CLI wrapper around `anpr.pipeline.orchestrator.ScalablePipeline`
+(previously had no CLI wrapper at all, per Session 21's own note) --
+`--hls-base-url` (or `HLS_BASE_URL` env var), `--cameras` (default
+`1-30`), `--num-workers`, `--sample-rate`. Base URL is never hardcoded
+anywhere, per P3's explicit ask and the same caution already applied to
+every other Cloudflare quick-tunnel URL in this project.
+
+`--num-workers` defaults to **1, not 30 or `len(cameras)`** -- real,
+not assumed: Session 24's own testing already proved 2 concurrent
+cameras on this single-GPU Mac produces a saturated frame queue and
+**zero** confirmed events in 90s (vs. real detections when run one at a
+time). Defaulting to fake/hopeful parallelism here would silently
+under-deliver against a real 30-camera demo; documented plainly in the
+script's own docstring instead, with instructions to only raise it on
+real multi-GPU/multi-core hardware and re-verify there.
+
+## Two real blockers found, not glossed over
+
+1. **20 of 30 cameras have no numeric camera_id.** `CAMERA_ID_MAP` only
+   covers `direct-cam01`-`direct-cam10` (P6/Dhruv-confirmed values 43-52
+   from Session 20). `direct-cam11` through `direct-cam30` aren't in it
+   at all -- confirmed by reading `anpr/config.py` directly, not
+   assumed. Detections from those 20 cameras will run real local
+   inference but `send_detection_to_watchlist`/`EventSender` will
+   correctly no-op with a `[WARN]` rather than send a wrong camera_id --
+   same fail-safe-not-fail-crash behavior already documented for
+   unmapped cameras, just now affecting most of the fleet. Needs a real
+   handoff to P6/registry for cam11-30's actual numeric ids before a
+   full 30-camera run can reach the backend.
+2. **The tunnel URL P3 gave doesn't resolve.** `curl` on
+   `https://respiratory-football-fin-counties.trycloudflare.com/...`
+   fails at DNS resolution (`Could not resolve host`), checked directly,
+   not assumed to be a local network issue. Could be a typo, the tunnel
+   not started yet, or DNS propagation delay -- worth confirming with P3
+   before assuming the code is at fault if a live run fails.
+
+## What's not done / open
+
+- Not run against any of the 30 real cameras yet -- blocked on the
+  tunnel resolving. `run_organizer_cameras.py` is written and its
+  URL-building/argument-parsing verified directly, but not yet exercised
+  against a real reachable relay.
+- CAMERA_ID_MAP extension for cam11-30 needs real values from P6, not
+  guessed -- same discipline as Session 20's real camera-id handoff.

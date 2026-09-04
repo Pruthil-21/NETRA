@@ -195,7 +195,15 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
                 return c
             c.release()
             print(f"Failed to open stream (attempt {attempt}/{max_open_attempts}): {hls_url}")
-            time.sleep(reconnect_interval_sec)
+            if attempt < max_open_attempts:
+                # Real exponential backoff (was a flat reconnect_interval_sec
+                # delay before, despite this function's own docstring already
+                # saying "backoff") -- same doubling pattern EventSender
+                # already uses, capped so max_open_attempts=10 can't add up
+                # to an absurd total wait. Covers P3's ask to back off on a
+                # missing/timed-out/404 camera rather than hammer it.
+                delay = min(reconnect_interval_sec * (2 ** (attempt - 1)), 30.0)
+                time.sleep(delay)
         return None
 
     cap = _open()
