@@ -52,3 +52,25 @@ def test_bulk_create_empty_list(client, officer_headers):
     resp = client.post("/cameras/bulk", json=[], headers=officer_headers)
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_bulk_create_rejects_cross_district_circle(client, officer_headers, circle_test_rows):
+    circle_resp = client.post(
+        "/circles", json={"name": "Bulk Cross-District Circle", "district": "Vadodara"},
+        headers=officer_headers,
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    cross_district_camera = {**VALID_CAMERA, "dept": "Anand", "circle_id": circle_id}
+    resp = client.post(
+        "/cameras/bulk",
+        json=[cross_district_camera],
+        headers=officer_headers,
+    )
+    assert resp.status_code == 200
+    results = resp.json()
+    assert len(results) == 1
+    assert results[0]["status"] == "error"
+    assert results[0]["camera"] is None
+    assert "district" in results[0]["reason"].lower()

@@ -72,10 +72,15 @@ def update_circle(conn, circle_id: int, data: dict) -> dict | None:
     return get_circle(conn, circle_id)
 
 
-def delete_circle(conn, circle_id: int) -> bool:
+def camera_count_for_circle(conn, circle_id: int) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM cameras WHERE circle_id = %s", (circle_id,))
-        if cur.fetchone()[0] > 0:
+        return cur.fetchone()[0]
+
+
+def delete_circle(conn, circle_id: int) -> bool:
+    with conn.cursor() as cur:
+        if camera_count_for_circle(conn, circle_id) > 0:
             raise CircleInUseError("Cannot delete a circle that still has cameras assigned")
         cur.execute("DELETE FROM circles WHERE id = %s", (circle_id,))
         deleted = cur.rowcount > 0

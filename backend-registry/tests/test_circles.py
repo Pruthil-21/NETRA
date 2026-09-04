@@ -103,6 +103,46 @@ def test_delete_circle_blocked_while_camera_assigned(client, officer_headers, ci
     assert delete_resp.status_code == 400
 
 
+def test_update_circle_district_blocked_while_camera_assigned(
+    client, officer_headers, circle_test_rows, gap_analysis_test_cameras
+):
+    """Mirrors test_delete_circle_blocked_while_camera_assigned: changing an
+    in-use circle's district would leave its cameras' dept pointing at the
+    old district while circle_id now resolves to the new one -- the same
+    corrupted cross-district state the create/update camera guards forbid."""
+    circle_resp = client.post("/circles", json={"name": "Move Test Circle", "district": "Anand"}, headers=officer_headers)
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    camera_resp = client.post(
+        "/cameras",
+        json={
+            "name": "Circle Move Test Camera", "dept": "Anand", "lat": 22.56, "long": 72.94,
+            "camera_type": "ip", "ownership": "traffic-police", "storage_type": "nvr",
+            "retention_days": 15, "circle_id": circle_id,
+        },
+        headers=officer_headers,
+    )
+    gap_analysis_test_cameras.append(camera_resp.json()["id"])
+
+    update_resp = client.put(
+        f"/circles/{circle_id}", json={"district": "Vadodara"}, headers=officer_headers,
+    )
+    assert update_resp.status_code == 400
+
+
+def test_update_circle_district_allowed_when_unused(client, officer_headers, circle_test_rows):
+    circle_resp = client.post("/circles", json={"name": "Unused Move Circle", "district": "Anand"}, headers=officer_headers)
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    update_resp = client.put(
+        f"/circles/{circle_id}", json={"district": "Vadodara"}, headers=officer_headers,
+    )
+    assert update_resp.status_code == 200
+    assert update_resp.json()["district"] == "Vadodara"
+
+
 def test_circles_table_and_camera_column_exist():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(

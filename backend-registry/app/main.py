@@ -254,15 +254,27 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
         return camera
 
 
+def _validate_circle_for_dept(conn, circle_id: int | None, dept: str) -> None:
+    """Shared cross-district guard: a camera's circle_id (when set) must
+    belong to a circle whose district matches the camera's own dept --
+    otherwise the camera ends up "in" a circle that lives in a different
+    district, which is the exact corrupted state the global constraint
+    forbids. Raises HTTPException(404/400) same as the inline checks this
+    replaces in create_camera/update_camera; also used by the bulk-import
+    loop below."""
+    if circle_id is None:
+        return
+    circle = circles_service.get_circle(conn, circle_id)
+    if circle is None:
+        raise HTTPException(status_code=404, detail="Circle not found")
+    if circle["district"] != dept:
+        raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+
+
 @app.post("/cameras", response_model=CameraOut, status_code=201)
 def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
-        if camera.circle_id is not None:
-            circle = circles_service.get_circle(conn, camera.circle_id)
-            if circle is None:
-                raise HTTPException(status_code=404, detail="Circle not found")
-            if circle["district"] != camera.dept:
-                raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+        _validate_circle_for_dept(conn, camera.circle_id, camera.dept)
         created = cameras_service.create_camera(conn, camera.model_dump())
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
         return created
@@ -282,6 +294,12 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("ma
                     f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in e.errors()
                 )
                 results.append(CameraBulkResult(index=index, status="error", reason=reason))
+                continue
+
+            try:
+                _validate_circle_for_dept(conn, validated.circle_id, validated.dept)
+            except HTTPException as e:
+                results.append(CameraBulkResult(index=index, status="error", reason=str(e.detail)))
                 continue
 
             try:
@@ -465,6 +483,11 @@ def update_circle(circle_id: int, body: CircleUpdate, user=Depends(require_permi
         _guard_circle_district(user, existing["district"])
         if body.district is not None:
             _guard_circle_district(user, body.district)
+            if body.district != existing["district"] and circles_service.camera_count_for_circle(conn, circle_id) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot change district of a circle that still has cameras assigned",
+                )
         try:
             updated = circles_service.update_circle(conn, circle_id, body.model_dump(exclude_unset=True))
         except circles_service.DuplicateCircleError as exc:
@@ -506,12 +529,7 @@ def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_per
                 raise HTTPException(status_code=404, detail="Camera not found")
             effective_circle_id = fields.get("circle_id", existing.get("circle_id"))
             effective_dept = fields.get("dept", existing["dept"])
-            if effective_circle_id is not None:
-                circle = circles_service.get_circle(conn, effective_circle_id)
-                if circle is None:
-                    raise HTTPException(status_code=404, detail="Circle not found")
-                if circle["district"] != effective_dept:
-                    raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+            _validate_circle_for_dept(conn, effective_circle_id, effective_dept)
 
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:
