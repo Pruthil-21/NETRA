@@ -129,6 +129,29 @@ def test_alert_includes_nearest_station(client, internal_headers):
             conn.commit()
 
 
+def test_police_stations_table_exists():
+    """Guards against Finding 2: police_stations is owned by backend-registry
+    and only auto-applies via docker-entrypoint-initdb.d on a fresh Postgres
+    volume (see backend-registry/tests/test_coverage_targets.py's
+    test_coverage_targets_table_exists for the exact precedent). alerts_service
+    queries it cross-schema from backend-watchlist's own DB connection --
+    _with_nearest_station now degrades gracefully if it's missing, but this
+    test converts a missing migration into a named failure instead of a
+    silent `nearest_station: null` on every alert."""
+    with psycopg2.connect(settings.database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s)",
+            ("police_stations",),
+        )
+        exists = cur.fetchone()[0]
+    assert exists, (
+        "police_stations table is missing -- backend-registry's schema.sql was "
+        "not applied to this Postgres instance (it only auto-runs via "
+        "docker-entrypoint-initdb.d on a fresh volume). Apply the migration "
+        "manually before running this suite."
+    )
+
+
 def test_alert_nearest_station_is_none_with_zero_stations():
     """Uses a transaction that is explicitly rolled back, never committed --
     must never actually delete real police_stations data (see this session's

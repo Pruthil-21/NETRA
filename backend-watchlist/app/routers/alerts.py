@@ -9,7 +9,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from psycopg2.extras import RealDictCursor  # type: ignore
 
-from ..auth import require_role
+from ..auth import _RBAC_ROLES, require_role
 from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
@@ -57,9 +57,32 @@ async def alerts_stream_ws(websocket: WebSocket, token: str = Query(...)):
         await websocket.close(code=4401)
         return
 
-    await alerts_stream.manager.connect(websocket, payload.get("scope_type", "platform"), payload.get("scope_value"))
+    # Same "staff member" gate as require_role("officer") on every other
+    # alert-reading route -- a role outside officer/admin/the 5 RBAC role
+    # names must never reach the live feed just because the WS route has no
+    # Depends() to hang a checker off of.
+    role = payload.get("role")
+    if role not in ("officer", "admin") and role not in _RBAC_ROLES:
+        await websocket.close(code=4403)
+        return
+
+    # scope_type must be explicit -- an unknown/missing value is rejected,
+    # never defaulted to "platform" (fails open to every district's alerts)
+    # or guessed as district-scoped-with-no-district.
+    scope_type = payload.get("scope_type")
+    if scope_type not in ("platform", "district"):
+        await websocket.close(code=4403)
+        return
+
+    await alerts_stream.manager.connect(websocket, scope_type, payload.get("scope_value"))
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
+        pass
+    finally:
+        # Runs on every exit path, not just a clean WebSocketDisconnect --
+        # a CancelledError from server shutdown or Starlette's "cannot call
+        # receive after disconnect" RuntimeError must not leak the
+        # connection in the manager's registry forever.
         alerts_stream.manager.disconnect(websocket)
