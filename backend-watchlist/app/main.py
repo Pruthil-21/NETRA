@@ -14,10 +14,17 @@ from .routers import (
     vehicle_lookup,
     watchlist,
 )
+from .services import alerts_stream
 
 configure_logging()
 
 app = FastAPI(title="NETRA Watchlist & Alerts Service")
+
+
+@app.on_event("startup")
+async def _capture_alerts_stream_loop():
+    import asyncio
+    alerts_stream.manager.loop = asyncio.get_running_loop()
 
 # Browser clients (frontend-dashboard, frontend-map) send an Authorization
 # header cross-origin, which forces a CORS preflight (OPTIONS) — without this,

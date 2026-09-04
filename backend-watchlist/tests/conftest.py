@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    # Must be used as a context manager -- Starlette's TestClient only fires
+    # @app.on_event("startup") handlers this way, which is what lets
+    # alerts_stream.manager capture the running event loop during tests
+    # (see main.py), exactly as it would under real uvicorn.
+    with TestClient(app) as c:
+        yield c
 
 
 def make_token(role: str, sub: str = "test-officer"):
