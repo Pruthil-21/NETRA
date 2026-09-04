@@ -44,28 +44,27 @@ def test_rbac_token_without_permission_is_rejected_on_a_gated_endpoint(client):
     assert resp.status_code == 403
 
 
-def test_require_role_accepts_rbac_role_names(client):
-    # POST /cameras/bulk is gated by Depends(require_role("officer")) -- the
-    # only require_role usage in this service. An empty list body is valid
-    # enough to pass CameraBulkResult response validation (it just yields an
-    # empty results list) while still exercising the role gate itself; the
-    # only thing under test here is that require_role doesn't 403 these roles.
-    import jwt
-    from app.config import settings
-
-    for rbac_role in ["super_admin", "district_command", "station_officer", "control_room_operator", "auditor"]:
-        token = jwt.encode({"sub": "rbac-test", "role": rbac_role}, settings.jwt_secret, algorithm="HS256")
+def test_cameras_bulk_requires_manage_cameras_permission(client):
+    # POST /cameras/bulk is gated by Depends(require_permission("manage_cameras"))
+    # (Task 1's over-permissive require_role("officer") was replaced by the
+    # final review fix wave). A role that actually has manage_cameras --
+    # e.g. super_admin/district_command per seed_rbac.py's PERMISSIONS table
+    # -- must still succeed; an empty list body is valid enough to pass
+    # CameraBulkResult response validation (it just yields an empty results
+    # list) while still exercising the permission gate itself.
+    for rbac_role in ["super_admin", "district_command"]:
+        token = _rbac_token(rbac_role, ["manage_cameras"])
         resp = client.post("/cameras/bulk", json=[], headers={"Authorization": f"Bearer {token}"})
-        assert resp.status_code != 403, f"role {rbac_role} was rejected by require_role"
+        assert resp.status_code != 403, f"role {rbac_role} with manage_cameras was rejected"
 
 
-def test_require_role_rejects_non_rbac_role(client):
-    # Sanity check for the accept-path test above: a role outside the 5 RBAC
-    # names (and not the legacy "officer"/"admin") must still be rejected by
-    # require_role on the same endpoint.
-    import jwt
-    from app.config import settings
-
-    token = jwt.encode({"sub": "rbac-test", "role": "viewer"}, settings.jwt_secret, algorithm="HS256")
-    resp = client.post("/cameras/bulk", json=[], headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 403
+def test_cameras_bulk_rejects_roles_without_manage_cameras_permission(client):
+    # auditor (only view_audit_logs) and station_officer (no manage_cameras
+    # per seed_rbac.py) must both be rejected now that this endpoint checks
+    # the permission, not just "is an RBAC role name" -- this is the exact
+    # over-permissioning the final review flagged (auditor could previously
+    # reach this endpoint via require_role's blanket RBAC-role acceptance).
+    for rbac_role, perms in [("auditor", ["view_audit_logs"]), ("station_officer", ["search_vehicles"])]:
+        token = _rbac_token(rbac_role, perms)
+        resp = client.post("/cameras/bulk", json=[], headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 403, f"role {rbac_role} without manage_cameras was allowed"

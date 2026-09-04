@@ -41,6 +41,23 @@ def require_internal_key(x_internal_key: str = Header(...)):
     return True
 
 
+def require_permission(permission: str):
+    """Additive alongside require_role, not a replacement for it. A
+    pre-RBAC hand-crafted token (role: "officer"/"admin", no permissions
+    claim -- what every existing test fixture and the demo JWT use) is
+    treated as fully trusted here, exactly matching what require_role("officer")
+    already does for it everywhere else in this codebase. A real RBAC-issued
+    token (see auth_service.issue_token) always carries an explicit
+    permissions list and is checked against it."""
+    def checker(user=Depends(get_current_user)):
+        if user.get("role") in ("officer", "admin") and "permissions" not in user:
+            return user
+        if permission not in user.get("permissions", []):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+    return checker
+
+
 def has_permission(user: dict, permission: str) -> bool:
     """Same logic as require_permission's checker, usable inline when the
     check is conditional rather than the route's own Depends (e.g. only

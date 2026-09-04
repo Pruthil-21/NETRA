@@ -1,3 +1,4 @@
+import contextlib
 import uuid
 
 import psycopg2
@@ -232,7 +233,8 @@ def _insert_test_camera(dept: str) -> int:
     import psycopg2.extras
     from app.config import settings
 
-    with psycopg2.connect(settings.database_url) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+    with contextlib.closing(psycopg2.connect(settings.database_url)) as conn, \
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
             INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days)
@@ -250,7 +252,7 @@ def _delete_test_camera(camera_id: int):
     import psycopg2
     from app.config import settings
 
-    with psycopg2.connect(settings.database_url) as conn, conn.cursor() as cur:
+    with contextlib.closing(psycopg2.connect(settings.database_url)) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM cameras WHERE id = %s", (camera_id,))
         conn.commit()
 
@@ -283,6 +285,18 @@ def test_platform_scoped_search_sees_all_districts(client, internal_headers, sco
     resp = client.get("/detections", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     assert any(d["plate_number"] == plate for d in resp.json())
+
+
+def test_search_detections_requires_search_vehicles_permission(client):
+    # GET /detections is gated by require_permission("search_vehicles") (the
+    # final review fix wave replaced the over-permissive require_role("officer"),
+    # which let every RBAC role name through regardless of its actual
+    # permissions). control_room_operator has no search_vehicles per
+    # seed_rbac.py's PERMISSIONS table, so it must be rejected -- proving the
+    # permission gate is real, not just "is an RBAC role name."
+    token = _make_rbac_token("control_room_operator", "platform", permissions=["view_live_feeds", "acknowledge_alerts"])
+    resp = client.get("/detections", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
 
 
 def test_csv_export_requires_export_data_permission(client, internal_headers):
