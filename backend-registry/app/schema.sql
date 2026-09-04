@@ -173,3 +173,31 @@ CREATE INDEX IF NOT EXISTS idx_synthetic_events_camera ON synthetic_detection_ev
 CREATE TABLE IF NOT EXISTS synthetic_detection_events_archive (
     LIKE synthetic_detection_events INCLUDING ALL
 );
+
+-- Admin-managed checkpoints/junctions that should have camera coverage --
+-- compared against real cameras in gap_analysis_service.compute_uncovered_zones.
+-- Same GEOGRAPHY type as cameras.location so both sides of a distance query
+-- are directly comparable.
+CREATE TABLE IF NOT EXISTS coverage_targets (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    location   GEOGRAPHY(POINT, 4326) NOT NULL,
+    district   TEXT NOT NULL,
+    priority   TEXT NOT NULL DEFAULT 'medium',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_coverage_targets_location ON coverage_targets USING GIST (location);
+
+-- Admin-managed police station locations, shown as map pins and used for
+-- nearest-station alert enrichment (see backend-watchlist's alerts_service).
+CREATE TABLE IF NOT EXISTS police_stations (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    location   GEOGRAPHY(POINT, 4326) NOT NULL,
+    district   TEXT NOT NULL,
+    contact    TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_police_stations_location ON police_stations USING GIST (location);

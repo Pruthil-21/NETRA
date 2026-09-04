@@ -4,9 +4,10 @@ alerts rows are never UPDATEd after creation (evidentiary chain-of-custody).
 Status transitions are appended to alert_status_history; every read here joins
 in the latest history row so callers always see the current status.
 """
+import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from . import govt_lookup_service, watchlist_service
+from . import alerts_stream, govt_lookup_service, watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
     SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
@@ -29,17 +30,65 @@ def _with_owner_details(alert):
     return alert
 
 
+def _with_nearest_station(db, alert):
+    if alert is not None:
+        # police_stations is owned by backend-registry but lives in the
+        # same physical Postgres instance (same convention as cameras.dept
+        # lookups elsewhere in this codebase). It only auto-applies via
+        # docker-entrypoint-initdb.d on a fresh Postgres volume, so an
+        # environment with an existing volume may not have it -- this is
+        # operational, not evidentiary, enrichment (matches reports_service's
+        # "degrade gracefully on a missing table" pattern), so a missing
+        # table here must never 500 out of GET /alerts, GET /alerts/{id}, or
+        # (via process_detection/get_alert) POST /detections.
+        #
+        # Uses a SAVEPOINT rather than a plain connection rollback: when this
+        # is called from process_detection, the `alerts` INSERT for this very
+        # request is still uncommitted on the same connection/transaction --
+        # a full conn.rollback() here would discard that row too, not just
+        # this enrichment query. ROLLBACK TO SAVEPOINT undoes only the failed
+        # query, leaving the rest of the transaction intact.
+        try:
+            db.execute("SAVEPOINT nearest_station_lookup")
+            db.execute(
+                """
+                SELECT nearest.name, nearest.distance_meters
+                FROM cameras c
+                LEFT JOIN LATERAL (
+                    SELECT ps.name, ST_Distance(c.location, ps.location) AS distance_meters
+                    FROM police_stations ps
+                    ORDER BY c.location <-> ps.location
+                    LIMIT 1
+                ) nearest ON true
+                WHERE c.id = %s
+                """,
+                (alert["camera_id"],),
+            )
+            row = db.fetchone()
+            db.execute("RELEASE SAVEPOINT nearest_station_lookup")
+            alert["nearest_station"] = (
+                {"name": row["name"], "distance_meters": row["distance_meters"]}
+                if row is not None and row["name"] is not None
+                else None
+            )
+        except psycopg2.Error:
+            db.execute("ROLLBACK TO SAVEPOINT nearest_station_lookup")
+            alert["nearest_station"] = None
+    return alert
+
+
 def list_alerts(db: RealDictCursor):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " ORDER BY a.matched_at DESC")
     alerts = db.fetchall()
     for alert in alerts:
         _with_owner_details(alert)
+        _with_nearest_station(db, alert)
     return alerts
 
 
 def get_alert(db: RealDictCursor, alert_id: int):
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.id = %s", (alert_id,))
-    return _with_owner_details(db.fetchone())
+    return _with_nearest_station(db, _with_owner_details(db.fetchone()))
 
 
 def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
@@ -49,7 +98,7 @@ def get_alert_by_detection_id(db: RealDictCursor, detection_id: int):
     process_detection again and creating a second one for the same
     underlying sighting."""
     db.execute(_SELECT_WITH_CURRENT_STATUS + " WHERE a.detection_id = %s", (detection_id,))
-    return _with_owner_details(db.fetchone())
+    return _with_nearest_station(db, _with_owner_details(db.fetchone()))
 
 
 def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, detection_id: int):
@@ -69,7 +118,14 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
         (camera_id, plate_number, match["id"], detection_id),
     )
     new_id = db.fetchone()["id"]
-    return get_alert(db, new_id)
+    alert = get_alert(db, new_id)
+
+    db.execute("SELECT dept FROM cameras WHERE id = %s", (camera_id,))
+    dept_row = db.fetchone()
+    camera_district = dept_row["dept"] if dept_row else None
+    alerts_stream.manager.broadcast_sync(alert, camera_district)
+
+    return alert
 
 
 def has_prior_status_change(db, alert_id: int, changed_by) -> bool:

@@ -47,12 +47,18 @@ const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 // cadence a "how fresh is this badge" indicator should be measured against.
 export const FEED_STALE_THRESHOLD_MS = HEALTH_CHECK_INTERVAL_MS;
 
+// no-cors: cross-origin tunnel responses (Cloudflare Quick Tunnel -> MediaMTX)
+// don't send Access-Control-Allow-Origin, so a normal fetch() gets blocked by
+// the browser and throws even when the stream is genuinely live -- no-cors
+// sidesteps the CORS check entirely (opaque response, can't read status, but
+// fetch only throws on a real network failure), matching the same approach
+// CameraRegistryContext already uses for its WebRTC reachability probe.
 async function probeStreamReachable(url: string): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { method: "GET", cache: "no-store", signal: controller.signal });
-    return res.ok;
+    await fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
+    return true;
   } catch {
     return false;
   } finally {

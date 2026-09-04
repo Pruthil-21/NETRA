@@ -3,6 +3,7 @@ tracking so that confirmation runs independently per physical vehicle."""
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+
 from .plate_format import INDIAN_PLATE_PATTERN, _plate_similarity
 from . import vlm_fallback
 
@@ -169,6 +170,7 @@ class VehicleTracker:
     # expensive VLM call. Two real matches is the same bar
     # PlateConfirmationTracker's own default confirm_threshold uses.
     VLM_FALLBACK_MIN_MATCHES = 2
+
 
     def __init__(self, window_size=10, confirm_threshold=2):
         self.window_size = window_size

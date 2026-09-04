@@ -98,6 +98,10 @@ class AlertOut(BaseModel):
     # each with its own `status` field -- "not_configured" until real access
     # exists, so this is always present but not yet populated with real data.
     owner_details: Optional[dict] = None
+    # Closest backend-registry police_stations row to the alert's camera, by
+    # geographic distance -- computed at read time by alerts_service (see
+    # _with_nearest_station). None when no police_stations rows exist yet.
+    nearest_station: Optional[dict] = None
 
 
 class AlertStatusUpdate(BaseModel):

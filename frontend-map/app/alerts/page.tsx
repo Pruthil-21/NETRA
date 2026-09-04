@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronRight, Plus, Navigation, Search, Check, ArrowUpCircle, X } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { alertsService } from '@/services/alertsService';
+import { useAlertsStream } from '@/hooks/useAlertsStream';
 import { Alert, AlertStatus } from '@/types/alert';
 import { AddToWatchlistModal } from '@/components/alerts/AddToWatchlistModal';
 import { getCameraCity } from '@/lib/cameraCity';
@@ -104,6 +105,17 @@ export default function AlertsPage() {
       clearInterval(interval);
     };
   }, []);
+
+  // Live push on top of the poll above -- the poll stays as the safety net for
+  // anything missed during a reconnect window, this just closes the gap between
+  // an alert firing and the next 5s tick.
+  useAlertsStream((newAlert) => {
+    setAlerts((prev) => {
+      const alert = newAlert as Alert;
+      if (prev.some((a) => a.id === alert.id)) return prev;
+      return [alert, ...prev];
+    });
+  });
 
   // Grouped by real city (getCameraCity), not the raw camera.dept field --
   // for organizer cameras dept is a landmark/locality label ("04 Paldi

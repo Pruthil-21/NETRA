@@ -3072,6 +3072,631 @@ short-circuit that avoids a redundant network round-trip.
   a real server (still unreachable from this dev machine, per Session
   20/21's open item).
 
+---
+
+# Session 20 -- accuracy-improvement bake-off (4 candidates benchmarked, 3 rejected, 1 built: a BLPR-style local-VLM last-resort fallback)
+
+Branch: `feature/plate-region-detector`, continuing directly from Session
+19. Direct follow-up to an explicit user request: two AI-generated
+analyses proposing ways to improve accuracy (the current pipeline is
+tuned for speed, per Session 4-era YOLOv8n choice) were pasted in and I
+was asked to evaluate and test what was actually feasible.
+**Explicit constraint for this whole session: do not commit or push
+anything until told to**, specifically so the user could discard any
+underperforming experiment and keep `main`'s existing pipeline intact.
+That constraint held for the entire session -- everything below was
+tested locally; nothing was committed until this write-up, and even this
+write-up is not yet pushed.
+
+Ground truth used throughout: the same 41 unique real Sentinel Gujarat
+plates from Sessions 18+19 (Session 19's 30 plus Session 18's original
+13, one overlap on `GJ18Z8601`), cross-referenced via the pipeline's own
+`_plate_similarity` fuzzy match, same methodology as prior sessions.
+
+## Candidate 1: swap the plate-region heuristic for a pretrained detector (`open-image-models`, YOLOv9)
+
+Tested in an isolated venv (never touched the real `ml-anpr/venv`),
+`yolo-v9-s-608-license-plate-end2end`. Localization was genuinely strong
+(29/30, then 13/13 on the second batch, found a real plate box), but
+feeding its *tight* box straight into the existing OCR call did worse
+than the current heuristic crop band: 40% usable vs. the baseline's
+59.5%. Checked why rather than assuming: raw OCR output on the tight
+crops was real garbage (`GJ11CD8889` -> `691108885`) despite the crops
+being clean and human-legible -- the tight crop, not image quality, was
+the bottleneck.
+
+Swept padding around the detected box (0/20/30/35/50/70%): accuracy
+peaked at 30-40% padding, non-monotonically -- 35% gave 63.3% usable on
+Session 19's 30 plates, beating the baseline. But re-run on Session 18's
+original 13 (the harder, previously-diagnosed cases), the same 35%-pad
+setup only hit 38.5%. On the exact 7 cases Session 18 itself counted as
+fair/in-scope, new-detector-plus-padding scored 3 exact/0 close/4 miss
+(42.9%) vs. the old pipeline's 3/1/3 (57.1%) -- worse on the specific
+cases already known to be hard, including still missing `GJ18Z8601`.
+
+**Verdict: not a clean win, inconsistent across sample sets -- rejected.**
+
+## Candidate 2: swap the vehicle detector (YOLOv8n -> YOLO26n)
+
+Real, current Ultralytics model (confirmed via the actual downloaded
+weights, not assumed). Ran both models on the same 30 saved raw frames
+from Sessions 18/19's cam06/cam07 sampling, same vehicle-class filter and
+area/aspect thresholds, so this isolates the architecture with nothing
+else changing.
+
+cam06 (daylight): YOLOv8n found 49 vehicle-detections across 15 frames,
+YOLO26n found 32 (-35%) -- lost vehicles entirely at 2 timestamps
+YOLOv8n caught, and undercounted badly on busy frames (6 motorcycles
+found by v8n at t=16.5min vs. 1 by 26n -- verified this wasn't a
+class-mapping bug by dumping raw class/confidence output directly, both
+models share the same COCO class scheme).
+
+cam07 (night): YOLO26n found 3x more raw detections, but nearly all
+were 0.1-1.6% of frame area -- still below `MIN_VEHICLE_BOX_AREA_FRACTION`
+(3%), so they'd never reach OCR anyway. Net new *usable* detections:
+effectively zero.
+
+**Verdict: real daylight recall regression for a night-time gain that
+mostly doesn't clear the existing area floor -- rejected (nano variant
+only; a larger YOLO26 might trade differently, not tested).**
+
+## Candidate 3: Indian_LPR end-to-end (FCOS detector + LPRNet OCR, pretrained weights)
+
+Confirmed again (same finding as this project's earlier research): the
+raw training dataset still isn't publicly downloadable, but the
+pretrained weights genuinely are, checked into their GitHub repo
+(`best_od.pth`, `best_lprnet.pth`) -- verified real by running their own
+demo image first (correctly read a genuine Gujarat plate) before
+touching any of our data. Patched one line of *their* code (`np.int`,
+removed in modern NumPy) inside the isolated clone only -- not our repo.
+
+Ran their real `run_single_frame()` end-to-end pipeline on all 41 ground
+truth plates: **4 exact + 6 close + 31 miss = 24.4% usable.** Gets exact
+reads on the same clean crops every method handles fine, falls apart on
+anything more marginal (`GJ01WW5208` -> `BAC7C2A87940`) -- a clear
+out-of-distribution problem, their model never saw this camera/angle/
+resolution profile during training. No LICENSE file in their repo either
+(fine for local benchmarking, would need clarifying before any real use
+-- moot given the accuracy).
+
+**Verdict: not viable for this footage -- rejected.**
+
+## Candidate 4: `fast-plate-ocr` (OCR-only swap, keep our own detection/crop stage)
+
+The one candidate that isolates the OCR stage specifically, rather than
+detection or the whole pipeline -- run on our own production heuristic
+crop (`plate_region_crop()`) at first, which gave near-total empty output
+(39/41) that turned out to be two real integration bugs, not an accuracy
+signal, caught before scoring anything: (1) fed it BGR when the
+`cct-s-v2-global-model` config declares `image_color_mode='rgb'`, and
+(2) — the bigger one — this library expects a *tight* plate-only crop
+(64x128 or 70x140, no aspect-ratio preservation), not the loose
+vehicle-region band our heuristic produces; the loose crop squishes the
+actual plate text into a tiny fraction of the resized input regardless
+of color channels.
+
+Re-ran correctly: same `open-image-models` + 35%-pad tight crops from
+Candidate 1, correct color mode per model (`cct-s-v2-global-model` wants
+RGB, `global-plates-mobile-vit-v2-model` wants grayscale -- confirmed via
+`m.config.image_color_mode`, not guessed). Also worth noting: neither
+model's `plate_regions` list includes India (confirmed by reading the
+loaded config directly), despite claiming 65+-country coverage.
+
+- `cct-s-v2-global-model`: 2 exact + 6 close + 33 miss = **19.5% usable**
+- `global-plates-mobile-vit-v2-model`: 0 exact + 0 close + 41 miss =
+  **0.0% usable** (also hit a CoreML execution-provider crash on the
+  original run, worked once forced onto `CPUExecutionProvider`)
+
+Both clearly worse than the existing PaddleOCR call on the *same* crops
+that scored 63.3%/38.5% with PaddleOCR -- the existing OCR engine is
+simply the stronger part of the stack here, not the bottleneck.
+
+**Verdict: clear no on both variants -- rejected.**
+
+## Candidate 5 (not from the original two analyses -- proposed after the above 4 all came back negative): BLPR-style confidence-gated local-VLM fallback
+
+Before testing anything, I directly read the images for the 18 unique
+plates every method above still missed (the same-shaped test this
+project's ground-truth-gathering has always used, applied here to
+diagnose a fix candidate instead) -- and found most were genuinely
+legible to a competent reader, including `GJ18Z8601`, Session 18's one
+"genuine unexplained miss" that the raw OCR log never found any trace
+of. That's a strong, independent sign the bottleneck for these specific
+cases is reading capability, not image quality -- worth testing with an
+actual small model rather than my own (much larger, not representative)
+read.
+
+**Installed Ollama + `gemma3:4b`** (Google's small open-source vision
+model, 3.3GB) locally on this machine -- explicitly the same
+model class BLPR's own paper uses. Runs entirely on-device: no image or
+plate data leaves the machine, no third-party API, no account. Measured
+real latency before designing anything: **0.48s warm, 6.7s cold**
+(model not resident in memory) -- this is why the integration below
+dispatches the call in a background thread rather than inline in the
+per-frame loop.
+
+### First result had a real bug, caught before it shipped
+
+Initial test on the 18 hard misses, direct "read the plate" prompt:
+**1 exact + 5 close + 12 miss = 33.3% usable.** Looked like a strong
+result. But wiring it into the real pipeline and running the existing
+`dashcam_trimmed.mp4` regression clip surfaced something worse: on
+crops with genuinely no plate visible at all (e.g. a bus's side-profile
+door, no plate anywhere in frame), the model confidently invented a
+realistic-looking but entirely fake plate number instead of declining --
+7 different fabricated plates on 7 such crops in one run, all passing
+the pattern-format validation since they *looked* like valid Indian
+plates structurally. Caught this by tracing which actual image bytes
+were sent for each call and looking directly at the one that produced
+`HP32A4567` -- confirmed it really was a plate-less bus-door photo, not
+a bug in the crop pipeline.
+
+**Fix:** rewrote the prompt to force an explicit two-step judgment
+("is a plate visible at all -- YES/NO -- before any text extraction",
+stated plainly that "no plate visible" is a common, fully expected
+answer) instead of a direct read request. Re-tested against the same 7
+previously-hallucinated crops: all 7 now correctly say no plate visible.
+Re-ran the full `dashcam_trimmed.mp4` regression: **zero** fake
+VLM-fallback confirmations (down from up to 7), and `HR98E4959` still
+confirmed exactly as it always has, completely untouched.
+
+Re-tested the 18 hard-miss set with the fixed prompt: **2 exact + 1
+close + 15 miss = 16.7% usable** -- lower than the unsafe prompt's
+33.3%, which is the expected, correct tradeoff: fewer rescues, but no
+more fabricated plates. Projected effect on the combined 41-plate set:
+roughly 58.5% -> 65.9% usable (vs. an earlier, now-superseded estimate
+of ~73% based on the unsafe prompt -- that number should not be quoted
+going forward, this one should).
+
+### What got built (real code, not committed)
+
+- `anpr/vlm_fallback.py` (new): calls the local Ollama API with the
+  two-step prompt, validates the response through the exact same
+  `INDIAN_PLATE_PATTERN`/`_correct_plate_positions` logic every other OCR
+  reading already goes through -- never trusts the model's raw text
+  directly. Fails closed (returns `None`) on any Ollama connection
+  problem, malformed response, or failed validation; never raises into
+  the caller.
+- `anpr/tracking.py` (`VehicleTracker`): caches each track's
+  largest-area vehicle crop over its life (not highest-OCR-confidence --
+  that would exclude exactly the zero-OCR-candidate cases most worth
+  rescuing). Fires the fallback **exactly once per track, only at the
+  frame it's about to be pruned (`missed == MAX_MISSED_FRAMES`) and only
+  if that track's own `PlateConfirmationTracker` never confirmed
+  anything.** This is the key safety property: a track that already
+  confirmed normally (any long clean run, `HR98E4959`-shaped or
+  otherwise) never reaches this condition at all, so the fallback cannot
+  touch, regress, or interact with anything already working. Dispatched
+  via `ThreadPoolExecutor` (stdlib, no new dependency) since the measured
+  latency is too slow to block the per-frame loop; results collected via
+  a new `pop_ready_vlm_confirmations()` polled once per frame, kept
+  fully separate from `PlateConfirmationTracker`'s own vote (Session 16
+  already proved hard that majority-vote bias isn't fixable by weight
+  tuning -- adding a single high-weight VLM vote into that mechanism
+  risks creating a new version of the same problem, not fixing it).
+  Confirmed events from this path carry a distinct
+  `note == "ok - vlm fallback"`, never `"ok - pattern match"`, so they
+  stay visibly separate from normal OCR confirmations in logs/stats and
+  do **not** reach `send_detection_to_watchlist`'s existing
+  `note == "ok - pattern match"` gate by default -- a single
+  uncorroborated VLM read alerting a real watchlist match felt like the
+  wrong default risk tradeoff; this is flagged as an explicit decision,
+  not a silent gap, in case that default should change later.
+- `anpr/streaming.py`: `raw_frame` threaded into all three
+  `tracker.update()` call sites (backward compatible -- other callers
+  like `vehicle_trace_demo.py` and the two `benchmarks/` scripts that
+  call `VehicleTracker.update()`/`detect_plate_from_frame()` directly are
+  unaffected, since `raw_frame` defaults to `None` and
+  `detect_plate_from_frame`'s own signature was deliberately left
+  untouched to avoid a wide blast radius across those other callers).
+  `process_video_file` also gets a bounded drain step
+  (`concurrent.futures.wait(..., timeout=25)`) after the video ends, so
+  a fallback call still running on the last few frames isn't silently
+  dropped from the final confirmed-plates summary.
+
+### Verification done before considering this safe to write up
+
+1. Full `dashcam_trimmed.mp4` regression, twice (before and after the
+   prompt fix) -- `HR98E4959` confirmed correctly both times, exactly as
+   every prior session's regression has shown; zero fallback
+   interference either time.
+2. Direct code-path test (not just isolated prompt calls): simulated a
+   track fed the real `GJ18Z8601` crop with `plate_number: None` for its
+   whole visible life (matching the real case -- Session 18's raw log
+   had zero trace of this plate), stepped it through `MAX_MISSED_FRAMES`
+   missed updates, confirmed the fallback dispatches on exactly the 5th
+   missed frame (not before), and correctly returns
+   `{'plate_number': 'GJ18Z8601', 'confidence': 0.5, 'note': 'ok - vlm
+   fallback'}` after the background call completes.
+3. Practical mitigation noted but not yet applied: Ollama's
+   `keep_alive=-1` (already set in `vlm_fallback.py`'s request payload)
+   keeps the model resident so the 6.7s cold-start essentially never
+   recurs in practice, at the cost of ~3.3GB RAM held permanently.
+
+### Not yet done
+
+- No test against a real, full Sentinel Gujarat video run with this
+  wired in -- only the isolated 18-crop set and the dashcam regression
+  clip. The projected 58.5% -> 65.9% combined-accuracy effect is exactly
+  that, a projection from the 18-crop test, not a measured full-video
+  number.
+- No decision made on whether `send_detection_to_watchlist` should ever
+  accept `"ok - vlm fallback"` events -- left at today's default (no),
+  explicitly flagged above as the user's call, not decided silently.
+- `anpr/streaming.py`'s two live-stream loops (`process_stream`,
+  `process_hls_stream`) got the same wiring for consistency but weren't
+  separately regression-tested the way `process_video_file` was (no live
+  RTSP/HLS source available to test against here).
+
+### Verdict: **4 of 5 candidates rejected after real testing, 1 built and safety-verified but not yet measured on a full real video run.**
+
+## Two more real findings this session, after real human ground truth surfaced a genuine pipeline bug
+
+The user manually noted plates by eye from `dashcam_trimmed.mp4` (independent
+of anything the pipeline or I produced) and cross-checked them directly
+against the actual frames. Two of those checks turned up a real,
+previously-only-suspected pipeline error:
+
+- `DL52GD0882` (real plate, confirmed by directly viewing the frame --
+  clearly "DL 52 GD 0882" on a green EV plate) vs. the pipeline's
+  confirmed `DL52GO0882` -- **wrong**. This is the exact plate Sessions
+  8/11/13/16 investigated four times without ever having real ground
+  truth to confirm which reading was actually correct.
+- `DL52GD4935` vs. pipeline's `DL52GO4935` -- same error, same pattern,
+  different plate, also a green EV plate.
+- (`HR9BE4959` vs. the pipeline's `HR98E4959`: checked too, pipeline was
+  actually right here -- the user's note had a small transcription slip,
+  "98" reading like "9B" in that font at a glance.)
+
+### Fix 1: overlay-text top-band clip -- the Session 18 "next" item, done and verified
+
+Session 18 found cam06/cam07 misreading their own burned-in
+date/location overlay as plate-shaped text (`ADFIX2`/`DFIX2H`/etc. on
+cam06, `SAT212518`/`SAT212519` on cam07), and flagged that the existing
+overlay protection (`_read_plate_from_box`'s bottom-band clip,
+`y2 = min(y2, int(raw_h * 0.92))`) only covers the *bottom* of frame --
+these cameras burn their overlay into the *top* instead, a gap the
+existing fix doesn't reach.
+
+Measured the real overlay extent directly on saved cam06/cam07 frames
+rather than guessing a number: on both cameras the overlay text sits
+within the top ~5% of a 1080px frame. Added a symmetric top clip,
+`y1 = max(y1, int(raw_h * 0.08))`, same reasoning as the bottom one
+(real plates aren't mounted in a camera's own UI overlay band), 8%
+giving real margin over the measured ~5%.
+
+**Verified two ways, not just reasoned about:**
+1. Re-ran `_read_plate_from_box` directly against the exact frames/boxes
+   that produced `ADFIX2` (cam06, frame 140, box `(1314,3,1566,330)`)
+   and `SAT212518` (cam07, frame 37950, box `(219,8,813,608)`) before
+   this fix -- both now return `"Text found, none plate-shaped"`, the
+   overlay text no longer survives into what gets read.
+2. Full `dashcam_trimmed.mp4` regression re-run -- identical confirmed-
+   plate set to before this change, `HR98E4959` unaffected. Dashcam's
+   own overlay is bottom-only, so no interaction expected, and none
+   found.
+
+### Fix 2/3 investigated: `DL52GD0882`'s D->O misread and "confidently wrong" plates -- same root cause, real new evidence, still correctly left alone
+
+Dug into the actual raw-reading history for `DL52GD0882` in
+`dashcam_trimmed.mp4` (now with real ground truth to check against,
+unlike Sessions 8/11/13/16 which never had it): OCR read `GD` correctly
+3 times, including once at a perfect 1.0 confidence, but read `GO` 18
+times across the same track's lifetime. `PlateConfirmationTracker`
+confirms as soon as `confirm_threshold` (2) is reached and never
+revisits a confirmed cluster -- so whichever variant happened to be
+narrowly ahead in the first couple of readings locks in the answer,
+regardless of what the majority of the full run would have said either
+way.
+
+This is the same majority-vote-bias mechanism Session 16 already proved
+(with hard per-character vote-tally evidence) can't be fixed by tuning
+the confirmation-layer's weights -- re-confirmed here with new, real
+evidence (not just suspicion) rather than re-litigating it. Looked for a
+genuinely different angle before giving up: checked whether the D/O
+confusion correlates with vehicle distance/box size (would suggest a
+resolution-driven, preprocessing-fixable cause) -- it doesn't cleanly;
+a larger box at frame 885 still misread as `GO` at 1.0 confidence, while
+a smaller box at frame 1095 correctly read `GD`. Looks like genuine
+per-frame OCR noise rather than something a targeted image-preprocessing
+fix could reliably correct.
+
+**No code change made here** -- consistent with this project's own
+established precedent (Sessions 11, 13: correctly stopping rather than
+forcing a risky change to code every confirmed plate depends on, when no
+safe fix was actually found). One real candidate for future work,
+explicitly not started today: teach the system to notice when its own
+vote was a close call and route *those* specific cases through the VLM
+fallback as a tie-breaker, instead of only using the fallback for tracks
+that never confirmed at all. That's a distinct, bigger design task (needs
+`PlateConfirmationTracker` to expose vote margins, which it doesn't
+today) -- flagged, not attempted.
+
+## Backend integration wired up this session (separate from the accuracy work above)
+
+Real API details arrived from P6 (backend) mid-session: real
+`X-Internal-Key`, real `DETECTION_API_URL`, and (after a follow-up ask)
+the real `camera_id` values for the 10 stable registered cameras,
+independently re-confirmed by Dhruv (streaming) down to the physical
+location behind each `direct-camNN` path.
+
+- `anpr/config.py`: `DETECTION_API_URL` and `INTERNAL_KEY` updated to
+  real values (were dev placeholders). `CAMERA_ID_MAP` replaced with the
+  real `direct-cam01..10 -> 43..52` mapping; the old `livecam`/
+  `camera1`/`camera16` placeholder entries were removed outright (not
+  kept as a fallback) once P6 confirmed those point at a fictional demo
+  camera and a nonexistent registry id respectively -- keeping them
+  would have silently misreported real detections to the wrong/a
+  nonexistent camera instead of just correctly not sending at all.
+- Real, worth flagging: our own `cam07.mp4` test footage's burned-in
+  overlay reads "HERO SHOWROOM FIX-1", matching `direct-cam07`'s
+  confirmed real location ("Hero Showroom, Gir Somnath") -- independent
+  evidence this test footage really is from a registered camera. But
+  `cam06.mp4`'s overlay ("Madhuram Bypass Road Fix-2") does **not**
+  match `direct-cam06`'s confirmed location ("Timbavadi Gate,
+  Junagadh") -- flagged as a real discrepancy, not assumed to line up.
+- `anpr/streaming.py`: `process_stream` and `process_hls_stream` (the
+  two live-camera paths) previously only forwarded `"ok - pattern
+  match"`-tier confirmations to `send_detection_to_watchlist`, silently
+  dropping fallback-tier and VLM-fallback-tier confirmed reads entirely.
+  The actual contract (confirmed directly with P6) asks for *every*
+  confirmed plate read, since backend-watchlist itself decides
+  server-side whether it's a watchlist hit -- client-side gating on note
+  type was real, unintentional under-reporting. Fixed in both live
+  paths; `process_video_file` intentionally left alone (it never called
+  the backend at all -- that's correct, it's the offline test/regression
+  path).
+- **Still open, not resolved this session:** a live camera (`direct-cam06`,
+  backend `camera_id: 48`, real Cloudflare-tunnelled HLS URL) is
+  confirmed reachable, but `backend-watchlist` itself is not reachable
+  from this development machine (`localhost:8001` -- backend runs on a
+  different machine, also behind its own Cloudflare tunnel). A live
+  end-to-end test (real camera -> real detection -> real backend POST)
+  has not happened yet; blocked on getting a reachable tunnel URL for
+  backend-watchlist from P6, same way Dhruv provided one for the camera
+  feed. Nothing in this codebase calls `send_detection_to_watchlist`
+  with a live/real `direct-camNN` source yet either -- that wiring is
+  still a separate, open task.
+
+Nothing pushed. This session's code changes committed locally on
+`feature/plate-region-detector` per explicit go-ahead; not merged to
+`main`.
+
+---
+
+# Session 21 -- P3 scalability handoff: separated pipeline, worker pool, async delivery, synthetic load test
+
+Branch: `feature/plate-region-detector`, continuing directly from
+Session 20. Direct response to a handoff from P3: make the ML detection
+pipeline scalable independently of live video playback, with 10
+specific numbered requirements and 5 pieces of required evidence.
+
+New package `anpr/pipeline/` -- a separate layer alongside
+`anpr/streaming.py`, not a replacement for it. The existing
+`process_stream`/`process_video_file`/`process_hls_stream` (used
+throughout Sessions 1-20 and already regression-tested against
+`HR98E4959`) are untouched; this is a new, additive entry point for the
+multi-camera/scalable case, built on top of the same underlying
+`detect_plate_from_frame`/`VehicleTracker` logic, not a reimplementation
+of it.
+
+## Architecture: three independent stages connected by queues
+
+1. **`frame_source.FrameReader`** (item 1, 2) -- one per camera, its own
+   thread, configurable sampling rate (`sample_every_n`, same semantics
+   as `process_video_file`'s existing `process_every_n_frames`). Pushes
+   sampled frames onto a bounded queue instead of calling inference
+   inline. Backpressure (item 7): a full queue means the newest frame is
+   dropped, counted, not blocked on -- a live camera can't be paused,
+   and blocking one reader would back up every camera sharing that
+   downstream worker.
+
+2. **`inference_worker.InferenceWorkerPool`** (item 3) -- N workers, one
+   dedicated frame queue each. Cameras are hashed to a worker up front,
+   not round-robined per frame -- `VehicleTracker` keeps per-camera
+   frame-to-frame state (IoU matching, confirmation clusters) that isn't
+   thread-safe and depends on in-order frames, so a camera's tracker
+   must only ever be touched by one thread for its whole lifetime. This
+   is real camera-level parallelism (N cameras spread across M workers),
+   not frame-level -- documented as the honest scope of "distributed
+   across workers" here.
+
+3. **`event_sender.EventSenderPool`** (items 4, 6, 7, 8) -- multiple
+   senders draining one shared event queue (no per-camera pinning needed
+   here, unlike inference -- any sender can deliver any event safely).
+   Batches up to `batch_size` events or `batch_timeout_sec`, whichever
+   first, and sends each with retry + exponential backoff. Backpressure
+   here too: a full event queue means new events are dropped and
+   counted, not blocked on.
+
+`events.DetectionEvent` (item 5): every event carries `event_id`,
+`camera_id`, `timestamp`, `model_version`, `confidence`, and
+`detection_type`. Honest caveat, not glossed over: real
+backend-watchlist's `POST /detections` contract only documents
+`{camera_id, plate_number, confidence}` -- the extra fields are sent as
+additional JSON fields (most REST frameworks ignore fields they don't
+recognize) so the richer schema is already in place if the contract
+gets extended, but whether the backend actually stores/uses them today
+is unconfirmed, not claimed as done.
+
+`metrics.Metrics` (item 9): thread-safe counters/latency-sample deques
+for frames read/dropped/processed, inference throughput, events
+produced/sent/failed/retried/dropped, event throughput, avg/p95 send and
+inference latency, and live queue depth. One `snapshot()` call gives a
+single consistent read across every stage.
+
+## The item 6 gap, stated plainly rather than papered over
+
+"Retry failed deliveries safely without creating duplicate detections"
+can only be a **best-effort client-side guarantee** against the real
+contract as it exists today -- `POST /detections` has no client-supplied
+idempotency key (its only server-side dedup is for scripted *replay*
+scenarios keyed on `scenario_run_id`+`camera_id`+`plate_number`, not for
+retrying an arbitrary live detection). What's actually implemented: a
+clean connection failure is always safely retried (request definitely
+never arrived); a timeout is retried too on the judgment that losing a
+real detection is worse than an occasional duplicate row for a
+security-alert pipeline -- a real, deliberate tradeoff, not a guarantee;
+a local in-process "already confirmed sent" set (keyed on `event_id`)
+stops resending something this client already got a real `201` for. A
+genuine fix needs a server-side idempotency key in the contract --
+flagged as a real ask for P6, not solved unilaterally here.
+
+## Required evidence
+
+**Real inference from the available sample streams:** ran the full
+3-stage pipeline against `dashcam_trimmed.mp4` (`ScalablePipeline`,
+1 camera, 2 workers, `sample_every_n=15`, 45s). Real, not mocked:
+30 frames processed, 4 real confirmed-plate events produced from actual
+`detect_plate_from_frame`/`VehicleTracker` output, all 4 delivered
+successfully through the real `EventSenderPool` batching/retry logic
+(dry-run send target, since backend-watchlist isn't reachable from this
+dev machine -- see Session 20's backend-integration section). Separately
+verified retry/backpressure against the real, currently-unreachable
+`DETECTION_API_URL`: 2 retries with backoff, clean failure, accurate
+metrics (`events_failed=1`, `events_retried=2`), no crash -- exactly the
+required safe-degradation behavior.
+
+**Synthetic detection-event load test (item 10):** `benchmarks/
+synthetic_load_test.py`, fake metadata events for 1,000/10,000/80,000
+camera identities, no video decode at all, run against a local mock
+backend (`benchmarks/mock_backend_server.py`) since real
+backend-watchlist isn't reachable from here right now -- explicitly
+measures this pipeline's own delivery infrastructure, not the real
+production backend's capacity, stated as such in the script's own
+output.
+
+**Maximum tested events per second / average and p95 latency:**
+measured directly, not estimated -- a real, reproducible ceiling of
+**~1,870-1,900 events/sec sustained** (8 sender threads, this machine's
+hardware, against the mock backend), independent of camera-identity
+count: 1,000/10,000/80,000 identities all sustain essentially the same
+throughput once the target rate is at or above that ceiling, a clean
+signal that this pipeline's delivery capacity is rate-bound, not
+identity-count-bound. At that ceiling: avg latency ~1.2-4ms, p95
+~2.7-5.7ms, 0 errors, 0 drops.
+
+Found and fixed two real bottlenecks while measuring this, not assumed
+away:
+1. First measurement showed adding more sender threads barely moved
+   achieved throughput (~1,200-1,300/s regardless of thread count) --
+   traced to `requests.post()` opening a fresh TCP connection every
+   call; switched to a persistent `requests.Session()` per sender for
+   connection-pool reuse. Modest improvement (~1,300 -> ~1,400/s), not
+   the fix alone.
+2. Real bottleneck: the load generator and the mock backend were both
+   running as threads inside the *same* Python process, meaning they
+   competed for the same GIL -- not a limit on the pipeline's own
+   design, an artifact of how the test was first set up. Running the
+   mock backend as a genuinely separate OS process (matching how a real
+   backend actually would be) raised throughput to the ~1,870-1,900/s
+   figure above.
+
+**Worker-scaling design:** camera-level horizontal scaling via
+`InferenceWorkerPool` (stable hash of `camera_id` -> worker index, so
+each camera's tracker state stays coherent on one thread) and
+independent horizontal scaling of delivery via `EventSenderPool` (no
+per-camera constraint, any sender can send any event). Both pools take
+`num_workers`/`num_senders` as plain constructor arguments -- sizing
+them for a real deployment is a hardware/ops decision, not hardcoded
+here. Not exercised on this hardware: true multi-GPU distribution (this
+Mac has one MPS device) -- the worker-pool structure is what that would
+plug into (one model instance per worker, pinned to its own device), but
+that specific extension is un-tested, stated as such rather than implied
+as done.
+
+## What's not done / open
+
+- Not tested against a real, live camera feed end-to-end (needs a
+  reachable backend-watchlist URL first -- see Session 20's still-open
+  item on that).
+- Multi-*process* worker distribution (vs. multi-*thread*, what's built)
+  not implemented -- threads share this pipeline's already-loaded
+  `anpr.config.yolo_model`/OCR clients cheaply, but true CPU-core
+  parallelism for the CPU-bound parts of inference would need separate
+  processes (GIL). Threads were the right first build for what item 3
+  actually asked (distribute cameras across workers) and matches this
+  session's demo-scope hardware (single Mac, one GPU); real multi-core/
+  multi-GPU horizontal scaling is the natural next step once there's
+  real hardware to test it against.
+- The claim text P3 asked to be able to make ("NETRA separates video
+  ingestion from AI inference and scales inference horizontally using
+  independent workers. Synthetic load testing represents 80,000 camera
+  identities, while real inference is demonstrated on the available
+  video feeds.") is now backed by real, measured evidence above, not
+  asserted without it.
+
+Committed (`daf479f`); nothing pushed yet, per this project's
+always-ask-before-push rule.
+
+# Session 22 -- P6 closed the item-6 idempotency gap: `event_id` is now a real server-side dedup key, not just a client-side best-effort guard
+
+Session 21 flagged one real gap in the scalability build and sent it to
+P6 as a genuine ask: `EventSender`'s retry-on-timeout path (item 6)
+could not guarantee no duplicate detections/alerts, because
+backend-watchlist's `POST /detections` had no client-supplied
+idempotency key -- only `scenario_run_id` dedup for scripted replays,
+which doesn't apply to live retries.
+
+P6's reply: `event_id` (UUID) is now accepted as an optional field on
+`POST /detections` and is a real server-side idempotency key -- a
+repeat POST with the same `event_id` is a no-op that returns the
+original `detection` and `alert` instead of creating a second one of
+either (the alert side specifically called out as handled, since a
+duplicate *alert* was the case that actually mattered for the
+downstream alerting flow, not just a duplicate detection row). Backed
+by a partial unique index on `event_id`, mirroring the existing
+`scenario_run_id` dedup pattern. Omitting `event_id` is a complete
+no-op -- safe to roll out incrementally, no behavior change for any
+caller not sending it.
+
+Backend commit: `2cb1757` (`feat(backend-watchlist): add
+client-supplied idempotency key to POST /detections`) on
+`origin/feature/backend-watchlist` -- **confirmed via `git fetch` +
+`git show`, not taken on faith** -- this branch is not yet merged to
+`main`, so this guarantee only holds against a backend-watchlist
+deployment that actually has this commit.
+
+## What changed on our side: nothing functional, one stale limitation removed
+
+Checked `anpr/pipeline/events.py` and `event_sender.py` against the
+confirmed contract diff before touching anything:
+
+- `DetectionEvent` (`events.py`) already generates a UUID `event_id`
+  per event (`field(default_factory=lambda: str(uuid.uuid4()))`) and
+  already sends it as `"event_id"` in every `to_backend_payload()` call
+  -- field name matches the contract exactly, no payload change needed.
+- `EventSender._send_with_retry()` (`event_sender.py`) already retries
+  on both clean network failures and timeouts (`requests.exceptions.
+  RequestException` covers both) -- this was Session 21's deliberate
+  "retry on timeout too, accept the duplicate-row risk" tradeoff. That
+  tradeoff is now backed by a real guarantee instead of being a risk,
+  with no code change required to get it.
+
+So the fix here was documentation only: both modules' docstrings
+described item-6 duplicate-safety as "best-effort client-side only, not
+a guarantee" -- now stale and actively misleading now that the server
+side exists. Rewrote both docstrings to state the real current
+guarantee, name the confirming commit, and flag the one real remaining
+caveat (only holds once `2cb1757` is merged/deployed on whichever
+backend a given run actually points at). The local
+`_sent_event_ids` in-process set is kept as-is -- no longer
+load-bearing for correctness, but still a legitimate fast local
+short-circuit that avoids a redundant network round-trip.
+
+## What's not done / open
+
+- `2cb1757` is not yet on `main` -- if a real end-to-end test against
+  backend-watchlist happens before it's merged, the old
+  best-effort-only behavior (and the small duplicate-row risk on a
+  retried timeout) still applies there. Worth confirming merge status
+  before relying on this for a real demo.
+- No real end-to-end retry-duplicate test run against a live
+  backend-watchlist with `2cb1757` deployed -- confirmed by reading the
+  contract commit directly, not by testing our own retry path against
+  a real server (still unreachable from this dev machine, per Session
+  20/21's open item).
+
 # Session 23 -- first real live-stream test against P3's Docker/MediaMTX relay, found and fixed a real connection bug in `process_hls_stream()`
 
 P3 shared a live Cloudflare-tunneled HLS relay

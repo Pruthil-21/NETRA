@@ -13,7 +13,7 @@ export function getHlsStreamUrl(streamId: number | string | null | undefined): S
   if (streamId === null || streamId === undefined || streamId === '') return { url: null, reason: 'no-stream' };
 
   const trimmedBase = base.replace(/\/+$/, '');
-  return { url: `${trimmedBase}/stream/${streamId}/index.m3u8` };
+  return { url: `${trimmedBase}/stream/${streamId}/index.m3u8?cookieCheck=1` };
 }
 
 /**
