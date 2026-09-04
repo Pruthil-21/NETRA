@@ -3505,3 +3505,80 @@ real backend delivery needs confirming again, not a code fix.
   because the process had already been killed (Ctrl+C) by the time it
   ran, not a real "during the run" reading. Still needed for real
   worker-count planning toward 30 cameras.
+
+# Session 30 -- root-caused cam07's zero results: our own low-light enhancement was destroying real detections
+
+Session 29 left cam07's zero-result mystery open. Confirmed with the
+user: cam07 genuinely is night footage, and a human can read some of
+its plates -- so the model failing where a human succeeds pointed at
+the pipeline, not the footage being hopeless.
+
+## Root cause, measured directly on 5 real frames spread through the video
+
+`enhance_low_light()` (denoise + CLAHE, validated in Session 5/6
+against *synthetic* darkened test images) actively hurts detection on
+*real* night CCTV footage more often than it helps:
+
+| Frame | Raw YOLO | Enhanced YOLO |
+|---|---|---|
+| 0 | car @ 0.42 | **nothing** |
+| 8000 | car @ 0.54 | **nothing** |
+| 15000 | 2 cars @ 0.78, 0.72 | 2 cars @ 0.73, 0.55 (worse) |
+| 25000 | car @ 0.25 | car @ 0.33 (better) |
+
+3 of 4 real dark frames got worse or lost detection entirely with
+enhancement; only 1 improved. The current pipeline *replaces* the raw
+frame with the enhanced one before running YOLO, so on the frames where
+enhancement hurts, the raw frame's working detection is just gone with
+no fallback. Session 5/6's synthetic test set apparently doesn't
+represent real night CCTV's actual noise/compression characteristics.
+
+## Fix: run YOLO on both raw and enhanced when dark, merge results
+
+`detect_plate_from_frame()`: on a low-light frame, both
+`yolo_model(infer_frame)` and `yolo_model(enhance_low_light(infer_frame))`
+now run, and their box lists are concatenated before the existing
+size/aspect-ratio filtering. Can only recover detections the old
+enhanced-only pass would have lost -- never loses one the raw frame
+finds. Costs a second YOLO pass, but only on frames flagged low-light,
+and the user explicitly said this tradeoff is acceptable (losing real
+detections matters more than the extra latency for this project's
+frequently-night footage). No dedup of overlapping boxes from the two
+passes -- redundant OCR calls on the same vehicle are wasteful but not
+incorrect, since `VehicleTracker`'s IoU matching already merges them
+back into one track downstream.
+
+## Verified two ways, not just reasoned about
+
+1. **Matched before/after on the same 5 frames** (via `git stash`, so
+   both runs used identical code otherwise): frame 0 went from 0 vehicle
+   boxes found to 1 (recovered); frames 8000/25000 stayed at 0 in both
+   (filtered by the pipeline's own downstream area/aspect checks, not
+   enhancement -- an honest finding, not everything improved); frame
+   15000 unchanged (already worked); 0 regressions.
+2. **Real live video, side by side, same footage, requested explicitly
+   by the user rather than relying on static frames alone**: old code
+   on `cam07.mp4` (150s wall time) produced 3 raw candidate reads, 0
+   confirmed plates. New code on the same file (240s wall time, longer
+   window since the extra YOLO pass slows dark frames) produced 12
+   candidate reads and 1 real confirmed plate (`GJ32B9799`, confidence
+   0.96, pattern match) -- zero confirmed events under the old code,
+   one under the new one, on the same real footage.
+3. **No regression**: `tests/test_pipeline_smoke.py` still passes 3/3
+   exact matches (this fix only touches the `is_low_light()` branch,
+   untouched for daytime footage) and
+   `tests/test_reconfirm_cooldown.py` still passes.
+
+## What's not done / open
+
+- Only spot-checked 5 static frames plus two live-video windows, not a
+  full ground-truth accuracy re-run on cam07 -- a real percentage would
+  need the same rigorous human-verification process as Session 18/19,
+  not done here.
+- No dedup of the raw+enhanced passes' overlapping boxes -- accepted as
+  a real but minor inefficiency, not built, since it doesn't affect
+  correctness (see above).
+- Not yet re-tested on the real GPU server -- this was developed and
+  verified entirely on the Mac against a local copy of the same
+  cam07.mp4 file; the real 30-camera/GPU-server picture (with this fix
+  in place) is still open.

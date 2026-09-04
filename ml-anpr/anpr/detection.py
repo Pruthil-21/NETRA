@@ -218,7 +218,23 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     # docstring for the threshold, and ALPR_IMPROVEMENT_LOG.md Session
     # 6 for the measured cost of this gated version specifically.
     frame_is_dark = is_low_light(infer_frame)
-    results = yolo_model(enhance_low_light(infer_frame) if frame_is_dark else infer_frame, verbose=False)
+    if frame_is_dark:
+        # Session 5/6 validated enhance_low_light() as a net win against
+        # *synthetically* darkened test images -- real night CCTV
+        # footage (cam07) doesn't generalize the same way, measured
+        # directly, not assumed: across 4 real dark frames, the enhanced
+        # version lost a vehicle YOLO found on the raw frame entirely in
+        # 2/4, reduced confidence in 1/4, and only improved detection in
+        # 1/4. Running YOLO on both and merging their boxes can only
+        # recover what enhancement would otherwise silently destroy --
+        # never loses a raw-frame detection, at the cost of a second
+        # YOLO pass on dark frames only (accepted; this project's video
+        # sources are frequently night footage where losing detections
+        # matters more than the extra latency).
+        results = list(yolo_model(infer_frame, verbose=False)) + \
+            list(yolo_model(enhance_low_light(infer_frame), verbose=False))
+    else:
+        results = yolo_model(infer_frame, verbose=False)
     vehicle_classes = {2, 3, 5, 7}
 
     infer_h, infer_w = infer_frame.shape[:2]
