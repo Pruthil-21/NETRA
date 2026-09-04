@@ -5,14 +5,16 @@ routers/detections.py), never posted here directly — a watchlist match is
 detected and the alert row created in the same request that records the
 underlying detection, so ml-anpr only ever calls one endpoint.
 """
-from fastapi import APIRouter, Depends, HTTPException
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from psycopg2.extras import RealDictCursor  # type: ignore
 
 from ..auth import require_role
+from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
 from ..schemas import AlertOut, AlertStatusUpdate
-from ..services import alerts_service, audit_service
+from ..services import alerts_service, alerts_stream, audit_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -45,3 +47,19 @@ def update_alert_status(
     audit_service.log(db, actor, "status_change", "alert", alert_id, reason_code=body.reason_code)
     logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
     return alert
+
+
+@router.websocket("/stream")
+async def alerts_stream_ws(websocket: WebSocket, token: str = Query(...)):
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+    except jwt.InvalidTokenError:
+        await websocket.close(code=4401)
+        return
+
+    await alerts_stream.manager.connect(websocket, payload.get("scope_type", "platform"), payload.get("scope_value"))
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        alerts_stream.manager.disconnect(websocket)

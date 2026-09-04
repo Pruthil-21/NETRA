@@ -6,7 +6,7 @@ in the latest history row so callers always see the current status.
 """
 from psycopg2.extras import RealDictCursor
 
-from . import govt_lookup_service, watchlist_service
+from . import alerts_stream, govt_lookup_service, watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
     SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
@@ -98,7 +98,14 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
         (camera_id, plate_number, match["id"], detection_id),
     )
     new_id = db.fetchone()["id"]
-    return get_alert(db, new_id)
+    alert = get_alert(db, new_id)
+
+    db.execute("SELECT dept FROM cameras WHERE id = %s", (camera_id,))
+    dept_row = db.fetchone()
+    camera_district = dept_row["dept"] if dept_row else None
+    alerts_stream.manager.broadcast_sync(alert, camera_district)
+
+    return alert
 
 
 def has_prior_status_change(db, alert_id: int, changed_by) -> bool:
