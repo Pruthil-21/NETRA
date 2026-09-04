@@ -500,16 +500,18 @@ def reports_summary(user=Depends(get_current_user)):
 def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         fields = camera.model_dump(exclude_unset=True)
-        if fields.get("circle_id") is not None:
+        if "circle_id" in fields or "dept" in fields:
             existing = cameras_service.get_camera(conn, camera_id)
             if existing is None:
                 raise HTTPException(status_code=404, detail="Camera not found")
+            effective_circle_id = fields.get("circle_id", existing.get("circle_id"))
             effective_dept = fields.get("dept", existing["dept"])
-            circle = circles_service.get_circle(conn, fields["circle_id"])
-            if circle is None:
-                raise HTTPException(status_code=404, detail="Circle not found")
-            if circle["district"] != effective_dept:
-                raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+            if effective_circle_id is not None:
+                circle = circles_service.get_circle(conn, effective_circle_id)
+                if circle is None:
+                    raise HTTPException(status_code=404, detail="Circle not found")
+                if circle["district"] != effective_dept:
+                    raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
 
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:

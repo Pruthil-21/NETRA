@@ -184,3 +184,36 @@ def test_update_camera_with_missing_circle_404(client, officer_headers, gap_anal
 
     update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": 999999}, headers=officer_headers)
     assert update_resp.status_code == 404
+
+
+def test_update_camera_dept_change_alone_rejected_when_it_orphans_existing_circle_id(
+    client, officer_headers, circle_test_rows, gap_analysis_test_cameras
+):
+    """A camera already has a circle_id whose district matches its current
+    dept. A PUT that changes ONLY dept (circle_id absent from the body
+    entirely) must still be validated against the camera's existing
+    circle_id -- otherwise the camera ends up with a dept that no longer
+    matches its circle's district."""
+    circle_resp = client.post(
+        "/circles", json={"name": "Dept Change Guard Circle", "district": NEW_CAMERA["dept"]},
+        headers=officer_headers,
+    )
+    circle_id = circle_resp.json()["id"]
+    circle_test_rows.append(circle_id)
+
+    create_resp = client.post(
+        "/cameras", json={**NEW_CAMERA, "circle_id": circle_id}, headers=officer_headers
+    )
+    camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+    assert create_resp.json()["circle_id"] == circle_id
+
+    update_resp = client.put(
+        f"/cameras/{camera_id}", json={"dept": "Some Other District"}, headers=officer_headers
+    )
+    assert update_resp.status_code == 400
+
+    # the rejected update must not have partially applied -- dept and circle_id are unchanged
+    get_resp = client.get(f"/cameras/{camera_id}", headers=officer_headers)
+    assert get_resp.json()["dept"] == NEW_CAMERA["dept"]
+    assert get_resp.json()["circle_id"] == circle_id
