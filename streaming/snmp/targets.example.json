@@ -1,0 +1,10 @@
+{
+  "mode": "mock",
+  "camera_limit": 30,
+  "mock_states": {
+    "cam01": "online",
+    "cam02": "online",
+    "cam03": "online"
+  },
+  "notes": "Mock mode simulates health. Configure real SNMPv3 targets only after approved network access is available."
+}

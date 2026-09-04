@@ -15,6 +15,8 @@ venv/
 # Env
 .env
 .env.local
+streaming/.organizer-password
+streaming/snmp/targets.json
 
 # OS
 .DS_Store
@@ -44,3 +46,6 @@ ml-anpr/test_images/after/
 
 # Local cloudflared tunnel logs (machine-specific)
 cf-tunnel-*.log
+
+# Local planning/working docs (never pushed)
+docs/

@@ -3144,3 +3144,160 @@ for the first time this project.
 - The tunnel URL is a Cloudflare quick-tunnel and will change if P3's
   container restarts -- not hardcoded anywhere in config, used only as
   a one-off test argument, per P3's own warning.
+
+# Session 24 -- reconfirm cooldown: a broken-and-reformed track for the same real vehicle could log it twice
+
+Real question raised, not hypothetical: if a vehicle sits in heavy
+traffic and gets blocked from view by another car for more than
+`MAX_MISSED_FRAMES` (5) processed frames, does it log twice on the same
+camera?
+
+Traced the actual mechanism: `PlateConfirmationTracker` (per-track)
+already refuses to re-confirm within its own track once confirmed. But
+when a track is lost (blocked/occluded past `MAX_MISSED_FRAMES`) and the
+same real vehicle is picked back up, `VehicleTracker.update()` creates a
+**brand-new track with a brand-new `PlateConfirmationTracker`** -- no
+memory of the old one. The old `VehicleTracker`-level `self.confirmed`
+set was only ever consulted by the VLM-fallback path
+(`pop_ready_vlm_confirmations()`), not the normal OCR-confirmation path
+in `update()` -- so a broken-and-reformed track for the same plate could
+genuinely produce a second confirmed event and a second backend POST.
+
+## Fix: time-bounded reconfirm cooldown, not a permanent one
+
+`VehicleTracker.confirmed` changed from a plain `set()` to a `dict` of
+`plate -> last-confirmed monotonic timestamp`. New
+`RECONFIRM_COOLDOWN_SEC = 45` class constant, checked in both
+confirmation paths (`update()`'s normal OCR path and
+`pop_ready_vlm_confirmations()`) via a shared `_recently_confirmed()`/
+`_mark_confirmed()` pair -- same dedup logic both paths already used,
+just made consistent and given an expiry.
+
+Deliberately **not** a permanent "never again" set: a camera that runs
+for hours needs to treat the same plate returning much later (a genuine
+separate sighting) as a new event, not silently swallow it forever. 45s
+covers "blocked by traffic for a few seconds," not "came back this
+afternoon." `_recently_confirmed()` also prunes expired entries on every
+call, so this stays bounded over a long-running stream without a
+separate cleanup pass.
+
+## Verification
+
+New `tests/test_reconfirm_cooldown.py` (pure logic, no models, matches
+this project's existing `tests/test_pipeline_smoke.py` `__main__`-style
+convention): confirms a plate once via one track, forces that track to
+be pruned (feeds `MAX_MISSED_FRAMES + 1` empty frames), then re-confirms
+the same plate via a second track at a different box -- asserts zero
+events fire the second time. Passes.
+
+## What's not done / open
+
+- No real-footage test of this specific scenario (a real vehicle
+  genuinely blocked mid-track) -- the fix is verified against the exact
+  mechanism traced in the code, not observed against a real occlusion
+  event in live footage, since reproducing that on demand isn't
+  practical.
+- 45s is a reasoned default (covers a traffic-light/blocked-view delay),
+  not tuned against real measured occlusion durations -- worth revisiting
+  if real footage shows blocks lasting meaningfully longer.
+
+# Session 25 -- P3 handoff: 30 real Organizer cameras, cam01-30 -- real exponential backoff, configurable multi-camera runner, two honest blockers found
+
+P3's handoff: Organizer's HLS relay now serves genuine live feeds only
+(recorded fallback disabled), `direct-cam01` through `direct-cam30`,
+same `.../stream/direct-camNN/index.m3u8?cookieCheck=1` pattern as
+Session 23's single-camera test. Explicit asks: treat a missing/timed-out/
+404 playlist as an unavailable camera and retry with backoff, no portal
+credentials needed, keep the base URL configurable (temporary tunnel).
+
+## Fixed: backoff wasn't actually exponential
+
+`process_hls_stream()`'s `_open()` docstring already claimed "retries
+with backoff," but the real implementation was a flat
+`time.sleep(reconnect_interval_sec)` on every attempt -- not backoff at
+all. Changed to real exponential backoff (`reconnect_interval_sec * 2 **
+(attempt-1)`, capped at 30s so `max_open_attempts=10` can't add up to an
+absurd total wait), matching the doubling pattern `event_sender.py`
+already uses elsewhere in this codebase. A 404/timeout/missing camera
+already fell through to this same retry loop generically (via
+`cv2.VideoCapture.isOpened()` returning False) -- confirmed correct
+before touching anything, only the delay itself needed fixing.
+
+## Built: `run_organizer_cameras.py`, a configurable multi-camera runner
+
+New CLI wrapper around `anpr.pipeline.orchestrator.ScalablePipeline`
+(previously had no CLI wrapper at all, per Session 21's own note) --
+`--hls-base-url` (or `HLS_BASE_URL` env var), `--cameras` (default
+`1-30`), `--num-workers`, `--sample-rate`. Base URL is never hardcoded
+anywhere, per P3's explicit ask and the same caution already applied to
+every other Cloudflare quick-tunnel URL in this project.
+
+`--num-workers` defaults to **1, not 30 or `len(cameras)`** -- real,
+not assumed: Session 24's own testing already proved 2 concurrent
+cameras on this single-GPU Mac produces a saturated frame queue and
+**zero** confirmed events in 90s (vs. real detections when run one at a
+time). Defaulting to fake/hopeful parallelism here would silently
+under-deliver against a real 30-camera demo; documented plainly in the
+script's own docstring instead, with instructions to only raise it on
+real multi-GPU/multi-core hardware and re-verify there.
+
+## Two real blockers found, not glossed over
+
+1. **20 of 30 cameras have no numeric camera_id.** `CAMERA_ID_MAP` only
+   covers `direct-cam01`-`direct-cam10` (P6/Dhruv-confirmed values 43-52
+   from Session 20). `direct-cam11` through `direct-cam30` aren't in it
+   at all -- confirmed by reading `anpr/config.py` directly, not
+   assumed. Detections from those 20 cameras will run real local
+   inference but `send_detection_to_watchlist`/`EventSender` will
+   correctly no-op with a `[WARN]` rather than send a wrong camera_id --
+   same fail-safe-not-fail-crash behavior already documented for
+   unmapped cameras, just now affecting most of the fleet. Needs a real
+   handoff to P6/registry for cam11-30's actual numeric ids before a
+   full 30-camera run can reach the backend.
+2. **The tunnel URL P3 gave doesn't resolve.** `curl` on
+   `https://respiratory-football-fin-counties.trycloudflare.com/...`
+   fails at DNS resolution (`Could not resolve host`), checked directly,
+   not assumed to be a local network issue. Could be a typo, the tunnel
+   not started yet, or DNS propagation delay -- worth confirming with P3
+   before assuming the code is at fault if a live run fails.
+
+## What's not done / open
+
+- Not run against any of the 30 real cameras yet -- blocked on the
+  tunnel resolving. `run_organizer_cameras.py` is written and its
+  URL-building/argument-parsing verified directly, but not yet exercised
+  against a real reachable relay.
+- CAMERA_ID_MAP extension for cam11-30 needs real values from P6, not
+  guessed -- same discipline as Session 20's real camera-id handoff.
+
+# Session 26 -- fixed a real bug in Session 24's own cooldown fix: "Total confirmed plates" undercounted on a real GPU-server run
+
+First real GPU-server run of `cam06.mp4` came back with ~85 real
+`[CONFIRMED EVENT]` lines during the run, but the final `Total confirmed
+plates` summary printed only 13. Traced directly, not guessed: Session
+24's `RECONFIRM_COOLDOWN_SEC` fix reused `VehicleTracker.confirmed` for
+two different jobs at once -- short-term cooldown suppression (which
+needs continuous pruning to stay bounded) and the permanent end-of-run
+summary (which must never lose an entry). `_recently_confirmed()` prunes
+that same dict on every call, so by the time a ~7-minute real run ended,
+only the last 45 seconds of confirmations were still in it. The actual
+detection and (once camera_id is fixed, per the separate issue found in
+this same run) backend-sending were never affected -- this was a
+summary-print-only bug, not a data-loss bug.
+
+## Fix: split into two structures with two different lifetimes
+
+`VehicleTracker.__init__` now has `_recent_confirmations` (private,
+plate -> timestamp, continuously pruned, cooldown-suppression only) and
+`confirmed_plates` (public, plain `set`, permanent, every plate
+confirmed this whole session). `_mark_confirmed()` updates both.
+`anpr/streaming.py`'s three "Total confirmed plates" prints now read
+`tracker.confirmed_plates` instead of the old `tracker.confirmed`.
+
+## Verification
+
+Extended `tests/test_reconfirm_cooldown.py`: after confirming the
+cooldown-suppression behavior, forces a cooldown entry's timestamp into
+the past directly (no slow real sleep) to simulate "long after
+confirmation," asserts the cooldown check correctly reports expired,
+and asserts `confirmed_plates` is unaffected by that pruning. Passes.

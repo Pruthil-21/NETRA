@@ -130,4 +130,40 @@ describe('P2 Frontend Map: Feature Tests', () => {
       expect(screen.getByText('Gita Mandir Bus Port')).toBeInTheDocument();
     });
   });
+
+  it('Feature 5: CameraRegistryContext deduplicates a registry camera that collides with a reserved demo id', async () => {
+    // id 101 is reserved for VEHICLE_TRACE_DEMO_CAMERAS's "Petlad Entry Checkpoint" --
+    // this simulates the registry's own auto-incrementing ids accidentally landing on
+    // it too, which produced a duplicate-key React crash on every map render.
+    const collidingRegistryCamera: Camera = { ...MOCK_CAMERAS[0], id: 101, name: 'Accidental Collision Camera' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => [collidingRegistryCamera] })
+    );
+
+    function TestConsumer() {
+      const { cameras } = useCameraRegistry();
+      return (
+        <ul>
+          {cameras.map((c: Camera) => (
+            <li key={c.id}>
+              {c.id}:{c.name}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+
+    render(
+      <CameraRegistryProvider>
+        <TestConsumer />
+      </CameraRegistryProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('101:Petlad Entry Checkpoint')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('101:Accidental Collision Camera')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/^101:/)).toHaveLength(1);
+  });
 });

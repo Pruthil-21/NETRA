@@ -1,0 +1,25 @@
+services:
+  snmp-monitor:
+    build:
+      context: .
+      dockerfile: snmp/Dockerfile
+    container_name: netra-snmp-monitor
+    restart: unless-stopped
+    cpus: "${SNMP_MONITOR_CPUS:-0.25}"
+    mem_limit: "${SNMP_MONITOR_MEMORY_LIMIT:-128m}"
+    memswap_limit: "${SNMP_MONITOR_MEMORY_LIMIT:-128m}"
+    environment:
+      SNMP_TARGETS_FILE: /config/targets.json
+      CAMERA_MANIFEST: /recordings/cameras.json
+      SNMP_MONITOR_PORT: "9116"
+    volumes:
+      - "${SNMP_TARGETS_CONFIG:-./snmp/targets.example.json}:/config/targets.json:ro"
+      - "${HOME}/Downloads/NETRA-organizer-archive:/recordings:ro"
+    ports:
+      - "127.0.0.1:9116:9116"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:9116/healthz"]
+      interval: 15s
+      timeout: 7s
+      retries: 3
+      start_period: 10s

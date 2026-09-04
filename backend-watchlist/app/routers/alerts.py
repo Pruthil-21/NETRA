@@ -10,6 +10,7 @@ from psycopg2.extras import RealDictCursor  # type: ignore
 
 from ..auth import require_role
 from ..database import get_db
+from ..logging_config import logger
 from ..schemas import AlertOut, AlertStatusUpdate
 from ..services import alerts_service, audit_service
 
@@ -30,8 +31,17 @@ def update_alert_status(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    alert = alerts_service.update_status(db, alert_id, body.status, user.get("sub"))
+    actor = user.get("badge_number", user.get("sub"))
+
+    if body.status == "ESCALATED" and alerts_service.has_prior_status_change(db, alert_id, actor):
+        raise HTTPException(
+            status_code=409,
+            detail="Separation of duty: the officer who already acted on this alert cannot also escalate it",
+        )
+
+    alert = alerts_service.update_status(db, alert_id, body.status, actor)
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
-    audit_service.log(db, user.get("sub"), "status_change", "alert", alert_id)
+    audit_service.log(db, actor, "status_change", "alert", alert_id, reason_code=body.reason_code)
+    logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
     return alert

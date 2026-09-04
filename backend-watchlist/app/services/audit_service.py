@@ -6,11 +6,11 @@ keeps each service independently owned with zero cross-folder edits.
 from psycopg2.extras import RealDictCursor
 
 
-def log(db: RealDictCursor, user_id, action: str, resource_type: str, resource_id=None):
+def log(db: RealDictCursor, user_id, action: str, resource_type: str, resource_id=None, reason_code=None):
     db.execute(
         """
-        INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO audit_logs (user_id, action, resource_type, resource_id, badge_number, reason_code)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (user_id, action, resource_type, resource_id),
+        (user_id, action, resource_type, resource_id, user_id, reason_code),
     )

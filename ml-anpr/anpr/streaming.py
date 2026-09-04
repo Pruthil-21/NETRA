@@ -71,7 +71,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed}")
+        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
 
     finally:
         stream.stop()
@@ -142,7 +142,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
             }
             print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
 
-    print(f"\nTotal confirmed plates: {tracker.confirmed}")
+    print(f"\nTotal confirmed plates: {tracker.confirmed_plates}")
 
 
 def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_threshold=2, window_size=10,
@@ -195,7 +195,15 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
                 return c
             c.release()
             print(f"Failed to open stream (attempt {attempt}/{max_open_attempts}): {hls_url}")
-            time.sleep(reconnect_interval_sec)
+            if attempt < max_open_attempts:
+                # Real exponential backoff (was a flat reconnect_interval_sec
+                # delay before, despite this function's own docstring already
+                # saying "backoff") -- same doubling pattern EventSender
+                # already uses, capped so max_open_attempts=10 can't add up
+                # to an absurd total wait. Covers P3's ask to back off on a
+                # missing/timed-out/404 camera rather than hammer it.
+                delay = min(reconnect_interval_sec * (2 ** (attempt - 1)), 30.0)
+                time.sleep(delay)
         return None
 
     cap = _open()
@@ -246,7 +254,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed}")
+        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
 
     finally:
         cap.release()

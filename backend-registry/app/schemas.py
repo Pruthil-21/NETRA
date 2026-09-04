@@ -2,9 +2,10 @@
 
 Field names match /contract/API_CONTRACT.md exactly.
 """
+from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CameraCreate(BaseModel):
@@ -53,6 +54,21 @@ class CameraBulkResult(BaseModel):
     reason: Optional[str] = None
 
 
+class UptimeWindow(BaseModel):
+    status: str
+    from_: datetime = Field(alias="from")
+    to: Optional[datetime] = None
+    duration_seconds: float
+
+    model_config = {"populate_by_name": True}
+
+
+class CameraUptimeReport(BaseModel):
+    camera_id: int
+    current_status: str
+    windows: list[UptimeWindow]
+
+
 class ReportSummary(BaseModel):
     total_cameras: int
     cameras_by_department: dict[str, int]
@@ -62,3 +78,106 @@ class ReportSummary(BaseModel):
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
+    blacklist_entries_last_24h: Optional[int] = None
+    avg_alert_response_seconds: Optional[float] = None
+
+
+class LoginRequest(BaseModel):
+    badge_number: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    token: str
+
+
+class MeResponse(BaseModel):
+    badge_number: str
+    name: str
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    permissions: list[str]
+
+
+class PostingSummary(BaseModel):
+    id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class OfficerOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    active_posting: Optional[PostingSummary] = None
+
+
+class PostingOut(BaseModel):
+    id: int
+    officer_id: int
+    role: str
+    scope_type: str
+    scope_value: Optional[str] = None
+    is_active: bool
+
+
+class PostingCreate(BaseModel):
+    officer_id: int
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class RolePermissionsOut(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    permissions: list[str]
+
+
+class RolePermissionsUpdate(BaseModel):
+    permissions: list[str]
+    reason_code: Optional[str] = None
+
+
+class PaginatedCamerasOut(BaseModel):
+    cameras: list[CameraOut]
+    next_cursor: Optional[int] = None
+
+
+class CameraSummaryOut(BaseModel):
+    total: int
+    online: int
+    degraded: int
+    offline: int
+    real_stream_count: int
+    synthetic_count: int
+    edge_node_count: int
+
+
+class DistrictCount(BaseModel):
+    district: str
+    count: int
+
+
+class DistrictSummaryOut(BaseModel):
+    districts: list[DistrictCount]
+
+
+class SyntheticDetectionEventIn(BaseModel):
+    event_id: str
+    camera_id: int
+    edge_node_id: Optional[int] = None
+    payload: Optional[dict] = None
+
+
+class SyntheticDetectionEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
+
+
+class ArchiveResult(BaseModel):
+    archived: int

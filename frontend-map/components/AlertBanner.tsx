@@ -43,6 +43,12 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
   const [alertQueue, setAlertQueue] = useState<Alert[]>([]);
   const [seenIds, setSeenIds] = useState<Set<number>>(new Set());
   const [actionPending, setActionPending] = useState(false);
+  // Dismiss reads as final in a way Acknowledge/Escalate don't -- both of those
+  // still leave the alert sitting in NEW/ACKNOWLEDGED where it can be acted on
+  // again, but Dismiss is the "nothing more to do here" call. One extra click
+  // guards against a mis-click on a fast-arriving queue; it reverts on its own
+  // if the officer moves on instead of confirming.
+  const [confirmDismiss, setConfirmDismiss] = useState(false);
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -50,7 +56,7 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
         const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts`);
 
         if (!res.ok) {
-          console.warn(`Alerts API returned ${res.status} — check NEXT_PUBLIC_DEMO_OFFICER_JWT is a valid officer token.`);
+          console.warn(`Alerts API returned ${res.status} — check you are logged in with a valid officer session.`);
           onConnectionChange?.(false);
           return;
         }
@@ -85,6 +91,14 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
 
   const activeAlert = alertQueue[0] ?? null;
   const queuedCount = alertQueue.length - 1;
+
+  // A pending confirm is scoped to whichever alert asked for it -- once the
+  // queue advances (this alert got actioned) or a fresh alert jumps the
+  // queue, any leftover "Confirm?" state belongs to an alert that's no
+  // longer on screen.
+  useEffect(() => {
+    setConfirmDismiss(false);
+  }, [activeAlert?.id]);
 
   // Previously "Dismiss" only removed the alert from local browser state — it never
   // told backend-watchlist anything happened. That meant the append-only audit trail
@@ -155,11 +169,20 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
         </button>
         <button
           disabled={actionPending}
-          onClick={() => handleAction("DISMISSED")}
-          title="False positive / not actionable"
-          className="bg-red-800 hover:bg-red-900 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
+          onClick={() => {
+            if (confirmDismiss) {
+              handleAction("DISMISSED");
+              return;
+            }
+            setConfirmDismiss(true);
+            setTimeout(() => setConfirmDismiss(false), 4000);
+          }}
+          title={confirmDismiss ? "Click again to confirm" : "False positive / not actionable"}
+          className={`px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50 ${
+            confirmDismiss ? "bg-red-950 ring-1 ring-red-300 animate-pulse" : "bg-red-800 hover:bg-red-900"
+          }`}
         >
-          Dismiss
+          {confirmDismiss ? "Confirm Dismiss?" : "Dismiss"}
         </button>
       </div>
     </div>

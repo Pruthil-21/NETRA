@@ -80,3 +80,22 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs (resource_type, resource_id);
+
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS badge_number TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason_code TEXT;
+
+-- Client-supplied idempotency key: a live ml-anpr detection that times out
+-- and gets retried is the same real-world event twice, not two sightings.
+-- Additive only -- older callers that omit event_id are completely
+-- unaffected (NULL, no dedup), exactly like the scenario_run_id dedup below.
+ALTER TABLE detections ADD COLUMN IF NOT EXISTS event_id UUID;
+
+-- One row per event_id -- a repeat POST with the same event_id (a client
+-- retry after a timeout, not knowing whether the first attempt landed) is a
+-- no-op that returns the already-recorded detection instead of inserting a
+-- duplicate. Independent of, and takes priority over, the scenario_run_id
+-- dedup above -- the two are for different source types and a caller sends
+-- at most one of them in practice.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id_dedup
+    ON detections (event_id)
+    WHERE event_id IS NOT NULL;
