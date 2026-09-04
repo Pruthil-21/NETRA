@@ -124,9 +124,11 @@ def search_detections(
     camera_id: int | None = None,
     date_from=None,
     date_to=None,
+    dept: str | None = None,
 ):
     clauses = []
     params = []
+    joins = ""
     if plate_number:
         clauses.append("plate_number = %s")
         params.append(normalize_plate(plate_number))
@@ -139,9 +141,19 @@ def search_detections(
     if date_to is not None:
         clauses.append("detected_at <= %s")
         params.append(date_to)
+    if dept is not None:
+        # cameras is owned by backend-registry but lives in the same
+        # physical Postgres instance (same convention as audit_logs).
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    db.execute(f"SELECT * FROM detections {where} ORDER BY detected_at ASC", params)
+    select_cols = "detections.*" if joins else "*"
+    db.execute(
+        f"SELECT {select_cols} FROM detections {joins} {where} ORDER BY detected_at ASC",
+        params,
+    )
     return db.fetchall()
 
 

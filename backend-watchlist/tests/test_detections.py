@@ -184,3 +184,78 @@ def test_event_id_is_echoed_back_in_the_response(client, internal_headers):
         headers=internal_headers,
     )
     assert resp.json()["detection"]["event_id"] == event_id
+
+
+def _make_rbac_token(role: str, scope_type: str, scope_value=None, badge_number="TEST-001"):
+    import jwt
+    from app.config import settings
+
+    return jwt.encode(
+        {
+            "sub": "1", "badge_number": badge_number, "name": "Test Officer",
+            "role": role, "scope_type": scope_type, "scope_value": scope_value,
+            "permissions": [],
+        },
+        settings.jwt_secret, algorithm="HS256",
+    )
+
+
+def _insert_test_camera(dept: str) -> int:
+    """Creates a real, isolated camera row in a controlled department, so
+    scoping tests never depend on what dept ambient seed data happens to
+    have at some fixed id."""
+    import psycopg2
+    import psycopg2.extras
+    from app.config import settings
+
+    with psycopg2.connect(settings.database_url) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'fixed', 'govt', 'cloud', 30)
+            RETURNING id
+            """,
+            (f"Scoping Test Cam ({dept})", dept),
+        )
+        camera_id = cur.fetchone()["id"]
+        conn.commit()
+    return camera_id
+
+
+def _delete_test_camera(camera_id: int):
+    import psycopg2
+    from app.config import settings
+
+    with psycopg2.connect(settings.database_url) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM cameras WHERE id = %s", (camera_id,))
+        conn.commit()
+
+
+def test_district_scoped_search_only_returns_own_district(client, internal_headers, scoping_test_cameras):
+    cam_a = _insert_test_camera("Scoping Test District A")
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Scoping Test District B")
+    scoping_test_cameras.append(cam_b)
+    plate_a = _random_plate()
+    plate_b = _random_plate()
+    client.post("/detections", json={"camera_id": cam_a, "plate_number": plate_a}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_b, "plate_number": plate_b}, headers=internal_headers)
+
+    token = _make_rbac_token("district_command", "district", "Scoping Test District A")
+    resp = client.get("/detections", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    plates = [d["plate_number"] for d in resp.json()]
+    assert plate_a in plates
+    assert plate_b not in plates
+
+
+def test_platform_scoped_search_sees_all_districts(client, internal_headers, scoping_test_cameras):
+    cam = _insert_test_camera("Scoping Test District C")
+    scoping_test_cameras.append(cam)
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": cam, "plate_number": plate}, headers=internal_headers)
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get("/detections", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert any(d["plate_number"] == plate for d in resp.json())
