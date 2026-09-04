@@ -186,15 +186,39 @@ def test_event_id_is_echoed_back_in_the_response(client, internal_headers):
     assert resp.json()["detection"]["event_id"] == event_id
 
 
-def _make_rbac_token(role: str, scope_type: str, scope_value=None, badge_number="TEST-001"):
+# Role-accurate permission lists for the RBAC roles this test file mints
+# tokens for, matching backend-registry/scripts/seed_rbac.py's PERMISSIONS
+# table for these roles. A real login-issued token always carries the
+# role's actual permissions, so a hand-built test token needs to as well --
+# has_permission() has no fallback for an empty/missing permissions claim.
+_RBAC_ROLE_PERMISSIONS = {
+    "super_admin": [
+        "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
+        "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
+        "acknowledge_alerts", "manage_roles",
+    ],
+    "district_command": [
+        "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
+        "view_analytics", "export_data", "manage_users_roles", "acknowledge_alerts",
+    ],
+    "station_officer": [
+        "view_live_feeds", "search_vehicles", "edit_watchlist", "acknowledge_alerts",
+    ],
+}
+
+
+def _make_rbac_token(role: str, scope_type: str, scope_value=None, badge_number="TEST-001", permissions=None):
     import jwt
     from app.config import settings
+
+    if permissions is None:
+        permissions = _RBAC_ROLE_PERMISSIONS.get(role, [])
 
     return jwt.encode(
         {
             "sub": "1", "badge_number": badge_number, "name": "Test Officer",
             "role": role, "scope_type": scope_type, "scope_value": scope_value,
-            "permissions": [],
+            "permissions": permissions,
         },
         settings.jwt_secret, algorithm="HS256",
     )
