@@ -1,0 +1,78 @@
+name: netra-live
+
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.20.0
+    container_name: netra-mediamtx
+    restart: unless-stopped
+    cpus: "${MEDIAMTX_CPUS:-2.0}"
+    mem_limit: "${MEDIAMTX_MEMORY_LIMIT:-3g}"
+    memswap_limit: "${MEDIAMTX_MEMORY_LIMIT:-3g}"
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+      - "8888:8888"
+      - "8889:8889"
+      - "8189:8189/udp"
+      - "8890:8890/udp"
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+
+  live-relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.live
+    container_name: netra-live-relay
+    restart: unless-stopped
+    cpus: "${LIVE_RELAY_CPUS:-4.0}"
+    mem_limit: "${LIVE_RELAY_MEMORY_LIMIT:-2g}"
+    memswap_limit: "${LIVE_RELAY_MEMORY_LIMIT:-2g}"
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      - mediamtx
+    environment:
+      PORTAL_URL: "${PORTAL_URL:-https://cctv.corp8.cloud}"
+      MEDIAMTX_HOST: mediamtx
+      MEDIAMTX_PORT: "8554"
+      STREAM_PREFIX: direct
+      CAMERA_LIMIT: "${CAMERA_LIMIT:-30}"
+      RETRY_SECONDS: "${RETRY_SECONDS:-10}"
+      AUTH_REFRESH_SECONDS: "${AUTH_REFRESH_SECONDS:-600}"
+      TRANSCODE_CAMERAS: "${TRANSCODE_CAMERAS:-^(cam09|cam15|cam18|cam24|cam27|cam29|cam30)$}"
+      ORGANIZER_EMAIL_FILE: /run/secrets/organizer_email
+      ORGANIZER_PASSWORD_FILE: /run/secrets/organizer_password
+    secrets:
+      - organizer_email
+      - organizer_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -s /tmp/netra-live/cameras.json
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: netra-cloudflared
+    restart: unless-stopped
+    cpus: "${CLOUDFLARED_CPUS:-0.5}"
+    mem_limit: "${CLOUDFLARED_MEMORY_LIMIT:-256m}"
+    memswap_limit: "${CLOUDFLARED_MEMORY_LIMIT:-256m}"
+    depends_on:
+      - mediamtx
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --protocol
+      - http2
+      - --url
+      - http://mediamtx:8888
+
+secrets:
+  organizer_email:
+    file: ./.organizer-email
+  organizer_password:
+    file: ./.organizer-password
