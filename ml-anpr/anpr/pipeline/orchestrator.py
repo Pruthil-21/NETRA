@@ -78,6 +78,23 @@ class ScalablePipeline:
         )
         return self.metrics.snapshot(frame_queue=busiest_frame_queue, event_queue=self.event_queue)
 
+    def tracker_summary(self):
+        """Per-camera vehicle/plate-candidate/confirmed-by-tier counts,
+        aggregated across every worker's VehicleTracker instances -- the
+        same presentation-ready numbers anpr.streaming's single-camera
+        entry points print, but per camera here since a run can cover
+        several at once. Safe to call mid-run or after stop()."""
+        summary = {}
+        for worker in self.worker_pool.workers:
+            for camera_id, tracker in worker.trackers.items():
+                summary[camera_id] = {
+                    "vehicles_tracked": tracker.total_vehicles_tracked,
+                    "plate_candidates": tracker.total_plate_candidates,
+                    "confirmed_by_tier": dict(tracker.confirmed_by_tier),
+                    "confirmed_plates": sorted(tracker.confirmed_plates),
+                }
+        return summary
+
     def run_for(self, duration_sec, report_interval_sec=5):
         """Convenience for a bounded demo/test run -- starts, prints a
         metrics snapshot every report_interval_sec, stops after
@@ -91,4 +108,5 @@ class ScalablePipeline:
                 print(f"[{elapsed}s] {self.report()}")
         finally:
             self.stop()
+        print(f"Per-camera summary: {self.tracker_summary()}")
         return self.report()
