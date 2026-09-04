@@ -3269,3 +3269,35 @@ real multi-GPU/multi-core hardware and re-verify there.
   against a real reachable relay.
 - CAMERA_ID_MAP extension for cam11-30 needs real values from P6, not
   guessed -- same discipline as Session 20's real camera-id handoff.
+
+# Session 26 -- fixed a real bug in Session 24's own cooldown fix: "Total confirmed plates" undercounted on a real GPU-server run
+
+First real GPU-server run of `cam06.mp4` came back with ~85 real
+`[CONFIRMED EVENT]` lines during the run, but the final `Total confirmed
+plates` summary printed only 13. Traced directly, not guessed: Session
+24's `RECONFIRM_COOLDOWN_SEC` fix reused `VehicleTracker.confirmed` for
+two different jobs at once -- short-term cooldown suppression (which
+needs continuous pruning to stay bounded) and the permanent end-of-run
+summary (which must never lose an entry). `_recently_confirmed()` prunes
+that same dict on every call, so by the time a ~7-minute real run ended,
+only the last 45 seconds of confirmations were still in it. The actual
+detection and (once camera_id is fixed, per the separate issue found in
+this same run) backend-sending were never affected -- this was a
+summary-print-only bug, not a data-loss bug.
+
+## Fix: split into two structures with two different lifetimes
+
+`VehicleTracker.__init__` now has `_recent_confirmations` (private,
+plate -> timestamp, continuously pruned, cooldown-suppression only) and
+`confirmed_plates` (public, plain `set`, permanent, every plate
+confirmed this whole session). `_mark_confirmed()` updates both.
+`anpr/streaming.py`'s three "Total confirmed plates" prints now read
+`tracker.confirmed_plates` instead of the old `tracker.confirmed`.
+
+## Verification
+
+Extended `tests/test_reconfirm_cooldown.py`: after confirming the
+cooldown-suppression behavior, forces a cooldown entry's timestamp into
+the past directly (no slow real sleep) to simulate "long after
+confirmation," asserts the cooldown check correctly reports expired,
+and asserts `confirmed_plates` is unaffected by that pruning. Passes.

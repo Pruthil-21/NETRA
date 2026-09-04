@@ -39,4 +39,17 @@ if __name__ == "__main__":
     events += tracker.update([_det(box_b)])
     assert len(events) == 0, f"expected reconfirm suppressed, got {len(events)} events"
 
-    print("OK: reconfirm within cooldown window suppressed as expected")
+    # Regression check for the real bug this fix addresses: on a long run,
+    # _recent_confirmations prunes itself down to nothing after
+    # RECONFIRM_COOLDOWN_SEC, but confirmed_plates (the permanent record
+    # streaming.py's final summary print reads) must still have every
+    # plate ever confirmed this session -- simulate "long after" by
+    # forcing the cooldown entry's timestamp into the past directly,
+    # rather than a slow real sleep.
+    assert PLATE in tracker.confirmed_plates, "confirmed_plates should permanently record every confirmed plate"
+    for p in tracker._recent_confirmations:
+        tracker._recent_confirmations[p] -= VehicleTracker.RECONFIRM_COOLDOWN_SEC + 1
+    assert not tracker._recently_confirmed(PLATE), "cooldown entry should have expired"
+    assert PLATE in tracker.confirmed_plates, "confirmed_plates must NOT be affected by cooldown pruning"
+
+    print("OK: reconfirm within cooldown window suppressed, and confirmed_plates persists past cooldown expiry")

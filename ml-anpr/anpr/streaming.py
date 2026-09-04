@@ -71,7 +71,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed}")
+        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
 
     finally:
         stream.stop()
@@ -142,7 +142,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
             }
             print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
 
-    print(f"\nTotal confirmed plates: {tracker.confirmed}")
+    print(f"\nTotal confirmed plates: {tracker.confirmed_plates}")
 
 
 def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_threshold=2, window_size=10,
@@ -254,7 +254,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed}")
+        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
 
     finally:
         cap.release()
