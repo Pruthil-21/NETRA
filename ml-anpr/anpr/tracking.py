@@ -194,6 +194,22 @@ class VehicleTracker:
         # its vehicle later left frame. This is what callers should read.
         self.confirmed_plates = set()
 
+        # One distinct vehicle sighting per new track created (item requested
+        # for the presentation numbers: "how many cars were detected" --
+        # previously not counted anywhere, only plate reads/confirmations
+        # were). Counts sightings, not unique physical cars -- the same car
+        # leaving and re-entering frame is a new track and counts again,
+        # same honest caveat RECONFIRM_COOLDOWN_SEC's docstring already
+        # states for confirmed_plates.
+        self.total_vehicles_tracked = 0
+        # Every per-frame OCR read with a non-empty plate guess, confirmed
+        # or not -- "how many plate candidates" for the presentation.
+        self.total_plate_candidates = 0
+        # note -> count of confirmed plates in that tier ("ok - pattern
+        # match" / "ok - fallback, unverified pattern" / "ok - vlm
+        # fallback") -- the tier breakdown requested for the presentation.
+        self.confirmed_by_tier = {}
+
         # BLPR-style last-resort fallback (see vlm_fallback.py): dispatched
         # in the background because measured Ollama latency (0.48s warm /
         # 6.7s cold -- see ALPR_IMPROVEMENT_LOG.md) is too slow to block
@@ -215,9 +231,10 @@ class VehicleTracker:
         return any(_plate_similarity(plate, p) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
                    for p in self._recent_confirmations)
 
-    def _mark_confirmed(self, plate):
+    def _mark_confirmed(self, plate, note):
         self._recent_confirmations[plate] = time.monotonic()
         self.confirmed_plates.add(plate)
+        self.confirmed_by_tier[note] = self.confirmed_by_tier.get(note, 0) + 1
 
     def update(self, detections, raw_frame=None):
         """
@@ -263,6 +280,7 @@ class VehicleTracker:
                     "vlm_dispatched": False,
                 }
                 self.tracks.append(best_track)
+                self.total_vehicles_tracked += 1
 
             best_track["box"] = box
             best_track["missed"] = 0
@@ -284,10 +302,11 @@ class VehicleTracker:
             plate = det.get("plate_number")
             if not plate:
                 continue
+            self.total_plate_candidates += 1
             confirmed = best_track["tracker"].add(plate, det["confidence"], det["note"])
             if confirmed and not self._recently_confirmed(confirmed["plate_number"]):
                 confirmed_events.append(confirmed)
-                self._mark_confirmed(confirmed["plate_number"])
+                self._mark_confirmed(confirmed["plate_number"], confirmed["note"])
 
         for t in self.tracks:
             if id(t) not in matched:
@@ -350,7 +369,7 @@ class VehicleTracker:
             # vehicle in the meantime).
             if self._recently_confirmed(plate):
                 continue
-            self._mark_confirmed(plate)
+            self._mark_confirmed(plate, note)
             ready.append({"plate_number": plate, "confidence": confidence, "note": note})
         self._vlm_pending = still_pending
         return ready

@@ -3926,3 +3926,284 @@ cooldown-suppression behavior, forces a cooldown entry's timestamp into
 the past directly (no slow real sleep) to simulate "long after
 confirmation," asserts the cooldown check correctly reports expired,
 and asserts `confirmed_plates` is unaffected by that pruning. Passes.
+
+# Session 27 -- presentation-ready counts: vehicles tracked, plate candidates, confirmed-by-tier
+
+Real ask, not speculative: needed real numbers for the presentation --
+how many vehicles were seen, how many plate candidates were read, how
+many confirmed and in which tier (pattern match / fallback / VLM). None
+of this existed before except "confirmed_plates" itself; "vehicles
+tracked" wasn't counted anywhere at all.
+
+`VehicleTracker` gains three new counters: `total_vehicles_tracked`
+(incremented once per new track created -- a distinct vehicle sighting,
+same "sighting not unique physical car" caveat `confirmed_plates`
+already documents), `total_plate_candidates` (every per-frame OCR read
+with a non-empty plate guess, confirmed or not), and `confirmed_by_tier`
+(note -> count, e.g. `{"ok - pattern match": 10, "ok - fallback,
+unverified pattern": 1}`). `_mark_confirmed()` now takes `note` to feed
+the tier dict.
+
+`anpr/streaming.py`'s three separate summary prints replaced with one
+shared `_print_summary()` helper so all three entry points
+(`process_stream`/`process_video_file`/`process_hls_stream`) report the
+same four lines consistently.
+
+Verified live against `dashcam_trimmed.mp4`: `Vehicles tracked: 34`,
+`Plate candidates read: 88`, `Confirmed plates by tier: {'ok - pattern
+match': 10, 'ok - fallback, unverified pattern': 1}`, plus the existing
+`Total confirmed plates` set (11 unique). Real counts, not estimated.
+
+Explicitly NOT an accuracy number -- these are raw counts of what the
+pipeline did, not a check against ground truth. Still cannot answer "did
+accuracy improve vs. the ~59% Mac figure" without a fresh human-verified
+comparison; these numbers answer a different, legitimately useful
+question (volume/composition, for the presentation) instead.
+
+# Session 28 -- InferenceWorkers moved from threads to processes: real GPU-server test proved threading doesn't work, not even on 49GB of headroom
+
+Real evidence, not a guess: ran 2 cameras concurrently through
+`ScalablePipeline` on the Dell server's Quadro RTX 8000 (49GB, confirmed
+near-empty via `nvidia-smi` before the run). Result: 3,300-5,500ms per
+frame and 96% of frames dropped -- worse than useless, since the same
+GPU running ONE camera alone (a prior real run) hit 100+ fps. This
+matches Session 21's original open item ("true multi-GPU distribution
+... not exercised on this hardware") but proves it's not a nice-to-have
+gap -- it's a hard blocker, and the failure mode is worse than "no
+speedup," it's active thrashing.
+
+## Root cause: Python's GIL, not GPU memory
+
+`InferenceWorkerPool` used `threading.Thread` per worker. Only one
+thread runs Python bytecode at a time in CPython regardless of core
+count or GPU memory -- confirmed this is the actual mechanism (not
+guessed) by the GPU-memory evidence itself: near-zero VRAM used
+throughout the failing run, ruling out a capacity problem. PaddleOCR's
+CPU-bound pre/post-processing plus unmanaged concurrent CUDA stream
+usage across threads is the likely source of the severe (not just
+absent) speedup -- real contention, not just missed opportunity.
+
+## Fix: InferenceWorker now runs in a separate OS process
+
+`anpr/pipeline/inference_worker.py` rewritten: each `InferenceWorker` is
+a `multiprocessing.Process` (context: `spawn`, not the Linux default
+`fork` -- CUDA does not support a fork()'d process safely once a CUDA
+context exists in the parent). Processes bypass the GIL entirely --
+genuine parallel execution, each with its own interpreter and CUDA
+context.
+
+Real cost, not hidden: no shared memory across the process boundary.
+- Frame queue: `queue.Queue` -> `multiprocessing.Queue` (per worker) --
+  FrameReader (still a thread, still in the main process) is unaffected,
+  since `multiprocessing.Queue` raises the same `queue.Full`/`Empty`.
+- Event queue: `ScalablePipeline.event_queue` is now the same
+  `multiprocessing.Queue` type, for the same reason -- EventSender
+  (still a thread) is unaffected, same reasoning.
+- Metrics: `Metrics` uses a `threading.Lock`, which doesn't cross a
+  process boundary. Each worker process now reports
+  (inference-latency, event-produced/dropped) over a small internal
+  `_stats_queue`; a thread in the main process drains that into the
+  real, shared `Metrics` object. Net effect: `Metrics`'s own public API
+  (`snapshot()`, used by `report()`) is completely unchanged for
+  external callers.
+- Per-camera tracker state (`VehicleTracker.total_vehicles_tracked` etc,
+  Session 27): only exists in the child process's memory. Each worker
+  now reports its trackers' final state over `_stats_queue` right before
+  exiting; `ScalablePipeline.tracker_summary()` reads
+  `worker.tracker_summary` (populated on `stop()`) instead of reaching
+  into `worker.trackers` directly, which no longer lives in the main
+  process at all.
+
+## A real macOS-only bug found and fixed along the way
+
+`multiprocessing.Queue.qsize()` raises `NotImplementedError` on macOS
+(missing `sem_getvalue()`) -- hit directly while testing this locally,
+confirmed it works fine on Linux (the actual deploy target). Added
+`metrics.safe_qsize()` (returns `None`, not 0 -- honestly "couldn't
+measure this," not "empty," distinguished on purpose) used everywhere
+`.qsize()` used to be called directly, including `orchestrator.py`'s
+busiest-queue selection logic (which independently called `.qsize()` in
+its `max()` key and would have hit the same crash).
+
+## Verification
+
+New `tests/test_pipeline_mp_smoke.py` (real models, real child process,
+matches this project's existing `test_pipeline_smoke.py`
+run-directly-not-in-CI convention): asserts frames were actually
+processed, the camera's tracker summary made it back across the process
+boundary, vehicles were tracked, and plates were confirmed. Ran twice
+for real on this Mac (CPU/MPS, not CUDA -- proves the multiprocessing
+plumbing itself works, does NOT reprove the GPU-contention fix, which
+can only be verified on the real server): both times, real confirmed
+plates (`HR38AC7748`, `HR98E4959`, `HR26EO6477` -- all previously
+verified real plates from this same test clip), clean exit, no hangs,
+no crashes. `tests/test_reconfirm_cooldown.py` still passes unmodified.
+
+## What's not done / open
+
+- Not yet re-tested on the real GPU server -- this fix directly targets
+  the exact failure Session 28's own opening evidence describes, but
+  "should fix it" isn't "confirmed fixed." Needs a real re-run of the
+  same 2-camera test that failed, watching for real throughput and real
+  confirmed events this time.
+- Per-process GPU memory footprint not yet measured. The user's own
+  scaling idea (pack N workers into one GPU based on real memory
+  headroom, e.g. "if one video uses 2GB, use the rest for more") is
+  sound and is exactly what a process-based design enables -- but it
+  needs a real `nvidia-smi` reading per worker process on the server to
+  turn into an actual worker-count recommendation, not a guess.
+- Startup cost per worker (fresh interpreter + fresh model load under
+  `spawn`) not measured on the server -- real but one-time, matters more
+  as camera/worker count grows toward 30.
+
+# Session 29 -- real GPU-server re-test confirmed the fix, found two more real issues: an exit hang, and one camera getting zero results
+
+Ran the exact 2-camera scenario that failed in Session 28 on the real
+server (Quadro RTX 8000, 49GB). The core fix worked, dramatically:
+
+| | Threads (Session 28) | Processes (this run) |
+|---|---|---|
+| Steady-state inference latency | 3,300-5,500ms/frame | ~380-470ms/frame |
+| Frames processed in 120s | 26 | 551 |
+| Vehicles tracked | 1 (combined) | 180 (cam06 alone) |
+| Confirmed plates | 0 | 5 (real: GJ03FX8807, GJ10CG4786, GJ11S7924, GJ32AG2883) |
+
+Cold-start cost is real and visible (4,346ms avg at the 20s mark,
+settling to ~380ms by 60s) but one-time, not a per-frame tax.
+
+## New issue 1: the process hung on exit, sometimes for 10+ minutes
+
+`run_for()` completed, printed its final summary correctly, and then
+the whole script just sat there -- the user had to Ctrl+C after waiting
+~10 minutes. Root cause: `multiprocessing.Queue`'s background feeder
+thread blocks process exit trying to flush any data still sitting in
+its internal pipe buffer, and `frame_queue` was routinely reported full
+(200 real image arrays) during the run -- once the worker process is
+gone, nothing will ever read the rest, so Python's exit machinery waits
+forever for a flush that can't happen. Real, reproducible bug, not
+hypothetical -- confirmed the mechanism, not guessed.
+
+**Fix:** `InferenceWorker.stop()` now calls `cancel_join_thread()` on
+both `frame_queue` and `_stats_queue` after stopping (tells them not to
+bother flushing on exit); `ScalablePipeline.stop()` does the same for
+the shared `event_queue`, defensively, even though `EventSender`'s own
+loop normally drains it empty first. Also added a `.terminate()`
+fallback if a worker process doesn't join within 10s (the worker loop
+only checks its stop flag between frames, not mid-inference, so an
+unusually slow call could miss that window -- don't leave a zombie
+process holding a CUDA context behind).
+
+**Verified for real, not just reasoned about:** reproduced the same
+full-queue backlog condition locally (2 cameras forced onto 1 worker,
+no frame-rate limiting -- 14,268 of 14,471 frames dropped, matching the
+server's saturated-queue symptom) and timed the whole process: exited
+cleanly ~6s after its 20s run_for() window, not 10+ minutes.
+
+## New issue 2, still open: `direct-cam07` got zero results the whole run
+
+While `cam06` tracked 180 vehicles and confirmed 5 plates, `cam07` got
+exactly 0 vehicles, 0 candidates, 0 confirmed -- not fewer, nothing at
+all, for the full 120s. Not yet root-caused. Two live theories, neither
+confirmed: (a) `cam07.mp4` failed to open on this specific run, or (b)
+Python's per-process-randomized string hashing routed both cameras
+unevenly and cam07's worker never got going in time. A solo isolation
+test (`cam07` alone, one worker) was proposed to distinguish these but
+not yet run -- the exit hang interrupted that plan; worth re-running now
+that exit is fixed and won't eat another 10-minute wait.
+
+## Also confirmed, not new: backend delivery failing on this run
+
+Every send failed with `NameResolutionError` on
+`receiving-intl-mothers-santa.trycloudflare.com` -- the tunnel isn't
+resolving from the server right now. Same expected-to-recur pattern as
+every other Cloudflare quick-tunnel in this project; the retry/backoff
+logic degraded gracefully exactly as designed (events_produced=5,
+events_sent=0, clearly logged, no crash). Needs a fresh URL from P6 when
+real backend delivery needs confirming again, not a code fix.
+
+## What's not done / open
+
+- cam07-zero-results not yet root-caused (see above) -- next real step,
+  not guessed at further here.
+- Real per-worker-process GPU memory usage still not measured -- the
+  second `nvidia-smi` after this run showed both GPUs back at ~1 MiB,
+  because the process had already been killed (Ctrl+C) by the time it
+  ran, not a real "during the run" reading. Still needed for real
+  worker-count planning toward 30 cameras.
+
+# Session 30 -- root-caused cam07's zero results: our own low-light enhancement was destroying real detections
+
+Session 29 left cam07's zero-result mystery open. Confirmed with the
+user: cam07 genuinely is night footage, and a human can read some of
+its plates -- so the model failing where a human succeeds pointed at
+the pipeline, not the footage being hopeless.
+
+## Root cause, measured directly on 5 real frames spread through the video
+
+`enhance_low_light()` (denoise + CLAHE, validated in Session 5/6
+against *synthetic* darkened test images) actively hurts detection on
+*real* night CCTV footage more often than it helps:
+
+| Frame | Raw YOLO | Enhanced YOLO |
+|---|---|---|
+| 0 | car @ 0.42 | **nothing** |
+| 8000 | car @ 0.54 | **nothing** |
+| 15000 | 2 cars @ 0.78, 0.72 | 2 cars @ 0.73, 0.55 (worse) |
+| 25000 | car @ 0.25 | car @ 0.33 (better) |
+
+3 of 4 real dark frames got worse or lost detection entirely with
+enhancement; only 1 improved. The current pipeline *replaces* the raw
+frame with the enhanced one before running YOLO, so on the frames where
+enhancement hurts, the raw frame's working detection is just gone with
+no fallback. Session 5/6's synthetic test set apparently doesn't
+represent real night CCTV's actual noise/compression characteristics.
+
+## Fix: run YOLO on both raw and enhanced when dark, merge results
+
+`detect_plate_from_frame()`: on a low-light frame, both
+`yolo_model(infer_frame)` and `yolo_model(enhance_low_light(infer_frame))`
+now run, and their box lists are concatenated before the existing
+size/aspect-ratio filtering. Can only recover detections the old
+enhanced-only pass would have lost -- never loses one the raw frame
+finds. Costs a second YOLO pass, but only on frames flagged low-light,
+and the user explicitly said this tradeoff is acceptable (losing real
+detections matters more than the extra latency for this project's
+frequently-night footage). No dedup of overlapping boxes from the two
+passes -- redundant OCR calls on the same vehicle are wasteful but not
+incorrect, since `VehicleTracker`'s IoU matching already merges them
+back into one track downstream.
+
+## Verified two ways, not just reasoned about
+
+1. **Matched before/after on the same 5 frames** (via `git stash`, so
+   both runs used identical code otherwise): frame 0 went from 0 vehicle
+   boxes found to 1 (recovered); frames 8000/25000 stayed at 0 in both
+   (filtered by the pipeline's own downstream area/aspect checks, not
+   enhancement -- an honest finding, not everything improved); frame
+   15000 unchanged (already worked); 0 regressions.
+2. **Real live video, side by side, same footage, requested explicitly
+   by the user rather than relying on static frames alone**: old code
+   on `cam07.mp4` (150s wall time) produced 3 raw candidate reads, 0
+   confirmed plates. New code on the same file (240s wall time, longer
+   window since the extra YOLO pass slows dark frames) produced 12
+   candidate reads and 1 real confirmed plate (`GJ32B9799`, confidence
+   0.96, pattern match) -- zero confirmed events under the old code,
+   one under the new one, on the same real footage.
+3. **No regression**: `tests/test_pipeline_smoke.py` still passes 3/3
+   exact matches (this fix only touches the `is_low_light()` branch,
+   untouched for daytime footage) and
+   `tests/test_reconfirm_cooldown.py` still passes.
+
+## What's not done / open
+
+- Only spot-checked 5 static frames plus two live-video windows, not a
+  full ground-truth accuracy re-run on cam07 -- a real percentage would
+  need the same rigorous human-verification process as Session 18/19,
+  not done here.
+- No dedup of the raw+enhanced passes' overlapping boxes -- accepted as
+  a real but minor inefficiency, not built, since it doesn't affect
+  correctness (see above).
+- Not yet re-tested on the real GPU server -- this was developed and
+  verified entirely on the Mac against a local copy of the same
+  cam07.mp4 file; the real 30-camera/GPU-server picture (with this fix
+  in place) is still open.

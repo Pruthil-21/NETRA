@@ -5,13 +5,12 @@ horizontally-scalable entry point P3 asked for -- it does not replace
 anpr.streaming's process_stream/process_video_file/process_hls_stream,
 which stay as they are for the existing single-camera use.
 """
-import queue
 import time
 
 from .event_sender import EventSender
 from .frame_source import FrameReader
-from .inference_worker import InferenceWorkerPool
-from .metrics import Metrics
+from .inference_worker import InferenceWorkerPool, _ctx
+from .metrics import Metrics, safe_qsize
 
 
 class ScalablePipeline:
@@ -34,7 +33,13 @@ class ScalablePipeline:
                  confirm_threshold=2, window_size=10,
                  event_sender_kwargs=None):
         self.metrics = Metrics()
-        self.event_queue = queue.Queue(maxsize=event_queue_maxsize)
+        # multiprocessing.Queue, not queue.Queue -- InferenceWorkers run as
+        # separate processes now (see inference_worker.py) and need to put
+        # confirmed events onto this queue from across a process boundary.
+        # EventSender (a thread in this process) draining it works
+        # unchanged either way -- multiprocessing.Queue supports the same
+        # get(timeout=...)/empty() calls it already uses.
+        self.event_queue = _ctx.Queue(maxsize=event_queue_maxsize)
 
         self.worker_pool = InferenceWorkerPool(
             num_workers, self.event_queue, self.metrics,
@@ -66,17 +71,32 @@ class ScalablePipeline:
             r.stop()
         self.worker_pool.stop()
         self.event_sender.stop()
+        # Same real exit-hang fix as InferenceWorker.stop() (see its
+        # comment) -- EventSender's own loop normally drains this queue
+        # empty before its thread exits, but don't rely on that alone;
+        # any leftover item would otherwise block process exit.
+        self.event_queue.cancel_join_thread()
 
     def report(self):
         """A representative frame-queue depth (there's one per worker,
         not one global queue -- report the busiest one, since that's the
         one that matters for spotting a worker falling behind)."""
-        busiest_frame_queue = max(
-            (w.frame_queue for w in self.worker_pool.workers),
-            key=lambda q: q.qsize(),
-            default=None,
-        )
+        queues = [w.frame_queue for w in self.worker_pool.workers]
+        busiest_frame_queue = max(queues, key=lambda q: safe_qsize(q) or 0, default=None) if queues else None
         return self.metrics.snapshot(frame_queue=busiest_frame_queue, event_queue=self.event_queue)
+
+    def tracker_summary(self):
+        """Per-camera vehicle/plate-candidate/confirmed-by-tier counts.
+        Each InferenceWorker runs in a separate process (see
+        inference_worker.py) and reports its trackers' final state back
+        over a queue only on stop() -- so this reflects live data mid-run
+        only for workers that have already reported at least once, and is
+        complete only after stop(). Call after run_for()/stop() for the
+        real, final presentation numbers."""
+        summary = {}
+        for worker in self.worker_pool.workers:
+            summary.update(worker.tracker_summary)
+        return summary
 
     def run_for(self, duration_sec, report_interval_sec=5):
         """Convenience for a bounded demo/test run -- starts, prints a
@@ -91,4 +111,5 @@ class ScalablePipeline:
                 print(f"[{elapsed}s] {self.report()}")
         finally:
             self.stop()
+        print(f"Per-camera summary: {self.tracker_summary()}")
         return self.report()

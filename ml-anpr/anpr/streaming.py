@@ -26,6 +26,17 @@ from .detection import detect_plate_from_frame
 from .watchlist_client import send_detection_to_watchlist
 
 
+def _print_summary(tracker, label="Total confirmed plates"):
+    """Shared end-of-run stats print (vehicles tracked, plate candidates
+    read, confirmed plates broken down by tier) -- used by all three
+    entry points so the presentation-ready numbers are consistent
+    regardless of which one a run used."""
+    print(f"\nVehicles tracked: {tracker.total_vehicles_tracked}")
+    print(f"Plate candidates read: {tracker.total_plate_candidates}")
+    print(f"Confirmed plates by tier: {tracker.confirmed_by_tier}")
+    print(f"{label}: {tracker.confirmed_plates}")
+
+
 def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_threshold=2, window_size=10):
     stream = RTSPStreamReader(rtsp_url=rtsp_url, inference_dim=(640, 360)).start()
 
@@ -71,7 +82,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
+        _print_summary(tracker, label="Total confirmed plates this session")
 
     finally:
         stream.stop()
@@ -142,7 +153,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
             }
             print(f"[CONFIRMED EVENT] {event} | {confirmed['note']}")
 
-    print(f"\nTotal confirmed plates: {tracker.confirmed_plates}")
+    _print_summary(tracker)
 
 
 def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_threshold=2, window_size=10,
@@ -254,7 +265,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
 
     except KeyboardInterrupt:
         print("\n\nStream stopped by user.")
-        print(f"Total confirmed plates this session: {tracker.confirmed_plates}")
+        _print_summary(tracker, label="Total confirmed plates this session")
 
     finally:
         cap.release()
