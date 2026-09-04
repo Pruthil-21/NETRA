@@ -39,4 +39,89 @@ describe('CameraInfoOverlay', () => {
     fireEvent.click(screen.getByLabelText('Close'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  // Regression coverage for the open/close/reopen flicker loop: the overlay
+  // renders fixed inset-0 over the tile/marker it opened on top of, so that
+  // tile's own mouseleave fires as soon as the overlay appears. Without a way
+  // for the caller to know "the cursor is now over the overlay, not gone
+  // entirely," the tile's hover-grace timer would close this overlay right
+  // back out, only for the tile to "re-enter" once it closes and reopen a
+  // moment later. These two handlers are how the caller (app/page.tsx,
+  // app/map/page.tsx) tracks that and skips the spurious clear.
+  it('fires onMouseEnterOverlay when the cursor enters and onMouseLeaveOverlay + onClose when it leaves', () => {
+    const onClose = vi.fn();
+    const onMouseEnterOverlay = vi.fn();
+    const onMouseLeaveOverlay = vi.fn();
+    render(
+      <CameraInfoOverlay
+        camera={CAMERA}
+        onClose={onClose}
+        onMouseEnterOverlay={onMouseEnterOverlay}
+        onMouseLeaveOverlay={onMouseLeaveOverlay}
+      />
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.mouseEnter(dialog);
+    expect(onMouseEnterOverlay).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.mouseLeave(dialog);
+    expect(onMouseLeaveOverlay).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // Simulates the exact sequence a real hover produces: the source tile's own
+  // grace timer fires a "clear" (would-be onClose) while the overlay is still
+  // being hovered -- a caller gating that on "is the mouse over the overlay
+  // right now" (set/cleared by these two props) must not let it close.
+  it('lets a caller suppress a stale hover-grace clear while the overlay itself is hovered', () => {
+    let hoveredCameraId: number | null = CAMERA.id;
+    const overlayHoveredRef = { current: false };
+    const setHoveredCameraId = (id: number | null) => {
+      hoveredCameraId = id;
+    };
+    // Mirrors app/page.tsx's handleHoverEnd: only clears if the overlay isn't
+    // the thing currently under the cursor.
+    const handleHoverEndFromTile = (id: number) => {
+      if (hoveredCameraId === id && !overlayHoveredRef.current) setHoveredCameraId(null);
+    };
+
+    const { rerender } = render(
+      <CameraInfoOverlay
+        camera={CAMERA}
+        onClose={() => setHoveredCameraId(null)}
+        onMouseEnterOverlay={() => {
+          overlayHoveredRef.current = true;
+        }}
+        onMouseLeaveOverlay={() => {
+          overlayHoveredRef.current = false;
+        }}
+      />
+    );
+
+    fireEvent.mouseEnter(screen.getByRole('dialog'));
+    expect(overlayHoveredRef.current).toBe(true);
+
+    // The tile's own grace timer elapses next (this is the spurious signal).
+    handleHoverEndFromTile(CAMERA.id);
+    expect(hoveredCameraId).toBe(CAMERA.id); // NOT cleared -- overlay is still hovered.
+
+    rerender(
+      <CameraInfoOverlay
+        camera={CAMERA}
+        onClose={() => setHoveredCameraId(null)}
+        onMouseEnterOverlay={() => {
+          overlayHoveredRef.current = true;
+        }}
+        onMouseLeaveOverlay={() => {
+          overlayHoveredRef.current = false;
+        }}
+      />
+    );
+
+    // Cursor genuinely leaves the overlay -- this is the real close signal.
+    fireEvent.mouseLeave(screen.getByRole('dialog'));
+    expect(hoveredCameraId).toBe(null);
+  });
 });

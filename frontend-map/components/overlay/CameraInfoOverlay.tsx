@@ -11,6 +11,17 @@ interface CameraInfoOverlayProps {
   camera: Camera | null;
   circleName?: string | null;
   onClose: () => void;
+  /** Fired when the cursor enters/leaves this overlay's own footprint. The
+   * overlay renders `fixed inset-0` over whatever tile/marker the cursor was
+   * hovering when it opened -- once open, that source tile/marker's own
+   * mouseleave fires (the cursor is now over the overlay, not the tile),
+   * which would otherwise run the caller's hover-grace "end" timer and close
+   * this overlay right back out, only for hover to restart on the
+   * now-revealed tile a moment later (an open/close/reopen flicker loop).
+   * Callers use these to track "is the mouse currently over the overlay" and
+   * skip that clear while it's true -- see app/page.tsx and app/map/page.tsx. */
+  onMouseEnterOverlay?: () => void;
+  onMouseLeaveOverlay?: () => void;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -27,7 +38,13 @@ function Row({ label, value }: { label: string; value: string }) {
  * Portal-rendered to document.body so it's never affected by Leaflet's own
  * re-renders (see CameraMap.tsx's marker-ref fix, Task 7) and never clipped
  * by an ancestor's overflow/stacking context. */
-export function CameraInfoOverlay({ camera, circleName, onClose }: CameraInfoOverlayProps) {
+export function CameraInfoOverlay({
+  camera,
+  circleName,
+  onClose,
+  onMouseEnterOverlay,
+  onMouseLeaveOverlay,
+}: CameraInfoOverlayProps) {
   if (!camera || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -36,6 +53,16 @@ export function CameraInfoOverlay({ camera, circleName, onClose }: CameraInfoOve
       role="dialog"
       aria-modal="true"
       onClick={onClose}
+      onMouseEnter={onMouseEnterOverlay}
+      onMouseLeave={() => {
+        onMouseLeaveOverlay?.();
+        // The cursor genuinely left the overlay (not just moved onto one of
+        // its own children -- React's onMouseLeave, unlike onMouseOut,
+        // already ignores those) -- nothing else keeps this open, so close
+        // it the same way the tile/marker's own hover-grace timeout would
+        // have, had the overlay not been covering it.
+        onClose();
+      }}
     >
       <div
         className="w-[60vw] h-[60vh] max-w-4xl bg-panel border border-line rounded-lg shadow-2xl flex overflow-hidden"

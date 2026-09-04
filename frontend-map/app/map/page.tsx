@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useCameraRegistry, HEALTH_CHECK_INTERVAL_MS } from '@/context/CameraRegistryContext';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
@@ -51,6 +51,13 @@ export default function MapPage() {
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
   const [circles, setCircles] = useState<Circle[]>([]);
   const [hoveredCameraId, setHoveredCameraId] = useState<number | null>(null);
+  // See app/page.tsx's identical ref for the full explanation: CameraMap's
+  // per-marker hover-grace timer reports a clear (null) via onHoverChange
+  // once its own grace period elapses, which happens right after the shared
+  // CameraInfoOverlay opens and covers the marker -- without gating that
+  // clear on "is the cursor actually over the overlay right now", the
+  // overlay closes and reopens in a flicker loop.
+  const overlayHoveredRef = useRef(false);
 
   useEffect(() => {
     circlesService.listCircles().then(setCircles).catch(() => {
@@ -189,7 +196,17 @@ export default function MapPage() {
               cameras={filteredCameras}
               selectedCamera={selectedCamera}
               onSelectCamera={setSelectedCamera}
-              onHoverChange={setHoveredCameraId}
+              onHoverChange={(id) => {
+                // A clear (null) while the cursor is over the overlay is the
+                // spurious signal from the covered marker's own hover-grace
+                // timer elapsing -- skip it; the overlay's own
+                // onMouseLeaveOverlay below is what actually clears
+                // hoveredCameraId once the cursor genuinely leaves it. A
+                // non-null id is always a real hover-start and applies
+                // immediately.
+                if (id === null && overlayHoveredRef.current) return;
+                setHoveredCameraId(id);
+              }}
               highlightedCameraIds={highlightedCameraIds}
             />
           </div>
@@ -203,6 +220,12 @@ export default function MapPage() {
         camera={hoveredCamera}
         circleName={hoveredCircleName}
         onClose={() => setHoveredCameraId(null)}
+        onMouseEnterOverlay={() => {
+          overlayHoveredRef.current = true;
+        }}
+        onMouseLeaveOverlay={() => {
+          overlayHoveredRef.current = false;
+        }}
       />
     </div>
   );
