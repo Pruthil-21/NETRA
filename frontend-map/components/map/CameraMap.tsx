@@ -205,13 +205,30 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     () => (highlightedCameraIds ? Array.from(highlightedCameraIds).sort((a, b) => a - b).join(',') : ''),
     [highlightedCameraIds]
   );
-  const highlightedPositions = useMemo(() => {
-    if (!highlightedCameraIds || highlightedCameraIds.size === 0) return [];
+  // Positions (not just membership) drive MapController's bounds-fit effect,
+  // so highlightedIdsKey alone isn't enough to keep highlightedPositions'
+  // array reference stable -- a raw `cameras` dependency here re-triggers
+  // that effect (and yanks the viewport back via flyToBounds) on every real
+  // connectivity-status flip, since `cameras` gets a new array reference on
+  // every such flip (see CameraRegistryContext's updateCameraConnectivity).
+  // This key captures the lat/long of just the highlighted cameras, so it
+  // only changes when a highlighted camera's position (or the highlighted
+  // set itself) actually changes -- mirrors cameraIdKey/highlightedIdsKey above.
+  const highlightedPositionsKey = useMemo(() => {
+    if (!highlightedCameraIds || highlightedCameraIds.size === 0) return '';
     return cameras
       .filter((cam) => highlightedCameraIds.has(cam.id))
-      .map((cam) => [cam.lat, cam.long ?? 0] as [number, number]);
+      .map((cam) => `${cam.lat},${cam.long ?? 0}`)
+      .join('|');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameras, highlightedIdsKey]);
+  const highlightedPositions = useMemo(() => {
+    if (!highlightedPositionsKey) return [];
+    return highlightedPositionsKey.split('|').map((pair) => {
+      const [lat, long] = pair.split(',').map(Number);
+      return [lat, long] as [number, number];
+    });
+  }, [highlightedPositionsKey]);
 
   // The Leaflet marker instances are refs (not React state) so this component's
   // per-marker bookkeeping doesn't need a re-render just to look one up.
