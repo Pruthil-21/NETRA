@@ -71,6 +71,11 @@ class ScalablePipeline:
             r.stop()
         self.worker_pool.stop()
         self.event_sender.stop()
+        # Same real exit-hang fix as InferenceWorker.stop() (see its
+        # comment) -- EventSender's own loop normally drains this queue
+        # empty before its thread exits, but don't rely on that alone;
+        # any leftover item would otherwise block process exit.
+        self.event_queue.cancel_join_thread()
 
     def report(self):
         """A representative frame-queue depth (there's one per worker,

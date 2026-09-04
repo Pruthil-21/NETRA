@@ -3430,3 +3430,78 @@ no crashes. `tests/test_reconfirm_cooldown.py` still passes unmodified.
 - Startup cost per worker (fresh interpreter + fresh model load under
   `spawn`) not measured on the server -- real but one-time, matters more
   as camera/worker count grows toward 30.
+
+# Session 29 -- real GPU-server re-test confirmed the fix, found two more real issues: an exit hang, and one camera getting zero results
+
+Ran the exact 2-camera scenario that failed in Session 28 on the real
+server (Quadro RTX 8000, 49GB). The core fix worked, dramatically:
+
+| | Threads (Session 28) | Processes (this run) |
+|---|---|---|
+| Steady-state inference latency | 3,300-5,500ms/frame | ~380-470ms/frame |
+| Frames processed in 120s | 26 | 551 |
+| Vehicles tracked | 1 (combined) | 180 (cam06 alone) |
+| Confirmed plates | 0 | 5 (real: GJ03FX8807, GJ10CG4786, GJ11S7924, GJ32AG2883) |
+
+Cold-start cost is real and visible (4,346ms avg at the 20s mark,
+settling to ~380ms by 60s) but one-time, not a per-frame tax.
+
+## New issue 1: the process hung on exit, sometimes for 10+ minutes
+
+`run_for()` completed, printed its final summary correctly, and then
+the whole script just sat there -- the user had to Ctrl+C after waiting
+~10 minutes. Root cause: `multiprocessing.Queue`'s background feeder
+thread blocks process exit trying to flush any data still sitting in
+its internal pipe buffer, and `frame_queue` was routinely reported full
+(200 real image arrays) during the run -- once the worker process is
+gone, nothing will ever read the rest, so Python's exit machinery waits
+forever for a flush that can't happen. Real, reproducible bug, not
+hypothetical -- confirmed the mechanism, not guessed.
+
+**Fix:** `InferenceWorker.stop()` now calls `cancel_join_thread()` on
+both `frame_queue` and `_stats_queue` after stopping (tells them not to
+bother flushing on exit); `ScalablePipeline.stop()` does the same for
+the shared `event_queue`, defensively, even though `EventSender`'s own
+loop normally drains it empty first. Also added a `.terminate()`
+fallback if a worker process doesn't join within 10s (the worker loop
+only checks its stop flag between frames, not mid-inference, so an
+unusually slow call could miss that window -- don't leave a zombie
+process holding a CUDA context behind).
+
+**Verified for real, not just reasoned about:** reproduced the same
+full-queue backlog condition locally (2 cameras forced onto 1 worker,
+no frame-rate limiting -- 14,268 of 14,471 frames dropped, matching the
+server's saturated-queue symptom) and timed the whole process: exited
+cleanly ~6s after its 20s run_for() window, not 10+ minutes.
+
+## New issue 2, still open: `direct-cam07` got zero results the whole run
+
+While `cam06` tracked 180 vehicles and confirmed 5 plates, `cam07` got
+exactly 0 vehicles, 0 candidates, 0 confirmed -- not fewer, nothing at
+all, for the full 120s. Not yet root-caused. Two live theories, neither
+confirmed: (a) `cam07.mp4` failed to open on this specific run, or (b)
+Python's per-process-randomized string hashing routed both cameras
+unevenly and cam07's worker never got going in time. A solo isolation
+test (`cam07` alone, one worker) was proposed to distinguish these but
+not yet run -- the exit hang interrupted that plan; worth re-running now
+that exit is fixed and won't eat another 10-minute wait.
+
+## Also confirmed, not new: backend delivery failing on this run
+
+Every send failed with `NameResolutionError` on
+`receiving-intl-mothers-santa.trycloudflare.com` -- the tunnel isn't
+resolving from the server right now. Same expected-to-recur pattern as
+every other Cloudflare quick-tunnel in this project; the retry/backoff
+logic degraded gracefully exactly as designed (events_produced=5,
+events_sent=0, clearly logged, no crash). Needs a fresh URL from P6 when
+real backend delivery needs confirming again, not a code fix.
+
+## What's not done / open
+
+- cam07-zero-results not yet root-caused (see above) -- next real step,
+  not guessed at further here.
+- Real per-worker-process GPU memory usage still not measured -- the
+  second `nvidia-smi` after this run showed both GPUs back at ~1 MiB,
+  because the process had already been killed (Ctrl+C) by the time it
+  ran, not a real "during the run" reading. Still needed for real
+  worker-count planning toward 30 cameras.

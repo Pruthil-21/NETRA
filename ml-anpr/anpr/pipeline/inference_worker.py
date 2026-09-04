@@ -174,6 +174,14 @@ class InferenceWorker:
         self._stop_event.set()
         if self._process is not None:
             self._process.join(timeout=10)
+            if self._process.is_alive():
+                # The worker loop only checks stop_event between
+                # frame_queue.get() calls, not mid-inference -- a stuck
+                # or unusually slow inference call could miss the 10s
+                # window. Force it rather than leaving a zombie process
+                # (and its held CUDA context/GPU memory) behind.
+                self._process.terminate()
+                self._process.join(timeout=5)
         # One last non-blocking drain so the tracker_summary the process
         # reports right before exiting isn't missed by a stats thread
         # that's about to be told to stop.
@@ -185,6 +193,18 @@ class InferenceWorker:
         except queue.Empty:
             pass
         self._stats_thread_stop.set()
+
+        # Real bug hit on the GPU server, not hypothetical: frame_queue
+        # is routinely left full (200 real image arrays) when a run
+        # stops -- nothing will ever read the rest now that the worker
+        # process is gone. Without this, multiprocessing.Queue's
+        # background feeder thread blocks the whole Python process at
+        # exit trying to flush that backlog through the pipe -- observed
+        # directly as a run that printed its final summary correctly and
+        # then hung for 10+ minutes until manually killed. This tells the
+        # queue not to bother flushing on the way out.
+        self.frame_queue.cancel_join_thread()
+        self._stats_queue.cancel_join_thread()
 
     def submit(self, camera_id, frame, read_at):
         """Called by the router (InferenceWorkerPool), not directly by
