@@ -46,17 +46,15 @@ class AlertsConnectionManager:
                 continue
             try:
                 await ws.send_text(json.dumps(alert, default=_json_default))
-            except Exception:
+            except Exception:  # noqa: BLE001 -- any send failure means this connection is dead; evict it regardless of cause
                 logger.exception(f"alert broadcast send failed for connection scope={scope}; evicting")
                 dead.append(ws)
         for ws in dead:
             self._connections.pop(ws, None)
             try:
                 await ws.close()
-            except Exception:
-                # Best-effort -- a failure to close one dead connection must
-                # not block evicting the rest.
-                pass
+            except Exception as exc:  # noqa: BLE001 -- best-effort close on an already-dead connection; must not block evicting the rest
+                logger.debug(f"failed to close already-dead connection: {exc!r}")
 
     def broadcast_sync(self, alert: dict, camera_district: str | None) -> None:
         """Safe to call from sync code (e.g. alerts_service.process_detection,

@@ -28,11 +28,14 @@ interface UsePermissionsResult {
  * backed by whatever session token is currently stored. */
 export function usePermissions(): UsePermissionsResult {
   const [me, setMe] = useState<MeResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Lazy initializer: when there's no session at all, there's nothing to
+  // fetch, so `loading` should never be true in the first place -- setting
+  // it to false synchronously inside the effect below instead would trigger
+  // an extra render (react-hooks/set-state-in-effect).
+  const [loading, setLoading] = useState(() => isLoggedIn());
 
   useEffect(() => {
     if (!isLoggedIn()) {
-      setLoading(false);
       return;
     }
     let cancelled = false;
