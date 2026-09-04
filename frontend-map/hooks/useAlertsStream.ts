@@ -10,7 +10,12 @@ import { WATCHLIST_API_URL } from '@/config/streams';
  * anything missed during a reconnect window. */
 export function useAlertsStream(onAlert: (alert: unknown) => void): void {
   const onAlertRef = useRef(onAlert);
-  onAlertRef.current = onAlert;
+  // Keeping this update inside its own effect (rather than assigning
+  // directly during render) is required by the rules of hooks -- refs may
+  // only be written outside of render (an effect, or an event handler).
+  useEffect(() => {
+    onAlertRef.current = onAlert;
+  }, [onAlert]);
 
   useEffect(() => {
     const token = getToken();
