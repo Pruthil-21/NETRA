@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import get_conn  # noqa: E402
+from app.db import get_conn
 
 # ROLE, display name, hierarchy_level (None = outside the operational chain), can_delegate_admin
 ROLES = [
@@ -20,11 +20,12 @@ PERMISSIONS = {
     "super_admin": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
-        "acknowledge_alerts", "manage_roles",
+        "acknowledge_alerts", "manage_roles", "manage_stations",
     ],
     "district_command": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "acknowledge_alerts",
+        "view_audit_logs", "manage_stations",
     ],
     "station_officer": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "acknowledge_alerts",

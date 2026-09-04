@@ -78,6 +78,8 @@ class ReportSummary(BaseModel):
     # environment — see reports_service._count_last_24h.
     alerts_last_24h: Optional[int] = None
     detections_last_24h: Optional[int] = None
+    blacklist_entries_last_24h: Optional[int] = None
+    avg_alert_response_seconds: Optional[float] = None
 
 
 class LoginRequest(BaseModel):
@@ -139,3 +141,119 @@ class RolePermissionsOut(BaseModel):
 class RolePermissionsUpdate(BaseModel):
     permissions: list[str]
     reason_code: Optional[str] = None
+
+
+class PaginatedCamerasOut(BaseModel):
+    cameras: list[CameraOut]
+    next_cursor: Optional[int] = None
+
+
+class CameraSummaryOut(BaseModel):
+    total: int
+    online: int
+    degraded: int
+    offline: int
+    real_stream_count: int
+    synthetic_count: int
+    edge_node_count: int
+
+
+class DistrictCount(BaseModel):
+    district: str
+    count: int
+
+
+class DistrictSummaryOut(BaseModel):
+    districts: list[DistrictCount]
+
+
+class SyntheticDetectionEventIn(BaseModel):
+    event_id: str
+    camera_id: int
+    edge_node_id: Optional[int] = None
+    payload: Optional[dict] = None
+
+
+class SyntheticDetectionEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
+
+
+class ArchiveResult(BaseModel):
+    archived: int
+
+
+class CoverageTargetCreate(BaseModel):
+    name: str
+    lat: float
+    long: float
+    district: str
+    priority: str = "medium"
+
+
+class CoverageTargetUpdate(BaseModel):
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    long: Optional[float] = None
+    district: Optional[str] = None
+    priority: Optional[str] = None
+
+
+class CoverageTargetOut(CoverageTargetCreate):
+    id: int
+
+
+class PoliceStationCreate(BaseModel):
+    name: str
+    lat: float
+    long: float
+    district: str
+    contact: Optional[str] = None
+
+
+class PoliceStationUpdate(BaseModel):
+    name: Optional[str] = None
+    lat: Optional[float] = None
+    long: Optional[float] = None
+    district: Optional[str] = None
+    contact: Optional[str] = None
+
+
+class PoliceStationOut(PoliceStationCreate):
+    id: int
+
+
+class UncoveredZone(BaseModel):
+    target_id: int
+    name: str
+    district: str
+    nearest_camera_id: Optional[int] = None
+    distance_meters: Optional[float] = None
+
+
+class AgeingCamera(BaseModel):
+    camera_id: int
+    name: str
+    district: str
+    age_days: int
+    degraded_transition_count_90d: int
+
+
+class GapAnalysisReport(BaseModel):
+    uncovered_zones: list[UncoveredZone]
+    ageing_infrastructure: list[AgeingCamera]
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    badge_number: Optional[str] = None
+    action: str
+    resource_type: str
+    resource_id: Optional[int] = None
+    reason_code: Optional[str] = None
+    timestamp: datetime
+
+
+class AuditLogsPage(BaseModel):
+    logs: list[AuditLogOut]
+    next_cursor: Optional[int] = None

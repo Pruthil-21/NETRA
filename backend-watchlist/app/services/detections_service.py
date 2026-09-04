@@ -13,18 +13,59 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
     schemas.DetectionIn's validator) so `GX15 OGJ` and `GX15OGJ` land as the
     same value here and below.
 
-    When scenario_run_id is set (a scripted/replayed source, e.g. the
-    vehicle-trace demo clip) this is idempotent per (scenario_run_id,
+    Returns (row, is_duplicate). is_duplicate is True only when a dedup
+    mechanism suppressed a genuine insert and returned a pre-existing row
+    instead — the caller (the POST /detections route) uses this to decide
+    whether to run watchlist-match/alert processing again: a duplicate must
+    return the ORIGINAL alert, not create a second one for the same
+    underlying sighting.
+
+    event_id (a client-supplied retry idempotency key) takes priority when
+    both it and scenario_run_id are set, though in practice a caller sends
+    at most one: a repeat POST with the same event_id — the same real-world
+    detection resent because the client didn't know whether the first
+    attempt landed — is a no-op that returns the existing row.
+
+    Otherwise, when scenario_run_id is set (a scripted/replayed source, e.g.
+    the vehicle-trace demo clip) this is idempotent per (scenario_run_id,
     camera_id, plate_number): a repeat POST for a combination already seen
     — the looping clip re-detecting the same plate at the same camera — is a
     no-op that returns the existing row instead of inserting a duplicate.
-    Nothing is ever updated or deleted, so the append-only evidentiary
-    history is unaffected; a fresh scenario_run_id (a new replay run) is
-    simply a new set of rows.
 
-    Live ml-anpr detections (scenario_run_id None) are never deduped and
-    insert exactly as before.
+    Both mechanisms are additive only: nothing is ever updated or deleted,
+    so the append-only evidentiary history is unaffected.
+
+    Live ml-anpr detections that supply neither (the default, unaffected
+    case) are never deduped and insert exactly as before.
     """
+    if detection.event_id is not None:
+        db.execute(
+            """
+            INSERT INTO detections
+                (plate_number, camera_id, confidence, detected_at, scenario_run_id, source, event_id)
+            VALUES (%s, %s, %s, COALESCE(%s, now()), %s, %s, %s)
+            ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING
+            RETURNING *
+            """,
+            (
+                detection.plate_number,
+                detection.camera_id,
+                detection.confidence,
+                detection.detected_at,
+                detection.scenario_run_id,
+                detection.source,
+                str(detection.event_id),
+            ),
+        )
+        row = db.fetchone()
+        if row is not None:
+            return row, False
+
+        # Suppressed duplicate — a retried POST for an event_id already on
+        # record. Return the original sighting instead of inserting another.
+        db.execute("SELECT * FROM detections WHERE event_id = %s", (str(detection.event_id),))
+        return db.fetchone(), True
+
     if detection.scenario_run_id is not None:
         db.execute(
             """
@@ -47,7 +88,7 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
         )
         row = db.fetchone()
         if row is not None:
-            return row
+            return row, False
 
         # Suppressed duplicate — return the sighting already on record for
         # this run/camera/plate instead of inserting another one.
@@ -58,7 +99,7 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
             """,
             (detection.scenario_run_id, detection.camera_id, detection.plate_number),
         )
-        return db.fetchone()
+        return db.fetchone(), True
 
     db.execute(
         """
@@ -74,7 +115,7 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
             detection.source,
         ),
     )
-    return db.fetchone()
+    return db.fetchone(), False
 
 
 def search_detections(
@@ -83,9 +124,11 @@ def search_detections(
     camera_id: int | None = None,
     date_from=None,
     date_to=None,
+    dept: str | None = None,
 ):
     clauses = []
     params = []
+    joins = ""
     if plate_number:
         clauses.append("plate_number = %s")
         params.append(normalize_plate(plate_number))
@@ -98,9 +141,19 @@ def search_detections(
     if date_to is not None:
         clauses.append("detected_at <= %s")
         params.append(date_to)
+    if dept is not None:
+        # cameras is owned by backend-registry but lives in the same
+        # physical Postgres instance (same convention as audit_logs).
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    db.execute(f"SELECT * FROM detections {where} ORDER BY detected_at ASC", params)
+    select_cols = "detections.*" if joins else "*"
+    db.execute(
+        f"SELECT {select_cols} FROM detections {joins} {where} ORDER BY detected_at ASC",
+        params,
+    )
     return db.fetchall()
 
 

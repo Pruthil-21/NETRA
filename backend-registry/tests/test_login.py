@@ -3,7 +3,6 @@ import subprocess
 import sys
 
 import jwt as pyjwt
-
 from app.config import settings
 
 # backend-registry's root, computed relative to this file -- not a hardcoded

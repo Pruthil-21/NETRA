@@ -1,28 +1,57 @@
+from datetime import datetime
+
 import psycopg
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from .auth import get_current_user, require_permission, require_role
+from .auth import (
+    get_current_user,
+    has_permission,
+    require_permission,
+    require_scale_demo_enabled,
+)
 from .db import get_conn
 from .logging_config import configure_logging, logger
 from .schemas import (
+    AuditLogsPage,
     CameraBulkResult,
     CameraCreate,
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    CoverageTargetCreate,
+    CoverageTargetOut,
+    CoverageTargetUpdate,
+    GapAnalysisReport,
     LoginRequest,
     LoginResponse,
     MeResponse,
     OfficerOut,
+    PoliceStationCreate,
+    PoliceStationOut,
+    PoliceStationUpdate,
     PostingCreate,
     PostingOut,
     ReportSummary,
     RolePermissionsOut,
     RolePermissionsUpdate,
+    SyntheticDetectionEventAccepted,
+    SyntheticDetectionEventIn,
 )
-from .services import admin_service, audit_service, auth_service, cameras_service, rbac_service, reports_service
+from .services import (
+    admin_service,
+    audit_logs_service,
+    audit_service,
+    auth_service,
+    cameras_service,
+    coverage_targets_service,
+    gap_analysis_service,
+    police_stations_service,
+    rbac_service,
+    reports_service,
+    synthetic_events_service,
+)
 
 configure_logging()
 
@@ -145,15 +174,71 @@ def update_role_permissions(
         return {**role, "permissions": permissions}
 
 
-@app.get("/cameras", response_model=list[CameraOut])
-def list_cameras(user=Depends(get_current_user)):
+@app.get("/cameras")
+def list_cameras(
+    user=Depends(get_current_user),
+    include_synthetic: bool = False,
+    cursor: int | None = None,
+    limit: int | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    # include_synthetic is the scale-demo surface -- gated behind the
+    # environment kill-switch and manage_cameras (Super Admin/District
+    # Command only, not every officer), so an ordinary officer can neither
+    # see nor flood the synthetic registry. Real-camera pagination (cursor/
+    # limit with include_synthetic left false) stays open to anyone
+    # authenticated, same as today.
+    if include_synthetic:
+        require_scale_demo_enabled()
+        if not has_permission(user, "manage_cameras"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
     with get_conn() as conn:
-        # scope_type is only present on RBAC-issued tokens (Task 2); legacy
-        # hand-crafted tokens have no such claim and see every camera,
-        # matching this endpoint's behavior before this task.
+        # scope_type is only present on RBAC-issued tokens; legacy hand-crafted
+        # tokens have no such claim and see every (real) camera, matching this
+        # endpoint's behavior before pagination was added.
         dept = user.get("scope_value") if user.get("scope_type") == "district" else None
-        cameras = cameras_service.list_cameras(conn, dept)
-        return cameras
+
+        # No pagination/synthetic params at all -> today's exact legacy behavior:
+        # every real camera, as a bare list, no envelope. This is the path
+        # CameraRegistryContext.tsx's fetchRegistryCameras() always takes.
+        if cursor is None and limit is None and not include_synthetic:
+            return cameras_service.list_cameras(conn, dept)
+
+        bbox = None
+        if None not in (min_lat, max_lat, min_long, max_long):
+            bbox = (min_lat, max_lat, min_long, max_long)
+
+        return cameras_service.list_cameras_page(
+            conn,
+            cursor=cursor,
+            limit=limit or 100,
+            include_synthetic=include_synthetic,
+            dept=dept,
+            bbox=bbox,
+        )
+
+
+@app.get("/cameras/summary")
+def camera_summary(
+    user=Depends(get_current_user),
+    group_by: str | None = None,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_long: float | None = None,
+    max_long: float | None = None,
+):
+    require_scale_demo_enabled()
+    with get_conn() as conn:
+        if group_by == "district":
+            bbox = None
+            if None not in (min_lat, max_lat, min_long, max_long):
+                bbox = (min_lat, max_lat, min_long, max_long)
+            return {"districts": cameras_service.get_district_summary(conn, bbox)}
+        return cameras_service.get_summary(conn)
 
 
 @app.get("/cameras/{camera_id}", response_model=CameraOut)
@@ -174,7 +259,7 @@ def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_
 
 
 @app.post("/cameras/bulk", response_model=list[CameraBulkResult])
-def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"))):
+def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("manage_cameras"))):
     """Validates and inserts each row independently -- one bad row reports an
     error for its own index instead of failing the whole batch."""
     results = []
@@ -199,6 +284,130 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_role("officer"
             audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
             results.append(CameraBulkResult(index=index, status="created", camera=created))
     return results
+
+
+@app.get("/coverage-targets", response_model=list[CoverageTargetOut])
+def list_coverage_targets(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        return coverage_targets_service.list_targets(conn)
+
+
+@app.get("/coverage-targets/{target_id}", response_model=CoverageTargetOut)
+def get_coverage_target(target_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        target = coverage_targets_service.get_target(conn, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        return target
+
+
+@app.post("/coverage-targets", response_model=CoverageTargetOut, status_code=201)
+def create_coverage_target(body: CoverageTargetCreate, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        created = coverage_targets_service.create_target(conn, body.model_dump())
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "coverage_target", created["id"])
+        return created
+
+
+@app.put("/coverage-targets/{target_id}", response_model=CoverageTargetOut)
+def update_coverage_target(target_id: int, body: CoverageTargetUpdate, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        updated = coverage_targets_service.update_target(conn, target_id, body.model_dump(exclude_unset=True))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "coverage_target", target_id)
+        return updated
+
+
+@app.delete("/coverage-targets/{target_id}", status_code=204)
+def delete_coverage_target(target_id: int, user=Depends(require_permission("manage_cameras"))):
+    with get_conn() as conn:
+        deleted = coverage_targets_service.delete_target(conn, target_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Coverage target not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "coverage_target", target_id)
+
+
+@app.get("/reports/gap-analysis", response_model=GapAnalysisReport)
+def gap_analysis_report(
+    threshold_m: int = 100,
+    age_threshold_days: int = 1095,
+    user=Depends(get_current_user),
+):
+    with get_conn() as conn:
+        try:
+            uncovered = gap_analysis_service.compute_uncovered_zones(conn, threshold_m)
+        except psycopg.Error:
+            conn.rollback()
+            logger.error("gap-analysis: uncovered-zones computation failed", exc_info=True)
+            uncovered = []
+        try:
+            ageing = gap_analysis_service.compute_ageing_infrastructure(conn, age_threshold_days)
+        except psycopg.Error:
+            conn.rollback()
+            logger.error("gap-analysis: ageing-infrastructure computation failed", exc_info=True)
+            ageing = []
+        return {"uncovered_zones": uncovered, "ageing_infrastructure": ageing}
+
+
+@app.get("/audit-logs", response_model=AuditLogsPage)
+def list_audit_logs(
+    badge_number: str | None = None,
+    resource_type: str | None = None,
+    date_from: datetime | None = Query(None, alias="from"),
+    date_to: datetime | None = Query(None, alias="to"),
+    cursor: int | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    user=Depends(require_permission("view_audit_logs")),
+):
+    district = user.get("scope_value") if user.get("scope_type") == "district" else None
+    with get_conn() as conn:
+        logs, next_cursor = audit_logs_service.list_logs(
+            conn, badge_number, resource_type, date_from, date_to, district, cursor, limit
+        )
+        return {"logs": logs, "next_cursor": next_cursor}
+
+
+@app.get("/police-stations", response_model=list[PoliceStationOut])
+def list_police_stations(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        return police_stations_service.list_stations(conn)
+
+
+@app.get("/police-stations/{station_id}", response_model=PoliceStationOut)
+def get_police_station(station_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        station = police_stations_service.get_station(conn, station_id)
+        if station is None:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        return station
+
+
+@app.post("/police-stations", response_model=PoliceStationOut, status_code=201)
+def create_police_station(body: PoliceStationCreate, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        created = police_stations_service.create_station(conn, body.model_dump())
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "police_station", created["id"])
+        return created
+
+
+@app.put("/police-stations/{station_id}", response_model=PoliceStationOut)
+def update_police_station(station_id: int, body: PoliceStationUpdate, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        updated = police_stations_service.update_station(conn, station_id, body.model_dump(exclude_unset=True))
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "police_station", station_id)
+        return updated
+
+
+@app.delete("/police-stations/{station_id}", status_code=204)
+def delete_police_station(station_id: int, user=Depends(require_permission("manage_stations"))):
+    with get_conn() as conn:
+        deleted = police_stations_service.delete_station(conn, station_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Police station not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "police_station", station_id)
 
 
 @app.get("/reports/summary", response_model=ReportSummary)
@@ -246,3 +455,28 @@ def delete_camera(camera_id: int, user=Depends(require_permission("manage_camera
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "camera", camera_id)
+
+
+@app.post("/synthetic/detections", response_model=SyntheticDetectionEventAccepted, status_code=202)
+def receive_synthetic_detection(
+    body: SyntheticDetectionEventIn, background_tasks: BackgroundTasks, user=Depends(get_current_user)
+):
+    require_scale_demo_enabled()
+    if not has_permission(user, "manage_cameras"):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    def _write():
+        # Runs after the 202 has already gone out -- the client can't be told
+        # about a failure here, so a broad catch is intentional (a pool
+        # timeout, a bad payload, anything) rather than picking one exception
+        # type to handle and letting the rest crash the background task
+        # silently. No retry (out of scope) -- this just makes the failure
+        # observable instead of a silently dropped event.
+        try:
+            with get_conn() as conn:
+                synthetic_events_service.record_event(conn, body.event_id, body.camera_id, body.edge_node_id, body.payload)
+        except Exception:  # noqa: BLE001 -- deliberate catch-all, see comment above
+            logger.error(f"failed to write synthetic detection event {body.event_id}", exc_info=True)
+
+    background_tasks.add_task(_write)
+    return {"event_id": body.event_id, "status": "accepted"}

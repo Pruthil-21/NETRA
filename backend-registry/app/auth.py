@@ -3,6 +3,8 @@
 Duplicated (not shared) in backend-registry and backend-watchlist by design —
 keeps each service independently owned with zero cross-folder edits.
 """
+import os
+
 import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -19,9 +21,17 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+_RBAC_ROLES = ("super_admin", "district_command", "station_officer", "control_room_operator", "auditor")
+
+
 def require_role(role: str):
+    """`role` is the legacy pre-RBAC role name this checker was written for
+    (e.g. "officer"). Any of the 5 real RBAC role names also passes -- RBAC
+    permissions (require_permission/has_permission) are the finer-grained
+    gate; require_role is just "is this an authenticated staff member,"
+    which every RBAC role satisfies."""
     def checker(user=Depends(get_current_user)):
-        if user["role"] not in (role, "admin"):
+        if user["role"] not in (role, "admin") and user["role"] not in _RBAC_ROLES:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
@@ -42,3 +52,21 @@ def require_permission(permission: str):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
+
+
+def has_permission(user: dict, permission: str) -> bool:
+    """Same logic as require_permission's checker, usable inline when the
+    check is conditional rather than the route's own Depends (e.g. only
+    required for one branch of an endpoint, not every request to it)."""
+    if user.get("role") in ("officer", "admin") and "permissions" not in user:
+        return True
+    return permission in user.get("permissions", [])
+
+
+def require_scale_demo_enabled():
+    """Hard kill-switch for every synthetic/scale-demo endpoint. 404, not 403
+    -- when disabled, these routes should look like they don't exist, not
+    like a permission was denied (no reason to reveal the feature exists at
+    all in an environment where it's off)."""
+    if os.environ.get("SCALE_DEMO_ENABLED", "false").lower() != "true":
+        raise HTTPException(status_code=404, detail="Not found")

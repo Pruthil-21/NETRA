@@ -3,6 +3,7 @@
 Field names match /contract/API_CONTRACT.md exactly — this is what keeps
 frontend-dashboard's mock data and this real API interchangeable.
 """
+import uuid
 from datetime import datetime
 from typing import Literal, Optional
 
@@ -37,7 +38,14 @@ class DetectionIn(BaseModel):
     supplies the sighting's own timestamp and tags itself with a run id so
     repeats from the looping clip can be suppressed (see
     services.detections_service.record_detection). Live ml-anpr detections
-    omit all three and behave exactly as before."""
+    omit all three and behave exactly as before.
+
+    event_id is a client-supplied idempotency key for live detections: a
+    caller that retries a POST (e.g. after a timeout, not knowing whether
+    the first attempt landed) sends the same event_id both times, and the
+    server returns the original detection+alert instead of creating a
+    second one. Independent of scenario_run_id's replay-dedup mechanism;
+    omit it and behave exactly as before (no dedup)."""
     camera_id: int
     # "plate" is accepted as an alias of "plate_number" — some scripted
     # callers (e.g. the vehicle-trace demo sender) send the shorter name.
@@ -48,6 +56,7 @@ class DetectionIn(BaseModel):
     detected_at: Optional[datetime] = None
     scenario_run_id: Optional[str] = None
     source: Optional[str] = None
+    event_id: Optional[uuid.UUID] = None
 
     model_config = {"populate_by_name": True}
 
@@ -65,6 +74,7 @@ class DetectionOut(BaseModel):
     confidence: Optional[float] = None
     scenario_run_id: Optional[str] = None
     source: Optional[str] = None
+    event_id: Optional[uuid.UUID] = None
 
 
 class DetectionResult(BaseModel):
@@ -82,6 +92,16 @@ class AlertOut(BaseModel):
     detection_id: Optional[int] = None
     matched_at: datetime
     status: str
+    # Combined VAHAN (ownership) + eGujCop (crime/FIR) lookup -- computed at
+    # read time by alerts_service, not stored on the alerts row (see
+    # govt_lookup_service.py). Shape: {"vahan": {...}, "egujcop": {...}},
+    # each with its own `status` field -- "not_configured" until real access
+    # exists, so this is always present but not yet populated with real data.
+    owner_details: Optional[dict] = None
+    # Closest backend-registry police_stations row to the alert's camera, by
+    # geographic distance -- computed at read time by alerts_service (see
+    # _with_nearest_station). None when no police_stations rows exist yet.
+    nearest_station: Optional[dict] = None
 
 
 class AlertStatusUpdate(BaseModel):

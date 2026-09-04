@@ -19,9 +19,17 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+_RBAC_ROLES = ("super_admin", "district_command", "station_officer", "control_room_operator", "auditor")
+
+
 def require_role(role: str):
+    """`role` is the legacy pre-RBAC role name this checker was written for
+    (e.g. "officer"). Any of the 5 real RBAC role names also passes -- RBAC
+    permissions (require_permission/has_permission) are the finer-grained
+    gate; require_role is just "is this an authenticated staff member,"
+    which every RBAC role satisfies."""
     def checker(user=Depends(get_current_user)):
-        if user["role"] not in (role, "admin"):
+        if user["role"] not in (role, "admin") and user["role"] not in _RBAC_ROLES:
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
     return checker
@@ -31,3 +39,29 @@ def require_internal_key(x_internal_key: str = Header(...)):
     if x_internal_key != settings.internal_service_key:
         raise HTTPException(status_code=401, detail="Invalid internal service key")
     return True
+
+
+def require_permission(permission: str):
+    """Additive alongside require_role, not a replacement for it. A
+    pre-RBAC hand-crafted token (role: "officer"/"admin", no permissions
+    claim -- what every existing test fixture and the demo JWT use) is
+    treated as fully trusted here, exactly matching what require_role("officer")
+    already does for it everywhere else in this codebase. A real RBAC-issued
+    token (see auth_service.issue_token) always carries an explicit
+    permissions list and is checked against it."""
+    def checker(user=Depends(get_current_user)):
+        if user.get("role") in ("officer", "admin") and "permissions" not in user:
+            return user
+        if permission not in user.get("permissions", []):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        return user
+    return checker
+
+
+def has_permission(user: dict, permission: str) -> bool:
+    """Same logic as require_permission's checker, usable inline when the
+    check is conditional rather than the route's own Depends (e.g. only
+    required for one branch of an endpoint, not every request to it)."""
+    if user.get("role") in ("officer", "admin") and "permissions" not in user:
+        return True
+    return permission in user.get("permissions", [])

@@ -13,18 +13,18 @@ describe('getHlsStreamUrl', () => {
   });
 
   it('builds the MediaMTX HLS playlist URL from a numeric stream id', () => {
-    expect(getHlsStreamUrl(6)).toEqual({ url: 'http://localhost:8888/stream/6/index.m3u8' });
+    expect(getHlsStreamUrl(6)).toEqual({ url: 'http://localhost:8888/stream/6/index.m3u8?cookieCheck=1' });
   });
 
   it('builds the MediaMTX HLS playlist URL from a string stream id', () => {
     expect(getHlsStreamUrl('pruthil-phone')).toEqual({
-      url: 'http://localhost:8888/stream/pruthil-phone/index.m3u8',
+      url: 'http://localhost:8888/stream/pruthil-phone/index.m3u8?cookieCheck=1',
     });
   });
 
   it('strips a trailing slash from the base URL', () => {
     process.env.NEXT_PUBLIC_MEDIAMTX_HLS_URL = 'http://localhost:8888/';
-    expect(getHlsStreamUrl(16)).toEqual({ url: 'http://localhost:8888/stream/16/index.m3u8' });
+    expect(getHlsStreamUrl(16)).toEqual({ url: 'http://localhost:8888/stream/16/index.m3u8?cookieCheck=1' });
   });
 
   it('returns a no-stream reason when the camera has no stream_id', () => {

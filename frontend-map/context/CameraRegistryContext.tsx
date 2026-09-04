@@ -1,6 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { usePathname } from 'next/navigation';
 import { Camera, ConnectivityStatus } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { OrganizerCamera } from '@/types/organizerCamera';
@@ -122,6 +123,19 @@ const initialFilters: CameraFilters = {
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
 
 export function CameraRegistryProvider({ children }: { children: React.ReactNode }) {
+  // The scale demo (/scale) is an isolated synthetic-data control plane --
+  // its whole point is exercising the registry API at 80,000-row scale in
+  // deliberate separation from the real camera fleet. This provider still
+  // has to wrap /scale (AppShell's StatusTicker reads `cameras` from this
+  // same context for the top-bar chrome shared by every route), but the
+  // real-camera fetch and its 20s reachability poll are pure overhead there
+  // -- and worse, concurrent network traffic that skews the demo's own
+  // metrics panel. Gating on pathname is the minimal fix: skip firing them
+  // while on /scale, without changing this provider's shape for any other
+  // route.
+  const pathname = usePathname();
+  const isScaleRoute = pathname?.startsWith('/scale') ?? false;
+
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [manualCameras, setManualCameras] = useState<OrganizerCamera[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
@@ -202,8 +216,9 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // exactly what an effect is for (synchronizing with an external system).
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
+    if (isScaleRoute) return;
     refreshCameras();
-  }, [refreshCameras]);
+  }, [refreshCameras, isScaleRoute]);
 
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
@@ -242,9 +257,21 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // fails, LiveFeedPlayer reports the real outcome here so the map pin
   // reflects reality instead of staying stuck on the preliminary guess.
   const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
-    setCameras((prev) =>
-      prev.map((c) => (c.id === id && c.connectivity_status !== status ? { ...c, connectivity_status: status } : c))
-    );
+    setCameras((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1 || prev[idx].connectivity_status === status) return prev;
+      // Fire-and-forget: the backend's own dedup is the real safety net
+      // if this fires more than once for the same transition; a failed
+      // report here shouldn't block the UI from updating.
+      fetch(`${process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000'}/cameras/${id}`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ connectivity_status: status }),
+      }).catch(() => {});
+      const next = prev.slice();
+      next[idx] = { ...prev[idx], connectivity_status: status };
+      return next;
+    });
     setSelectedCamera((prev) =>
       prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
     );
@@ -262,6 +289,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   }, [cameras]);
 
   useEffect(() => {
+    if (isScaleRoute) return;
     let cancelled = false;
 
     const webrtcBase = process.env.NEXT_PUBLIC_MEDIAMTX_WEBRTC_URL;
@@ -302,7 +330,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
       cancelled = true;
       clearInterval(interval);
     };
-  }, [updateCameraConnectivity]);
+  }, [updateCameraConnectivity, isScaleRoute]);
 
   return (
     <CameraRegistryContext.Provider

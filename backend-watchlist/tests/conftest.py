@@ -1,4 +1,7 @@
+import contextlib
+
 import jwt
+import psycopg2
 import pytest
 from app.config import settings
 from app.main import app
@@ -7,7 +10,12 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    # Must be used as a context manager -- Starlette's TestClient only fires
+    # @app.on_event("startup") handlers this way, which is what lets
+    # alerts_stream.manager capture the running event loop during tests
+    # (see main.py), exactly as it would under real uvicorn.
+    with TestClient(app) as c:
+        yield c
 
 
 def make_token(role: str, sub: str = "test-officer"):
@@ -27,3 +35,19 @@ def second_officer_headers():
 @pytest.fixture
 def internal_headers():
     return {"X-Internal-Key": settings.internal_service_key}
+
+
+@pytest.fixture
+def scoping_test_cameras():
+    """Guaranteed cleanup for cameras a scoping test creates in the shared
+    cameras table, even if an assertion fails first. Uses a single batched
+    DELETE (matching backend-registry/tests/conftest.py's synthetic_test_cameras
+    pattern) rather than one delete call per id, so one failing delete can't
+    abandon the rest of the cleanup."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with contextlib.closing(psycopg2.connect(settings.database_url)) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cameras WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()

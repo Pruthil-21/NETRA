@@ -6,6 +6,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
 import { createCustomMarkerIcon, createVehicleTraceIcon } from './MapCustomMarker';
+import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
 import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
@@ -125,6 +126,25 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   onSelectCamera,
   sightings,
 }) => {
+  // Police station pins -- a separate data source from cameras (backend-registry's
+  // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
+  // map is still fully usable for camera monitoring without station pins.
+  const [stations, setStations] = useState<PoliceStation[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPoliceStations()
+      .then((data) => {
+        if (!cancelled) setStations(data);
+      })
+      .catch(() => {
+        // Swallowed -- station pins are supplementary, not required for the map to work.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const sightingPoints = useMemo(() => {
     if (!sightings || sightings.length === 0) return [];
     const cameraById = new Map(cameras.map((cam) => [cam.id, cam]));
@@ -312,6 +332,23 @@ export const CameraMap: React.FC<CameraMapProps> = ({
                   </p>
                 )}
                 <p className="text-slate-600 mt-1.5 text-[10px]">Click marker to open live feed</p>
+              </div>
+            </Popup>
+          </CircleMarker>
+        ))}
+
+        {stations.map((station: PoliceStation) => (
+          <CircleMarker
+            key={`station-${station.id}`}
+            center={[station.lat, station.long]}
+            radius={8}
+            pathOptions={{ color: '#F59E0B', fillColor: '#FBBF24', fillOpacity: 0.85, weight: 2 }}
+          >
+            <Popup className="dark-gis-popup">
+              <div className="p-1 min-w-[160px] text-slate-100 text-xs">
+                <p className="font-semibold text-white mb-1">{station.name}</p>
+                <p className="text-slate-400">{station.district}</p>
+                <p className="text-slate-500 mt-1">{station.contact || 'No contact on file'}</p>
               </div>
             </Popup>
           </CircleMarker>
