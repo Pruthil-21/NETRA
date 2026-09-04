@@ -29,6 +29,14 @@ describe('Role Permissions section (super_admin)', () => {
     expect(screen.getByText('Station Officer')).toBeInTheDocument();
   });
 
+  it('includes manage_stations and manage_circles in the permission checkbox grid', async () => {
+    render(<AdminPage />);
+    expect(await screen.findByLabelText('manage_stations')).toBeInTheDocument();
+    expect(screen.getByText('Manage Police Stations')).toBeInTheDocument();
+    expect(screen.getByLabelText('manage_circles')).toBeInTheDocument();
+    expect(screen.getByText('Manage Circles')).toBeInTheDocument();
+  });
+
   it('saves an updated permission set for the role, with the typed reason code', async () => {
     render(<AdminPage />);
     const checkbox = await screen.findByLabelText('manage_cameras');

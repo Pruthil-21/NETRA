@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { adminService, OfficerOut, RolePermissionsOut } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
+import { CircleManagementSection } from './CircleManagementSection';
 
 const ASSIGNABLE_ROLES = ['district_command', 'station_officer', 'control_room_operator', 'auditor'];
 
@@ -32,6 +33,8 @@ const ALL_PERMISSIONS = [
   'view_audit_logs',
   'acknowledge_alerts',
   'manage_roles',
+  'manage_stations',
+  'manage_circles',
 ];
 
 // Humanized labels shown alongside each checkbox for readability -- the
@@ -48,6 +51,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   view_audit_logs: 'View Audit Logs',
   acknowledge_alerts: 'Acknowledge Alerts',
   manage_roles: 'Manage Roles',
+  manage_stations: 'Manage Police Stations',
+  manage_circles: 'Manage Circles',
 };
 
 // Subtle per-role accent so a district commander can tell postings apart at a
@@ -274,7 +279,7 @@ function RolePermissionsSection() {
  * UI's job is to make the common case pleasant, not to be the security
  * boundary itself. */
 export default function AdminPage() {
-  const { permissions } = usePermissions();
+  const { permissions, role, scopeValue } = usePermissions();
   const [officers, setOfficers] = useState<OfficerOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -539,6 +544,10 @@ export default function AdminPage() {
         </div>
 
         {permissions.includes('manage_roles') && <RolePermissionsSection />}
+
+        {permissions.includes('manage_circles') && (
+          <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
+        )}
       </div>
     </main>
   );
