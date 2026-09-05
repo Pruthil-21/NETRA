@@ -80,10 +80,14 @@ export default function MapPage() {
   // effect only ever frames cameras that are actually visible on the map.
   const highlightedCameraIds = useMemo(() => {
     if (!treeSelection) return undefined;
-    const matches =
-      treeSelection.type === 'district'
-        ? filteredCameras.filter((cam) => cam.dept === treeSelection.value)
-        : filteredCameras.filter((cam) => cam.circle_id === treeSelection.value);
+    let matches;
+    if (treeSelection.type === 'district') {
+      matches = filteredCameras.filter((cam) => cam.dept === treeSelection.value);
+    } else if (treeSelection.type === 'camera') {
+      matches = filteredCameras.filter((cam) => cam.id === treeSelection.value);
+    } else {
+      matches = filteredCameras.filter((cam) => cam.circle_id === treeSelection.value);
+    }
     return new Set(matches.map((cam) => cam.id));
   }, [treeSelection, filteredCameras]);
 
@@ -188,6 +192,7 @@ export default function MapPage() {
           <DistrictCircleTree
             districts={districts}
             circles={circles}
+            cameras={cameras}
             selected={treeSelection}
             onSelect={setTreeSelection}
           />

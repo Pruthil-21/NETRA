@@ -155,6 +155,7 @@ export default function DashboardPage() {
       <DistrictCircleTree
         districts={districts}
         circles={circles}
+        cameras={cameras}
         selected={treeSelection}
         onSelect={setTreeSelection}
       />

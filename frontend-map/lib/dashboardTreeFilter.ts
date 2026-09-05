@@ -14,5 +14,8 @@ export function filterFeedsByTreeSelection(
   if (selection.type === 'district') {
     return feeds.filter((f) => f.department === selection.value);
   }
+  if (selection.type === 'camera') {
+    return feeds.filter((f) => f.id === String(selection.value));
+  }
   return feeds.filter((f) => circleIdByCameraId[f.id] === selection.value);
 }

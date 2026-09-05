@@ -31,4 +31,9 @@ describe('filterFeedsByTreeSelection', () => {
     const result = filterFeedsByTreeSelection(FEEDS, { type: 'circle', value: 10 }, CIRCLE_BY_CAMERA_ID);
     expect(result.map((f) => f.id)).toEqual(['1']);
   });
+
+  it('returns only that one camera when a camera leaf is selected', () => {
+    const result = filterFeedsByTreeSelection(FEEDS, { type: 'camera', value: 2 }, CIRCLE_BY_CAMERA_ID);
+    expect(result.map((f) => f.id)).toEqual(['2']);
+  });
 });
