@@ -1,15 +1,17 @@
 import React from 'react';
-import { History, Radio, VideoOff } from 'lucide-react';
+import { Activity, History, Radio, VideoOff } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { getCameraStreamUrl } from '@/lib/stream';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
-import { useCameraUptime, formatDuration } from '@/hooks/useCameraUptime';
+import { useCameraUptime, formatDuration, formatTimeRange } from '@/hooks/useCameraUptime';
+import { useCameraHealth } from '@/hooks/useCameraHealth';
 import CameraLivePlayer from './CameraLivePlayer';
 import Badge from '@/components/common/Badge';
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
   const { updateCameraConnectivity } = useCameraRegistry();
   const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera?.id ?? null);
+  const { device: health, loading: healthLoading } = useCameraHealth(camera?.id ?? null);
 
   if (!camera) {
     return <div className="p-4 text-xs text-slate-500">No camera selected. Pick one from the list or the map.</div>;
@@ -33,7 +35,7 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
         />
       </div>
       <div className="flex-1 min-w-0 flex flex-col sm:flex-row">
-        <div className="p-4 grid grid-cols-2 sm:grid-cols-5 gap-4 text-xs flex-1">
+        <div className="p-4 grid grid-cols-2 sm:grid-cols-6 gap-4 text-xs flex-1">
           <div>
             <p className="font-bold text-white truncate">{camera.name}</p>
             <p className="font-mono text-command">{camera.id}</p>
@@ -53,6 +55,26 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           <div>
             <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">RTSP Source</p>
             <code className="text-command font-mono break-all">{camera.rtsp_url || '—'}</code>
+          </div>
+          <div>
+            <p className="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">
+              <Activity size={10} />
+              Device Health
+            </p>
+            {healthLoading && <p className="text-slate-600 italic">Checking…</p>}
+            {!healthLoading && !health && <p className="text-slate-600 italic">Not available</p>}
+            {health && (
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono">
+                <span className="text-slate-500">CPU</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.cpu_percent}%` : '—'}</span>
+                <span className="text-slate-500">Mem</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.memory_percent}%` : '—'}</span>
+                <span className="text-slate-500">Net</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.network_mbps} Mbps` : '—'}</span>
+                <span className="text-slate-500">Temp</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.temperature_celsius}°C` : '—'}</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -77,18 +99,23 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
                 .map((w, i) => {
                   const online = w.status.toLowerCase() === 'online';
                   return (
-                    <div key={i} className="flex items-center gap-1.5 text-[11px]">
-                      {online ? (
-                        <Radio size={10} className="text-signal-green shrink-0" />
-                      ) : (
-                        <VideoOff size={10} className="text-signal-red shrink-0" />
-                      )}
-                      <span className={online ? 'text-signal-green' : 'text-signal-red'}>
-                        {w.status}
-                      </span>
-                      <span className="text-slate-500 font-mono ml-auto">
-                        {formatDuration(w.duration_seconds)}
-                        {w.to === null && ' (ongoing)'}
+                    <div key={i} className="flex flex-col gap-0.5 text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        {online ? (
+                          <Radio size={10} className="text-signal-green shrink-0" />
+                        ) : (
+                          <VideoOff size={10} className="text-signal-red shrink-0" />
+                        )}
+                        <span className={online ? 'text-signal-green' : 'text-signal-red'}>
+                          {w.status}
+                        </span>
+                        <span className="text-slate-500 font-mono ml-auto">
+                          {formatDuration(w.duration_seconds)}
+                          {w.to === null && ' (ongoing)'}
+                        </span>
+                      </div>
+                      <span className="text-slate-600 font-mono pl-[15px]">
+                        {formatTimeRange(w.from, w.to)}
                       </span>
                     </div>
                   );

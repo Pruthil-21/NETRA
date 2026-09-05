@@ -50,6 +50,7 @@ from .services import (
     police_stations_service,
     rbac_service,
     reports_service,
+    snmp_service,
     synthetic_events_service,
 )
 
@@ -446,6 +447,19 @@ def camera_uptime(camera_id: int, user=Depends(get_current_user)):
             "current_status": camera["connectivity_status"],
             "windows": windows,
         }
+
+
+@app.get("/snmp/devices")
+def snmp_devices(user=Depends(get_current_user)):
+    return snmp_service.get_devices()
+
+
+@app.get("/cameras/{camera_id}/health")
+def camera_snmp_health(camera_id: int, user=Depends(get_current_user)):
+    device = snmp_service.get_device_for_camera(camera_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="No SNMP health data available for this camera")
+    return device
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)
