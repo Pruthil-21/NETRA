@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, ChevronDown, Folder, MapPin, Video, Landmark, Search, X } from 'lucide-react';
 import { Circle } from '@/services/circlesService';
 import { Camera } from '@/types/camera';
@@ -54,6 +54,19 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
   const [expandedCircles, setExpandedCircles] = useState<Set<number>>(new Set());
   const [expandedUnassigned, setExpandedUnassigned] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
+
+  // Districts resolve asynchronously (usePermissions/useCameraRegistry fetch
+  // after mount), so a mount-time initializer would miss them. Auto-expand
+  // each district the first time it's seen so the hierarchy is visible
+  // without a click; a district the officer manually collapses afterwards
+  // stays collapsed (seenDistricts only ever adds, never re-triggers).
+  const seenDistricts = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const newlySeen = districts.filter((d) => !seenDistricts.current.has(d));
+    if (newlySeen.length === 0) return;
+    newlySeen.forEach((d) => seenDistricts.current.add(d));
+    setExpandedDistricts((prev) => new Set([...prev, ...newlySeen]));
+  }, [districts]);
 
   const toggleDistrict = (district: string) => {
     setExpandedDistricts((prev) => {
@@ -193,7 +206,10 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
               </button>
               <button
                 type="button"
-                onClick={() => onSelect({ type: 'district', value: district })}
+                onClick={() => {
+                  onSelect({ type: 'district', value: district });
+                  if (!hasNoChildren) toggleDistrict(district);
+                }}
                 className="flex items-center gap-1.5 flex-1 min-w-0 text-left truncate"
               >
                 <Folder size={12} className="shrink-0" />
@@ -236,7 +252,10 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
                           )}
                           <button
                             type="button"
-                            onClick={() => onSelect({ type: 'circle', value: circle.id })}
+                            onClick={() => {
+                              onSelect({ type: 'circle', value: circle.id });
+                              if (circleCameras.length > 0) toggleCircle(circle.id);
+                            }}
                             className="flex items-center gap-1.5 flex-1 min-w-0 text-left truncate"
                           >
                             <MapPin size={11} className="shrink-0" />
