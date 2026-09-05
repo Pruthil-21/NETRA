@@ -3825,3 +3825,841 @@ events fire the second time. Passes.
 - 45s is a reasoned default (covers a traffic-light/blocked-view delay),
   not tuned against real measured occlusion durations -- worth revisiting
   if real footage shows blocks lasting meaningfully longer.
+
+# Session 25 -- P3 handoff: 30 real Organizer cameras, cam01-30 -- real exponential backoff, configurable multi-camera runner, two honest blockers found
+
+P3's handoff: Organizer's HLS relay now serves genuine live feeds only
+(recorded fallback disabled), `direct-cam01` through `direct-cam30`,
+same `.../stream/direct-camNN/index.m3u8?cookieCheck=1` pattern as
+Session 23's single-camera test. Explicit asks: treat a missing/timed-out/
+404 playlist as an unavailable camera and retry with backoff, no portal
+credentials needed, keep the base URL configurable (temporary tunnel).
+
+## Fixed: backoff wasn't actually exponential
+
+`process_hls_stream()`'s `_open()` docstring already claimed "retries
+with backoff," but the real implementation was a flat
+`time.sleep(reconnect_interval_sec)` on every attempt -- not backoff at
+all. Changed to real exponential backoff (`reconnect_interval_sec * 2 **
+(attempt-1)`, capped at 30s so `max_open_attempts=10` can't add up to an
+absurd total wait), matching the doubling pattern `event_sender.py`
+already uses elsewhere in this codebase. A 404/timeout/missing camera
+already fell through to this same retry loop generically (via
+`cv2.VideoCapture.isOpened()` returning False) -- confirmed correct
+before touching anything, only the delay itself needed fixing.
+
+## Built: `run_organizer_cameras.py`, a configurable multi-camera runner
+
+New CLI wrapper around `anpr.pipeline.orchestrator.ScalablePipeline`
+(previously had no CLI wrapper at all, per Session 21's own note) --
+`--hls-base-url` (or `HLS_BASE_URL` env var), `--cameras` (default
+`1-30`), `--num-workers`, `--sample-rate`. Base URL is never hardcoded
+anywhere, per P3's explicit ask and the same caution already applied to
+every other Cloudflare quick-tunnel URL in this project.
+
+`--num-workers` defaults to **1, not 30 or `len(cameras)`** -- real,
+not assumed: Session 24's own testing already proved 2 concurrent
+cameras on this single-GPU Mac produces a saturated frame queue and
+**zero** confirmed events in 90s (vs. real detections when run one at a
+time). Defaulting to fake/hopeful parallelism here would silently
+under-deliver against a real 30-camera demo; documented plainly in the
+script's own docstring instead, with instructions to only raise it on
+real multi-GPU/multi-core hardware and re-verify there.
+
+## Two real blockers found, not glossed over
+
+1. **20 of 30 cameras have no numeric camera_id.** `CAMERA_ID_MAP` only
+   covers `direct-cam01`-`direct-cam10` (P6/Dhruv-confirmed values 43-52
+   from Session 20). `direct-cam11` through `direct-cam30` aren't in it
+   at all -- confirmed by reading `anpr/config.py` directly, not
+   assumed. Detections from those 20 cameras will run real local
+   inference but `send_detection_to_watchlist`/`EventSender` will
+   correctly no-op with a `[WARN]` rather than send a wrong camera_id --
+   same fail-safe-not-fail-crash behavior already documented for
+   unmapped cameras, just now affecting most of the fleet. Needs a real
+   handoff to P6/registry for cam11-30's actual numeric ids before a
+   full 30-camera run can reach the backend.
+2. **The tunnel URL P3 gave doesn't resolve.** `curl` on
+   `https://respiratory-football-fin-counties.trycloudflare.com/...`
+   fails at DNS resolution (`Could not resolve host`), checked directly,
+   not assumed to be a local network issue. Could be a typo, the tunnel
+   not started yet, or DNS propagation delay -- worth confirming with P3
+   before assuming the code is at fault if a live run fails.
+
+## What's not done / open
+
+- Not run against any of the 30 real cameras yet -- blocked on the
+  tunnel resolving. `run_organizer_cameras.py` is written and its
+  URL-building/argument-parsing verified directly, but not yet exercised
+  against a real reachable relay.
+- CAMERA_ID_MAP extension for cam11-30 needs real values from P6, not
+  guessed -- same discipline as Session 20's real camera-id handoff.
+
+# Session 26 -- fixed a real bug in Session 24's own cooldown fix: "Total confirmed plates" undercounted on a real GPU-server run
+
+First real GPU-server run of `cam06.mp4` came back with ~85 real
+`[CONFIRMED EVENT]` lines during the run, but the final `Total confirmed
+plates` summary printed only 13. Traced directly, not guessed: Session
+24's `RECONFIRM_COOLDOWN_SEC` fix reused `VehicleTracker.confirmed` for
+two different jobs at once -- short-term cooldown suppression (which
+needs continuous pruning to stay bounded) and the permanent end-of-run
+summary (which must never lose an entry). `_recently_confirmed()` prunes
+that same dict on every call, so by the time a ~7-minute real run ended,
+only the last 45 seconds of confirmations were still in it. The actual
+detection and (once camera_id is fixed, per the separate issue found in
+this same run) backend-sending were never affected -- this was a
+summary-print-only bug, not a data-loss bug.
+
+## Fix: split into two structures with two different lifetimes
+
+`VehicleTracker.__init__` now has `_recent_confirmations` (private,
+plate -> timestamp, continuously pruned, cooldown-suppression only) and
+`confirmed_plates` (public, plain `set`, permanent, every plate
+confirmed this whole session). `_mark_confirmed()` updates both.
+`anpr/streaming.py`'s three "Total confirmed plates" prints now read
+`tracker.confirmed_plates` instead of the old `tracker.confirmed`.
+
+## Verification
+
+Extended `tests/test_reconfirm_cooldown.py`: after confirming the
+cooldown-suppression behavior, forces a cooldown entry's timestamp into
+the past directly (no slow real sleep) to simulate "long after
+confirmation," asserts the cooldown check correctly reports expired,
+and asserts `confirmed_plates` is unaffected by that pruning. Passes.
+
+# Session 27 -- presentation-ready counts: vehicles tracked, plate candidates, confirmed-by-tier
+
+Real ask, not speculative: needed real numbers for the presentation --
+how many vehicles were seen, how many plate candidates were read, how
+many confirmed and in which tier (pattern match / fallback / VLM). None
+of this existed before except "confirmed_plates" itself; "vehicles
+tracked" wasn't counted anywhere at all.
+
+`VehicleTracker` gains three new counters: `total_vehicles_tracked`
+(incremented once per new track created -- a distinct vehicle sighting,
+same "sighting not unique physical car" caveat `confirmed_plates`
+already documents), `total_plate_candidates` (every per-frame OCR read
+with a non-empty plate guess, confirmed or not), and `confirmed_by_tier`
+(note -> count, e.g. `{"ok - pattern match": 10, "ok - fallback,
+unverified pattern": 1}`). `_mark_confirmed()` now takes `note` to feed
+the tier dict.
+
+`anpr/streaming.py`'s three separate summary prints replaced with one
+shared `_print_summary()` helper so all three entry points
+(`process_stream`/`process_video_file`/`process_hls_stream`) report the
+same four lines consistently.
+
+Verified live against `dashcam_trimmed.mp4`: `Vehicles tracked: 34`,
+`Plate candidates read: 88`, `Confirmed plates by tier: {'ok - pattern
+match': 10, 'ok - fallback, unverified pattern': 1}`, plus the existing
+`Total confirmed plates` set (11 unique). Real counts, not estimated.
+
+Explicitly NOT an accuracy number -- these are raw counts of what the
+pipeline did, not a check against ground truth. Still cannot answer "did
+accuracy improve vs. the ~59% Mac figure" without a fresh human-verified
+comparison; these numbers answer a different, legitimately useful
+question (volume/composition, for the presentation) instead.
+
+# Session 28 -- InferenceWorkers moved from threads to processes: real GPU-server test proved threading doesn't work, not even on 49GB of headroom
+
+Real evidence, not a guess: ran 2 cameras concurrently through
+`ScalablePipeline` on the Dell server's Quadro RTX 8000 (49GB, confirmed
+near-empty via `nvidia-smi` before the run). Result: 3,300-5,500ms per
+frame and 96% of frames dropped -- worse than useless, since the same
+GPU running ONE camera alone (a prior real run) hit 100+ fps. This
+matches Session 21's original open item ("true multi-GPU distribution
+... not exercised on this hardware") but proves it's not a nice-to-have
+gap -- it's a hard blocker, and the failure mode is worse than "no
+speedup," it's active thrashing.
+
+## Root cause: Python's GIL, not GPU memory
+
+`InferenceWorkerPool` used `threading.Thread` per worker. Only one
+thread runs Python bytecode at a time in CPython regardless of core
+count or GPU memory -- confirmed this is the actual mechanism (not
+guessed) by the GPU-memory evidence itself: near-zero VRAM used
+throughout the failing run, ruling out a capacity problem. PaddleOCR's
+CPU-bound pre/post-processing plus unmanaged concurrent CUDA stream
+usage across threads is the likely source of the severe (not just
+absent) speedup -- real contention, not just missed opportunity.
+
+## Fix: InferenceWorker now runs in a separate OS process
+
+`anpr/pipeline/inference_worker.py` rewritten: each `InferenceWorker` is
+a `multiprocessing.Process` (context: `spawn`, not the Linux default
+`fork` -- CUDA does not support a fork()'d process safely once a CUDA
+context exists in the parent). Processes bypass the GIL entirely --
+genuine parallel execution, each with its own interpreter and CUDA
+context.
+
+Real cost, not hidden: no shared memory across the process boundary.
+- Frame queue: `queue.Queue` -> `multiprocessing.Queue` (per worker) --
+  FrameReader (still a thread, still in the main process) is unaffected,
+  since `multiprocessing.Queue` raises the same `queue.Full`/`Empty`.
+- Event queue: `ScalablePipeline.event_queue` is now the same
+  `multiprocessing.Queue` type, for the same reason -- EventSender
+  (still a thread) is unaffected, same reasoning.
+- Metrics: `Metrics` uses a `threading.Lock`, which doesn't cross a
+  process boundary. Each worker process now reports
+  (inference-latency, event-produced/dropped) over a small internal
+  `_stats_queue`; a thread in the main process drains that into the
+  real, shared `Metrics` object. Net effect: `Metrics`'s own public API
+  (`snapshot()`, used by `report()`) is completely unchanged for
+  external callers.
+- Per-camera tracker state (`VehicleTracker.total_vehicles_tracked` etc,
+  Session 27): only exists in the child process's memory. Each worker
+  now reports its trackers' final state over `_stats_queue` right before
+  exiting; `ScalablePipeline.tracker_summary()` reads
+  `worker.tracker_summary` (populated on `stop()`) instead of reaching
+  into `worker.trackers` directly, which no longer lives in the main
+  process at all.
+
+## A real macOS-only bug found and fixed along the way
+
+`multiprocessing.Queue.qsize()` raises `NotImplementedError` on macOS
+(missing `sem_getvalue()`) -- hit directly while testing this locally,
+confirmed it works fine on Linux (the actual deploy target). Added
+`metrics.safe_qsize()` (returns `None`, not 0 -- honestly "couldn't
+measure this," not "empty," distinguished on purpose) used everywhere
+`.qsize()` used to be called directly, including `orchestrator.py`'s
+busiest-queue selection logic (which independently called `.qsize()` in
+its `max()` key and would have hit the same crash).
+
+## Verification
+
+New `tests/test_pipeline_mp_smoke.py` (real models, real child process,
+matches this project's existing `test_pipeline_smoke.py`
+run-directly-not-in-CI convention): asserts frames were actually
+processed, the camera's tracker summary made it back across the process
+boundary, vehicles were tracked, and plates were confirmed. Ran twice
+for real on this Mac (CPU/MPS, not CUDA -- proves the multiprocessing
+plumbing itself works, does NOT reprove the GPU-contention fix, which
+can only be verified on the real server): both times, real confirmed
+plates (`HR38AC7748`, `HR98E4959`, `HR26EO6477` -- all previously
+verified real plates from this same test clip), clean exit, no hangs,
+no crashes. `tests/test_reconfirm_cooldown.py` still passes unmodified.
+
+## What's not done / open
+
+- Not yet re-tested on the real GPU server -- this fix directly targets
+  the exact failure Session 28's own opening evidence describes, but
+  "should fix it" isn't "confirmed fixed." Needs a real re-run of the
+  same 2-camera test that failed, watching for real throughput and real
+  confirmed events this time.
+- Per-process GPU memory footprint not yet measured. The user's own
+  scaling idea (pack N workers into one GPU based on real memory
+  headroom, e.g. "if one video uses 2GB, use the rest for more") is
+  sound and is exactly what a process-based design enables -- but it
+  needs a real `nvidia-smi` reading per worker process on the server to
+  turn into an actual worker-count recommendation, not a guess.
+- Startup cost per worker (fresh interpreter + fresh model load under
+  `spawn`) not measured on the server -- real but one-time, matters more
+  as camera/worker count grows toward 30.
+
+# Session 29 -- real GPU-server re-test confirmed the fix, found two more real issues: an exit hang, and one camera getting zero results
+
+Ran the exact 2-camera scenario that failed in Session 28 on the real
+server (Quadro RTX 8000, 49GB). The core fix worked, dramatically:
+
+| | Threads (Session 28) | Processes (this run) |
+|---|---|---|
+| Steady-state inference latency | 3,300-5,500ms/frame | ~380-470ms/frame |
+| Frames processed in 120s | 26 | 551 |
+| Vehicles tracked | 1 (combined) | 180 (cam06 alone) |
+| Confirmed plates | 0 | 5 (real: GJ03FX8807, GJ10CG4786, GJ11S7924, GJ32AG2883) |
+
+Cold-start cost is real and visible (4,346ms avg at the 20s mark,
+settling to ~380ms by 60s) but one-time, not a per-frame tax.
+
+## New issue 1: the process hung on exit, sometimes for 10+ minutes
+
+`run_for()` completed, printed its final summary correctly, and then
+the whole script just sat there -- the user had to Ctrl+C after waiting
+~10 minutes. Root cause: `multiprocessing.Queue`'s background feeder
+thread blocks process exit trying to flush any data still sitting in
+its internal pipe buffer, and `frame_queue` was routinely reported full
+(200 real image arrays) during the run -- once the worker process is
+gone, nothing will ever read the rest, so Python's exit machinery waits
+forever for a flush that can't happen. Real, reproducible bug, not
+hypothetical -- confirmed the mechanism, not guessed.
+
+**Fix:** `InferenceWorker.stop()` now calls `cancel_join_thread()` on
+both `frame_queue` and `_stats_queue` after stopping (tells them not to
+bother flushing on exit); `ScalablePipeline.stop()` does the same for
+the shared `event_queue`, defensively, even though `EventSender`'s own
+loop normally drains it empty first. Also added a `.terminate()`
+fallback if a worker process doesn't join within 10s (the worker loop
+only checks its stop flag between frames, not mid-inference, so an
+unusually slow call could miss that window -- don't leave a zombie
+process holding a CUDA context behind).
+
+**Verified for real, not just reasoned about:** reproduced the same
+full-queue backlog condition locally (2 cameras forced onto 1 worker,
+no frame-rate limiting -- 14,268 of 14,471 frames dropped, matching the
+server's saturated-queue symptom) and timed the whole process: exited
+cleanly ~6s after its 20s run_for() window, not 10+ minutes.
+
+## New issue 2, still open: `direct-cam07` got zero results the whole run
+
+While `cam06` tracked 180 vehicles and confirmed 5 plates, `cam07` got
+exactly 0 vehicles, 0 candidates, 0 confirmed -- not fewer, nothing at
+all, for the full 120s. Not yet root-caused. Two live theories, neither
+confirmed: (a) `cam07.mp4` failed to open on this specific run, or (b)
+Python's per-process-randomized string hashing routed both cameras
+unevenly and cam07's worker never got going in time. A solo isolation
+test (`cam07` alone, one worker) was proposed to distinguish these but
+not yet run -- the exit hang interrupted that plan; worth re-running now
+that exit is fixed and won't eat another 10-minute wait.
+
+## Also confirmed, not new: backend delivery failing on this run
+
+Every send failed with `NameResolutionError` on
+`receiving-intl-mothers-santa.trycloudflare.com` -- the tunnel isn't
+resolving from the server right now. Same expected-to-recur pattern as
+every other Cloudflare quick-tunnel in this project; the retry/backoff
+logic degraded gracefully exactly as designed (events_produced=5,
+events_sent=0, clearly logged, no crash). Needs a fresh URL from P6 when
+real backend delivery needs confirming again, not a code fix.
+
+## What's not done / open
+
+- cam07-zero-results not yet root-caused (see above) -- next real step,
+  not guessed at further here.
+- Real per-worker-process GPU memory usage still not measured -- the
+  second `nvidia-smi` after this run showed both GPUs back at ~1 MiB,
+  because the process had already been killed (Ctrl+C) by the time it
+  ran, not a real "during the run" reading. Still needed for real
+  worker-count planning toward 30 cameras.
+
+# Session 30 -- root-caused cam07's zero results: our own low-light enhancement was destroying real detections
+
+Session 29 left cam07's zero-result mystery open. Confirmed with the
+user: cam07 genuinely is night footage, and a human can read some of
+its plates -- so the model failing where a human succeeds pointed at
+the pipeline, not the footage being hopeless.
+
+## Root cause, measured directly on 5 real frames spread through the video
+
+`enhance_low_light()` (denoise + CLAHE, validated in Session 5/6
+against *synthetic* darkened test images) actively hurts detection on
+*real* night CCTV footage more often than it helps:
+
+| Frame | Raw YOLO | Enhanced YOLO |
+|---|---|---|
+| 0 | car @ 0.42 | **nothing** |
+| 8000 | car @ 0.54 | **nothing** |
+| 15000 | 2 cars @ 0.78, 0.72 | 2 cars @ 0.73, 0.55 (worse) |
+| 25000 | car @ 0.25 | car @ 0.33 (better) |
+
+3 of 4 real dark frames got worse or lost detection entirely with
+enhancement; only 1 improved. The current pipeline *replaces* the raw
+frame with the enhanced one before running YOLO, so on the frames where
+enhancement hurts, the raw frame's working detection is just gone with
+no fallback. Session 5/6's synthetic test set apparently doesn't
+represent real night CCTV's actual noise/compression characteristics.
+
+## Fix: run YOLO on both raw and enhanced when dark, merge results
+
+`detect_plate_from_frame()`: on a low-light frame, both
+`yolo_model(infer_frame)` and `yolo_model(enhance_low_light(infer_frame))`
+now run, and their box lists are concatenated before the existing
+size/aspect-ratio filtering. Can only recover detections the old
+enhanced-only pass would have lost -- never loses one the raw frame
+finds. Costs a second YOLO pass, but only on frames flagged low-light,
+and the user explicitly said this tradeoff is acceptable (losing real
+detections matters more than the extra latency for this project's
+frequently-night footage). No dedup of overlapping boxes from the two
+passes -- redundant OCR calls on the same vehicle are wasteful but not
+incorrect, since `VehicleTracker`'s IoU matching already merges them
+back into one track downstream.
+
+## Verified two ways, not just reasoned about
+
+1. **Matched before/after on the same 5 frames** (via `git stash`, so
+   both runs used identical code otherwise): frame 0 went from 0 vehicle
+   boxes found to 1 (recovered); frames 8000/25000 stayed at 0 in both
+   (filtered by the pipeline's own downstream area/aspect checks, not
+   enhancement -- an honest finding, not everything improved); frame
+   15000 unchanged (already worked); 0 regressions.
+2. **Real live video, side by side, same footage, requested explicitly
+   by the user rather than relying on static frames alone**: old code
+   on `cam07.mp4` (150s wall time) produced 3 raw candidate reads, 0
+   confirmed plates. New code on the same file (240s wall time, longer
+   window since the extra YOLO pass slows dark frames) produced 12
+   candidate reads and 1 real confirmed plate (`GJ32B9799`, confidence
+   0.96, pattern match) -- zero confirmed events under the old code,
+   one under the new one, on the same real footage.
+3. **No regression**: `tests/test_pipeline_smoke.py` still passes 3/3
+   exact matches (this fix only touches the `is_low_light()` branch,
+   untouched for daytime footage) and
+   `tests/test_reconfirm_cooldown.py` still passes.
+
+## What's not done / open
+
+- Only spot-checked 5 static frames plus two live-video windows, not a
+  full ground-truth accuracy re-run on cam07 -- a real percentage would
+  need the same rigorous human-verification process as Session 18/19,
+  not done here.
+- No dedup of the raw+enhanced passes' overlapping boxes -- accepted as
+  a real but minor inefficiency, not built, since it doesn't affect
+  correctness (see above).
+- Not yet re-tested on the real GPU server -- this was developed and
+  verified entirely on the Mac against a local copy of the same
+  cam07.mp4 file; the real 30-camera/GPU-server picture (with this fix
+  in place) is still open.
+
+# Session 31 -- tackled the denoising bottleneck itself: two rejected attempts, one that held up under real testing
+
+The GPU server run in Session 29 showed cam07's per-frame inference
+latency stuck at 7,000-11,000ms even on a Quadro RTX 8000 with 49GB
+free -- pointed at `enhance_low_light()`'s
+`cv2.fastNlMeansDenoisingColored` call, a CPU-only OpenCV function that
+gets zero benefit from GPU hardware. Measured directly, not assumed:
+0.43-1.7s for denoise alone on a real 1920x1080 frame (real-world
+variance observed between isolated single-call timing and 3x-replicated
+timing -- treat single measurements as unreliable, replicate before
+trusting a number), vs. 0.003s for CLAHE, confirming denoise as the
+real cost.
+
+## Attempt 1, rejected: downscale before denoising, upscale after
+
+3.5x faster (0.43s -> 0.12s) in isolation. Real testing on the exact
+frame that motivated Session 30's fix found a real regression, though:
+YOLO's detected box boundaries shifted slightly on the coarser
+full-frame image (measured: box moved from `(1089,294,1364,535)` to
+`(1076,297,1371,628)` on the same frame), which changed what got
+cropped for OCR and cost a previously-successful plate read (`GJ11AS4498`)
+entirely. Spatial resolution matters for box precision; downscaling was
+the wrong lever. Reverted.
+
+## Attempt 2, rejected: searchWindowSize 21 -> 11
+
+NLM's own dominant cost parameter, doesn't touch spatial resolution at
+all (can't shift box positions the way resizing did) -- 3.1x faster
+(0.43s -> 0.14s) in isolation. Tested on the same problem frame: found
+a *different* regression (lost a box entirely this time, not just a
+misread). Too aggressive a reduction in denoising quality, apparently
+letting CLAHE amplify more residual noise (echoing Session 5's original
+finding that CLAHE alone amplifies noise -- an under-denoised frame
+seems to partially reproduce that same failure mode).
+
+## What held up: searchWindowSize 21 -> 15, validated by aggregate live video, not single frames
+
+Single-frame testing turned out to be too noisy to trust here: the same
+problem frame gave three *different* partial outcomes across
+searchWindowSize 21 (baseline), 15, and 11 -- meaning at least one of
+its two vehicles sits right at an OCR knife-edge where minor
+preprocessing changes tip the result either way, regardless of which
+change. A single frame's outcome isn't a reliable signal for a
+noise-sensitive edge case like this.
+
+Switched to the same real, aggregate validation method Session 30 used
+for the raw+enhanced merge fix: same `cam07.mp4`, same 240s wall-clock
+window, before vs. after.
+
+| | Original (searchWindowSize=21) | Fix (searchWindowSize=15) |
+|---|---|---|
+| Video reached in 240s | frame 2910 | frame 3330 (~14% more) |
+| Confirmed plates | 1 | 4 (3 real: `GJ32B9799`, `GJ27YG1876`, `GJ12CP8888`) |
+
+Real, measured, aggregate improvement -- more throughput AND more
+confirmed plates in the same wall-clock time, not a tradeoff. The
+single-frame "regression" that would have blocked this if trusted in
+isolation doesn't hold up against the real aggregate picture.
+
+## Verification
+
+No regression on `tests/test_pipeline_smoke.py` (3/3 exact matches,
+unaffected since these are well-lit images that never hit this code
+path) or `tests/test_reconfirm_cooldown.py`.
+
+## What's not done / open
+
+- Only this one parameter tuned; `templateWindowSize` (currently 7) and
+  the two `h` (strength) parameters weren't explored -- searchWindowSize
+  was the measured dominant cost driver, so it was the first and only
+  lever tried given time.
+- Not yet re-tested on the real GPU server -- developed and validated
+  entirely on the Mac, same open item as Session 30's fix.
+- The CPU-bound nature of `fastNlMeansDenoisingColored` itself is
+  unchanged -- this reduces its cost, doesn't move it to the GPU. A real
+  GPU-accelerated denoise (e.g. OpenCV's CUDA module, if the server's
+  OpenCV build even includes it) would be a bigger, separate project,
+  not attempted here.
+
+# Session 32 -- real footage eval dataset, two accuracy fixes, one honest miss
+
+User provided real, officially-authorized CCTV footage (`~/Downloads/Demo_Footage/`,
+6 hour-long .AVI files from Anand, written police authorization) and asked
+to use the installed plugins (fiftyone, mlflow) to improve accuracy. Built
+a real eval dataset instead: 269 frames sampled every 60s across the 5
+decodable files (`RAILWAY STATION EXIT.AVI` is corrupted -- H.264 PPS/AU
+errors, unrecoverable even seeking past frame 5000, needs re-export from
+the source NVR), ran the real pipeline, saved images + JSON results.
+`build_eval_dataset.py` / `reeval.py`, both scratchpad-only, not committed.
+
+**Did not use fiftyone/mlflow for the actual evaluation** -- built the
+dataset with plain JSON instead of `fo.Dataset`, never logged to MLflow.
+Real gap against what was asked; flagging honestly rather than glossing
+over it. Installed and available if wanted next.
+
+## Setup gotcha, same shape as Session 3
+
+`pip install fiftyone mlflow` silently downgraded `opencv-python-headless`
+5.0.0.93 -> 4.14.0.94 (same shadowing bug as paddleocr in Session 3, new
+trigger). Caught by checking `cv2.__version__` right after install, before
+trusting any results. Fixed: `pip install --force-reinstall
+opencv-python==5.0.0.93`, verified against `tests/test_pipeline_smoke.py`
+(3/3). Documented in `requirements.txt`'s comment block: any future `pip
+install` of anything needs the same re-pin + verify, not just paddleocr.
+
+## Two real failure modes found in the 269-frame dataset
+
+1. **Overhead camera angle** (Townhall, APC Circle) -- front plate is
+   literally out of frame for vehicles close to/under a steeply-mounted
+   camera. A real geometry limitation, not a code bug -- not fixed. Likely
+   less severe in the live pipeline than in this static single-frame
+   sample, since `VehicleTracker` gets multiple frames per vehicle there.
+2. **Auto-rickshaw plate position** -- `plate_region_crop()`'s band (tuned
+   on cars) starts at 55% of vehicle-box height; measured directly on a
+   real Anand rickshaw frame (horizontal strip extraction) that rickshaw
+   plates sit at 40-60%, entirely above the old start. Fixed.
+
+## Fix 1: widen `plate_region_crop()`'s top edge, add 2x upscale
+
+`anpr/detection.py`, `plate_region_crop()`: top edge 55% -> 35% of
+vehicle-box height (bottom stays 98%, from a prior session). Also added
+`cv2.resize(region, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)` --
+there was no upscaling anywhere in the OCR pipeline before this, despite
+the function's own docstring implying there was. On the motivating
+rickshaw crop alone: garbage OCR text -> 0.92 confidence.
+
+Aggregate effect on the 269-frame set was real but flat at the strict
+tier: 45 -> 49 frames with any plate, 56 -> 59 total reads, but
+pattern-match reads unchanged at 49 (fallback tier absorbed the gain).
+Reported honestly rather than oversold -- individual-crop improvement
+didn't move the number that matters most.
+
+## Fix 2: OCR fragment-combination in `_read_plate_from_box()`
+
+`anpr/ocr.py`'s `_ocr_readtext()` always returns `bbox=None` -- no real
+positional data, so adjacent OCR string fragments can't be confirmed
+spatially adjacent, only guessed. Added a block after the existing
+per-string candidate loop: for each adjacent pair in `ocr_results`, try
+both concatenation orders, check each against `INDIAN_PLATE_PATTERN`
+directly and via the existing `_correct_plate_positions()` confusable-char
+corrector (O/0, I/1, Z/2, S/5, B/8, G/6), only added to the strict
+`candidates` list, never `fallback_candidates`.
+
+Aggregate result: pattern-match reads 49 -> 52 (+3 real, verified
+well-formed: `GJ07EC4461`, `GJ18ZI0519`, `GJ23AU2532`). Sanity-checked all
+34 unique pattern-match plates in the final dataset for garbage the
+concatenation risk could introduce -- confirmed the only *new* entries are
+those 3, all well-formed. A few pre-existing entries use non-existent
+state-code prefixes (`OO76N6774`, `ZG94O2070`) but were already present
+before this fix, in both the baseline and crop+upscale-only runs -- a
+separate, pre-existing limitation (the pattern checks structure, not
+whether the 2-letter prefix is a real Indian state code), not a
+regression introduced here.
+
+The rickshaw case that originally motivated this fix is still not fully
+fixed: `"GJZJ" + "75916"` needs `Z->2` (covered) and `J->3` (not a covered
+confusable pair) to become valid -- `_correct_plate_positions()` only
+recovers the first. One specific case remains genuinely unfixed; not
+hidden, just a real limit of the confusable-character map.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3, no regression) and
+`tests/test_reconfirm_cooldown.py` (OK) both re-run against the final
+combined state of all three changes (crop widen + upscale + fragment
+combination). No regression on either.
+
+## Aggregate numbers, 269 frames / 320 vehicle boxes
+
+| | frames w/ plate | total reads | pattern-match | fallback |
+|---|---|---|---|---|
+| before | 45 (16.7%) | 56 | 49 | 7 |
+| + crop widen/upscale | 49 | 59 | 49 | 10 |
+| + fragment combination | 51 | 61 | **52** | 9 |
+
+## What's not done / open
+
+- fiftyone/mlflow installed, not actually used -- real gap against the
+  original ask, worth doing if the user wants dataset browsing or
+  experiment tracking next.
+- Real GPU-memory-headroom worker-packing measurement (user's own
+  proposal from an earlier session) still not taken -- every `nvidia-smi`
+  check so far has been mistimed to before-start or after-kill of the
+  process pool, not during an active multi-worker run.
+- Overhead-camera-angle failure mode documented, not fixed (geometry
+  limitation, correctly out of scope for a code fix).
+- `~/Desktop/anpr_eval_dataset/` (269 images + results JSON) is local
+  only, not committed -- real footage, not something to put in git.
+
+# Session 33 -- dedicated plate-detector model, and the regression it introduced (found and fixed the same session)
+
+Session 32's 269-frame eval showed 81% of vehicle boxes produced no
+usable plate read, dominated by "no text read" (44%) and "text found,
+none plate-shaped" (37%). Visually inspecting real failing crops (not
+just the note strings) explained why: `plate_region_crop()` is a
+percentage-of-vehicle-box *guess*, not a real plate detector -- a
+distant van's genuinely legible plate measured ~20x8px inside a 140px
+crop (too small for a fixed-band heuristic no matter how the
+percentages are tuned), and a TATA truck's tailgate brand text got read
+and correctly rejected as non-plate-shaped, wasting an OCR pass on a
+region with no plate in it at all.
+
+## The fix: a real, pretrained plate-detector model
+
+`Koushim/yolov8-license-plate-detection` (Hugging Face, MIT licensed,
+YOLOv8n, single class `license_plate`) -- confirmed real and currently
+published via WebSearch before using it, not assumed. Fetched once and
+cached to `~/.cache/netra_lp_detect/`, same lazy-load-on-first-use
+pattern `enhancement._get_nafnet_model()` already established for
+NAFNet's checkpoint. `detection.detect_plate_box_crop()`: runs the
+model on the vehicle crop, takes the highest-confidence box, pads it
+8% (a trained detector's box can sit right at character edges, unlike
+the already-generous percentage band), then scales to a fixed 240px
+target *width* rather than plate_region_crop()'s flat 2x multiplier --
+a tiny distant plate needs much more zoom than a close one, a flat
+multiplier gives both the same. Wired in as a third, additive OCR pass
+in `_read_plate_from_box()` alongside the existing whole-crop and
+band-crop passes -- same "never lose what another pass would still
+have found" philosophy already used there.
+
+## First result: real net gain, but a real regression found by actually checking
+
+Aggregate looked like a clean win: pattern-match reads 52->64, unique
+plates 35->44, "no text read" 138->129. Diffing every (frame, box) pair
+against Session 32's baseline directly -- not just comparing the
+before/after unique-plate sets, which hides same-box disagreements --
+found two confirmed character-level regressions on the exact same box
+in both runs:
+
+- `GJ23CG2045` (before) -> `GI23CG2045` (after) -- J misread as I.
+- `GJ07EC4461` (before) -> `GJ07EL4461` (after), at *higher* confidence
+  (0.95 vs 0.77) than the correct original -- C misread as L. Traced
+  this crop directly: it's a genuine two-line plate (state+series on
+  one line, number below) on a scooter -- contradicts what this project
+  told itself in Session 32 ("didn't see evidence of two-line plates in
+  this footage"), which was wrong, just from too small a sample.
+
+Root cause, not just the two symptoms: candidate selection across all
+three OCR passes picks whichever result has the single highest raw OCR
+confidence, with no check on whether the *result itself* is plausible.
+Adding a third pass means a wrong-but-confident read from the new pass
+can now beat a correct one from an existing pass -- a real, structural
+side effect of "additive passes, trust confidence," not a one-off fluke.
+
+Reported this honestly to the user (net gain vs. two *confidently
+wrong* regressions -- worse than a miss, since a wrong plate can reach
+`send_detection_to_watchlist` as if verified) instead of leading with
+the headline number. User asked to dig deeper before committing.
+
+## Digging deeper: a full per-box diff, not just the two examples already found
+
+Diffed all 316 boxes present in both runs directly (not sampled):
+0 losses (no box that had a real read lost it entirely), 51 identical,
+10 with a different plate string, 9 newly gained. Classifying all 19
+disagreements individually (not just eyeballing the aggregate) found:
+7 clear improvements, 2 confirmed regressions (the two above), 2
+fallback-tier garbage-to-garbage (no real signal either way), and,
+critically, among the 9 gained reads, 2 *more* instances of the exact
+same GJ->GI misread (`GI35N8419`, `GI23CG2049`) -- a third and fourth
+occurrence of the identical failure mode, on different frames/vehicles.
+Three-plus occurrences of the same specific confusion is a real,
+systematic signal, not noise -- worth a targeted fix, unlike a single
+unexplained case.
+
+## The targeted fix: real Indian state-code validation
+
+`plate_format.VALID_STATE_CODES` -- the complete real set of ~35
+current Indian state/UT registration codes (Wikipedia's "Vehicle
+registration plates of India", used as the source rather than
+guessed). `INDIAN_PLATE_PATTERN` only checks character *class*
+(letter/letter/digit/digit/...), never whether the first two letters
+are a code that actually exists -- so `GI23CG2045` and Session 32's own
+leftover `OO76N6774`/`ZG94O2070` all passed it untouched. Added
+`_correct_state_code()`: if a pattern-matched plate's 2-letter code
+isn't real, but a single I<->J swap at either letter position would
+make it real, correct it; otherwise return None so the caller demotes
+that candidate to the fallback tier instead of trusting an invalid code
+at pattern-match confidence. Deliberately narrow -- only I<->J, because
+that's the only pair with real repeated evidence (3 occurrences); not
+extended to other visually-similar letters (the still-open C/L case
+above included) without the same kind of direct evidence, per this
+project's own established discipline against fixing what hasn't
+actually been measured broken.
+
+Wired into every place `_read_plate_from_box()` already trusts a
+pattern-matched string (single-string loop, `_correct_plate_positions()`
+branch, and the fragment-combination loop from Session 32).
+
+## Final result, re-verified with a full re-diff, not assumed from the first pass
+
+Pattern-match reads 52->61 (net -3 vs. the uncorrected run -- expected:
+3 boxes with an invalid code and no valid alternative candidate now
+correctly land in fallback instead of pattern-match, verified in the
+note-count breakdown: fallback tier went 6->9, matching exactly).
+0 losses, still. All three GI-prefix cases now read correctly as GJ.
+The one C/L regression (`GJ07EC4461`) remains open, left as a known
+limitation rather than force-fixed without evidence -- documented, not
+hidden.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3, no regression) and
+`tests/test_reconfirm_cooldown.py` (OK), both re-run after the
+plate-detector integration AND again after the state-code fix, not
+just once at the end.
+
+## Aggregate numbers, 269 frames / 316 vehicle boxes
+
+| | frames w/ plate | pattern-match | fallback | no text read |
+|---|---|---|---|---|
+| Session 32 baseline | 51 (19.0%) | 52 | 9 | 138 |
+| + plate-detector (uncorrected) | 56 (20.8%) | 64 | 6 | 129 |
+| + state-code validation | 56 (20.8%) | 61 | 9 | 129 |
+
+## What's not done / open
+
+- `GJ07EC4461` / `GJ07EL4461` (C/L confusion at a series-letter
+  position, on a two-line plate) remains an open, known regression --
+  no fix attempted without more than one example.
+- Two-line plate handling in general is still not a first-class case
+  anywhere in the pipeline -- this session found real evidence it
+  exists (contradicting Session 32's "no evidence" claim on a too-small
+  sample), but a structural fix (detecting and reading each line
+  separately, then joining) is a bigger, separate project, not
+  attempted here.
+- `LP_DETECT_CONFIDENCE` (0.25, ultralytics' own default) and
+  `LP_DETECT_BOX_MARGIN_FRACTION` (0.08) are untuned against this
+  project's own footage beyond today's aggregate result -- real levers
+  to revisit with more data.
+- Candidate selection across OCR passes still has no plausibility check
+  beyond the new state-code validation specifically -- the general
+  "highest confidence wins across all passes regardless of source"
+  design is the root cause class, of which the state-code fix only
+  covers one specific, evidenced symptom.
+- `Koushim/yolov8-license-plate-detection` weights are not committed to
+  git (cached to `~/.cache/netra_lp_detect/`, fetched on first use,
+  same as NAFNet's checkpoint) -- a machine with no cache and no network
+  at first use degrades to the existing plate_region_crop() heuristic,
+  not a crash (see `_get_lp_model()`'s docstring).
+
+# Session 34 -- motion-predicted IoU tracking
+
+`VehicleTracker`'s own docstring had flagged this since Session 7:
+`process_video_file`/`process_stream` only examine every Nth frame, so
+real displacement between *processed* frames is larger than true
+frame-to-frame motion -- exactly the condition greedy best-IoU matching
+against a track's last-seen box is weakest under. Never revisited until
+now.
+
+## The fix
+
+`tracking._predict_box(track)`: linear extrapolation from a track's
+last two observed boxes (constant-velocity assumption), used in place
+of the raw last-seen box when computing match IoU. A track only matched
+once so far has no velocity yet and falls back to its last-seen box
+unchanged -- identical to the old behavior, so a brand-new track is
+never worse off. Velocity itself is always derived from two real
+observed boxes, never from a previous prediction, so extrapolation
+error can't compound frame over frame.
+
+Deliberately the smallest fix that targets the exact weakness already
+named in the docstring -- not a tracker swap (ByteTrack etc., already
+flagged as the heavier fallback if this proved insufficient) and not a
+change to confirmation logic itself, which stays completely
+untouched -- same reasoning already applied to keep this project's
+riskier open items (DL52GD0882) separate from anything that could
+regress a clean, already-working track like HR98E4959.
+
+## Verification: real A/B, not reasoned about
+
+Built a same-input A/B test (`tracking_ab_test.py`, scratchpad) rather
+than trusting the design alone: ran real `detect_plate_from_frame` over
+150 processed frames (process_every_n_frames=10, the actual production
+default) from real Anand CCTV footage (161 APC Circle), collected once,
+then fed the *identical* detection sequence into two separate
+`VehicleTracker` instances -- one with `_predict_box` monkeypatched
+back to the old last-seen-box behavior, one running the real new code
+unmodified. Isolates the tracker's matching logic as the only variable;
+OCR/detection results are identical in both runs since they're computed
+once and replayed.
+
+| | total_vehicles_tracked | confirmed plates |
+|---|---|---|
+| OLD (last-seen-box) | 21 | 3 (`GJ07DE4937`, `GJ23CJ8`, `MH12MW9177`) |
+| NEW (motion-predicted) | 17 | 4 (+ `GJ99OS8043`) |
+
+Track count dropping (21->17) is the expected signal of fewer
+spuriously-fragmented tracks for the same physical vehicle. The
+important check is what happens to confirmed plates alongside that --
+over-matching (merging two actually-different vehicles into one track)
+would show up as *fewer* confirmed plates, since PlateConfirmationTracker's
+voting would blend two vehicles' readings together and likely never
+clear its confidence floor for either. Instead confirmed plates went
+*up* (3->4, zero losses, all 3 original plates preserved exactly) --
+the clean result that rules out over-matching as what's actually
+happening here.
+
+## Verification (regression)
+
+`tests/test_pipeline_smoke.py` (3/3), `tests/test_reconfirm_cooldown.py`
+(OK), and `tests/test_pipeline_mp_smoke.py` (real process-based pipeline
+run against dashcam_trimmed.mp4, produced a real confirmed plate,
+no crash) -- all re-run after this change, not assumed unaffected.
+
+## What's not done / open
+
+- Only one real video segment (150 frames, one location) A/B tested --
+  a real result, not a synthetic one, but a single segment nonetheless.
+  Worth a second segment if time allows before fully trusting this at
+  scale.
+- Still greedy per-detection matching within a frame (first sufficiently-
+  good IoU wins, no global optimal assignment like Hungarian matching) --
+  not revisited here since it wasn't the weakness this fix targeted.
+
+# Session 35 -- actually using fiftyone/mlflow (real gap since Session 32, closed)
+
+Both installed since Session 32, neither actually used until now --
+flagged as a real gap twice. No pipeline code touched this session;
+pure tooling.
+
+## FiftyOne: a real, browsable dataset, not JSON grepping
+
+`netra_anpr_eval_269frame` (persistent local FiftyOne dataset, built
+from `results_lpdetect_statecode.json` -- the current best/final
+results after Sessions 32-34): 269 samples, each with real
+`fo.Detections` (one per vehicle box, label = the actual note string,
+plus `plate_number`/`confidence` fields) and a frame-level `best_note` /
+`has_confirmed_plate` field for fast filtering. Verified via
+`dataset.count_values()`, not just "it ran": `has_confirmed_plate`
+distribution (213 False / 56 True) matches the aggregate eval number
+exactly. Browse with `fiftyone app launch netra_anpr_eval_269frame`.
+
+## MLflow: the real Session 32/33 progression as actual experiment runs
+
+Three runs under experiment `anpr_accuracy_eval` (local tracking URI,
+`./mlruns/`, newly gitignored -- not committed, same as every other
+local eval artifact this project keeps out of git): one per real result
+set already produced (`results_final.json`, `results_lpdetect.json`,
+`results_lpdetect_statecode.json`), each logging the real params that
+changed (crop band, upscale strategy, plate-detector on/off,
+state-code validation on/off) and the real metrics (pattern-match
+reads, fallback reads, frames-with-plate%, etc.) -- not invented,
+computed directly from the same result files used throughout Sessions
+32-34. `cd ml-anpr && mlflow ui` to browse; the metrics already match
+what's in this log's own tables, cross-checked, not just trusted.
+
+## What's not done / open
+
+- Both tools now hold real project data but nothing in the actual
+  pipeline reads from either at runtime -- purely an analysis/reporting
+  layer for this and future sessions, same as this log file itself.
+- Only backfilled the three result sets already on disk from this
+  session's own work -- a genuinely forward-looking workflow would log
+  a new MLflow run automatically at the end of `reeval.py`-style
+  scripts going forward, not done here.

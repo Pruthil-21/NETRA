@@ -131,6 +131,23 @@ def _iou(box_a, box_b):
     return inter / (area_a + area_b - inter)
 
 
+def _predict_box(track):
+    """Extrapolates a track's box one step forward using the displacement
+    between its last two observed boxes (constant-velocity assumption) --
+    matching against where a vehicle is expected to be next, not just
+    where it last was, directly targets the "real displacement between
+    *processed* frames is larger than true frame-to-frame motion"
+    weakness VehicleTracker's own docstring already names. Falls back to
+    the last-seen box unchanged (zero velocity) for a track only matched
+    once so far, which is exactly the old, unpredicted behavior -- so a
+    brand-new track is never worse off than before this existed."""
+    if track["velocity"] is None:
+        return track["box"]
+    x1, y1, x2, y2 = track["box"]
+    vx1, vy1, vx2, vy2 = track["velocity"]
+    return (x1 + vx1, y1 + vy1, x2 + vx2, y2 + vy2)
+
+
 class VehicleTracker:
     """
     Associates per-frame vehicle detections (detection.detect_plate_from_frame's
@@ -148,9 +165,16 @@ class VehicleTracker:
     design before testing: process_video_file/process_stream only
     examine every Nth frame, so real displacement between *processed*
     frames is larger than true frame-to-frame motion -- this is
-    exactly the condition IoU matching is weakest under. See Session 7
-    for whether this held up on the real dashcam clip's actual sampling
-    rate.
+    exactly the condition IoU matching is weakest under.
+
+    Session 33: addressed with a linear motion prediction (see
+    _predict_box() below) rather than a heavier tracker swap -- matching
+    against where a track is *expected* to be next (extrapolated from
+    its last two observed boxes), not just where it last was, directly
+    targets the gap-between-processed-frames weakness stated above
+    without the cross-cutting risk of changing the confirmation logic
+    itself (see the DL52GD0882 discussion elsewhere in the log for why
+    that's deliberately avoided).
     """
     IOU_MATCH_THRESHOLD = 0.3
     MAX_MISSED_FRAMES = 5
@@ -177,12 +201,38 @@ class VehicleTracker:
         self.confirm_threshold = confirm_threshold
         self.tracks = []  # each: {"box", "tracker": PlateConfirmationTracker, "missed",
                            #        "best_crop", "best_crop_area", "match_count", "vlm_dispatched"}
-        # Persists across track pruning -- a confirmed plate must not
-        # silently disappear from the summary just because the vehicle
-        # that produced it later left frame and its track got pruned.
-        # plate -> last-confirmed monotonic timestamp, not a plain set --
-        # see RECONFIRM_COOLDOWN_SEC.
-        self.confirmed = {}
+        # Two different lifetimes, two different structures -- conflating
+        # them into one caused a real bug (see ALPR_IMPROVEMENT_LOG.md):
+        # a long real run's final "Total confirmed plates" print showed
+        # only ~13 of ~85 actually-confirmed plates, because the dict
+        # backing it was being pruned down to the last
+        # RECONFIRM_COOLDOWN_SEC the whole time.
+        #
+        # _recent_confirmations: plate -> last-confirmed monotonic
+        # timestamp, pruned continuously -- internal, cooldown-suppression
+        # only (see RECONFIRM_COOLDOWN_SEC). Never read externally.
+        self._recent_confirmations = {}
+        # confirmed_plates: every plate confirmed this whole session,
+        # permanent, never pruned -- persists across track pruning too, so
+        # a confirmed plate doesn't vanish from the summary just because
+        # its vehicle later left frame. This is what callers should read.
+        self.confirmed_plates = set()
+
+        # One distinct vehicle sighting per new track created (item requested
+        # for the presentation numbers: "how many cars were detected" --
+        # previously not counted anywhere, only plate reads/confirmations
+        # were). Counts sightings, not unique physical cars -- the same car
+        # leaving and re-entering frame is a new track and counts again,
+        # same honest caveat RECONFIRM_COOLDOWN_SEC's docstring already
+        # states for confirmed_plates.
+        self.total_vehicles_tracked = 0
+        # Every per-frame OCR read with a non-empty plate guess, confirmed
+        # or not -- "how many plate candidates" for the presentation.
+        self.total_plate_candidates = 0
+        # note -> count of confirmed plates in that tier ("ok - pattern
+        # match" / "ok - fallback, unverified pattern" / "ok - vlm
+        # fallback") -- the tier breakdown requested for the presentation.
+        self.confirmed_by_tier = {}
 
         # BLPR-style last-resort fallback (see vlm_fallback.py): dispatched
         # in the background because measured Ollama latency (0.48s warm /
@@ -195,16 +245,20 @@ class VehicleTracker:
     def _recently_confirmed(self, plate):
         """True if `plate` (or something close enough to be the same real
         plate) was confirmed on this camera within RECONFIRM_COOLDOWN_SEC.
-        Also prunes expired entries while it's here, so self.confirmed
-        stays bounded over a long-running stream without a separate
-        cleanup pass."""
+        Also prunes expired entries while it's here, so
+        _recent_confirmations stays bounded over a long-running stream
+        without a separate cleanup pass."""
         now = time.monotonic()
-        self.confirmed = {p: t for p, t in self.confirmed.items() if now - t < self.RECONFIRM_COOLDOWN_SEC}
+        self._recent_confirmations = {
+            p: t for p, t in self._recent_confirmations.items() if now - t < self.RECONFIRM_COOLDOWN_SEC
+        }
         return any(_plate_similarity(plate, p) >= PlateConfirmationTracker.SIMILARITY_THRESHOLD
-                   for p in self.confirmed)
+                   for p in self._recent_confirmations)
 
-    def _mark_confirmed(self, plate):
-        self.confirmed[plate] = time.monotonic()
+    def _mark_confirmed(self, plate, note):
+        self._recent_confirmations[plate] = time.monotonic()
+        self.confirmed_plates.add(plate)
+        self.confirmed_by_tier[note] = self.confirmed_by_tier.get(note, 0) + 1
 
     def update(self, detections, raw_frame=None):
         """
@@ -233,13 +287,14 @@ class VehicleTracker:
             for t in self.tracks:
                 if id(t) in matched:
                     continue
-                iou = _iou(t["box"], box)
+                iou = _iou(_predict_box(t), box)
                 if iou >= self.IOU_MATCH_THRESHOLD and iou > best_iou:
                     best_track, best_iou = t, iou
 
             if best_track is None:
                 best_track = {
                     "box": box,
+                    "velocity": None,
                     "tracker": PlateConfirmationTracker(
                         window_size=self.window_size, confirm_threshold=self.confirm_threshold
                     ),
@@ -250,6 +305,14 @@ class VehicleTracker:
                     "vlm_dispatched": False,
                 }
                 self.tracks.append(best_track)
+                self.total_vehicles_tracked += 1
+            else:
+                # Displacement since the last *observed* box, not the
+                # predicted one -- velocity should track real motion, and
+                # re-deriving it from a prediction would compound
+                # extrapolation error frame over frame.
+                old_box = best_track["box"]
+                best_track["velocity"] = tuple(n - o for n, o in zip(box, old_box))
 
             best_track["box"] = box
             best_track["missed"] = 0
@@ -271,10 +334,11 @@ class VehicleTracker:
             plate = det.get("plate_number")
             if not plate:
                 continue
+            self.total_plate_candidates += 1
             confirmed = best_track["tracker"].add(plate, det["confidence"], det["note"])
             if confirmed and not self._recently_confirmed(confirmed["plate_number"]):
                 confirmed_events.append(confirmed)
-                self._mark_confirmed(confirmed["plate_number"])
+                self._mark_confirmed(confirmed["plate_number"], confirmed["note"])
 
         for t in self.tracks:
             if id(t) not in matched:
@@ -337,7 +401,7 @@ class VehicleTracker:
             # vehicle in the meantime).
             if self._recently_confirmed(plate):
                 continue
-            self._mark_confirmed(plate)
+            self._mark_confirmed(plate, note)
             ready.append({"plate_number": plate, "confidence": confidence, "note": note})
         self._vlm_pending = still_pending
         return ready

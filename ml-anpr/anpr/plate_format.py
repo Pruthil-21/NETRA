@@ -7,6 +7,49 @@ INDIAN_PLATE_PATTERN = re.compile(r'^[A-Z]{2}[0-9]{2}[A-Z]{1,2}[0-9]{4}$')
 _DIGIT_TO_LETTER = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B', '6': 'G'}
 _LETTER_TO_DIGIT = {v: k for k, v in _DIGIT_TO_LETTER.items()}
 
+# All current Indian state/UT registration codes (Wikipedia, "Vehicle
+# registration plates of India", cross-checked against Parivahan's own
+# code list). INDIAN_PLATE_PATTERN only checks character *class*
+# (letter/letter/digit/digit/...), not whether the first two letters are
+# a real code -- so a structurally-valid string with a nonexistent code
+# (e.g. "GI23CG2045", "OO76N6774") passes it untouched. See
+# _correct_state_code() below.
+VALID_STATE_CODES = {
+    'AN', 'AP', 'AR', 'AS', 'BR', 'CG', 'CH', 'DD', 'DL', 'GA', 'GJ', 'HP',
+    'HR', 'JH', 'JK', 'KA', 'KL', 'LA', 'LD', 'MH', 'ML', 'MN', 'MP', 'MZ',
+    'NL', 'OD', 'PB', 'PY', 'RJ', 'SK', 'TG', 'TN', 'TR', 'UK', 'UP', 'WB',
+}
+
+# Deliberately narrow -- only I<->J is added here, and only because it's
+# evidenced, not theorized: the plate-detector crop path (269-frame Anand
+# CCTV eval) produced this exact GJ->GI misread on the same box/frame 3
+# separate times, all landing in the strict pattern-match tier with an
+# invalid "GI" prefix. Not extended to other visually-similar letter
+# pairs without the same kind of direct evidence.
+_LETTER_CONFUSABLES = {'I': 'J', 'J': 'I'}
+
+
+def _correct_state_code(plate):
+    """
+    plate is assumed to already match INDIAN_PLATE_PATTERN. If its
+    2-letter state code is a real one, returns plate unchanged. If not,
+    but a single I<->J swap at either letter position would make it
+    real, returns the corrected plate. Otherwise returns None -- signals
+    "this pattern-matched string has an unrecognized state code and no
+    known fix", so callers can demote it to the fallback tier instead of
+    trusting a structurally-valid-but-nonexistent code at face value.
+    """
+    code = plate[:2]
+    if code in VALID_STATE_CODES:
+        return plate
+    for i in (0, 1):
+        c = code[i]
+        if c in _LETTER_CONFUSABLES:
+            fixed_code = code[:i] + _LETTER_CONFUSABLES[c] + code[i + 1:]
+            if fixed_code in VALID_STATE_CODES:
+                return fixed_code + plate[2:]
+    return None
+
 
 def _correct_plate_positions(cleaned):
     """
