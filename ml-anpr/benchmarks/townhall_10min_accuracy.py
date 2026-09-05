@@ -17,6 +17,13 @@ this session to corrupt HEVC frames right after a jump (missing
 reference frames), which produced a false high failure rate in an
 earlier diagnostic. Matches how the real FrameReader reads too.
 
+Second real bug found on the first real run of this script: 172 VLM
+calls were genuinely dispatched (the gating logic correctly found that
+many hard tracks), but VehicleTracker's _vlm_executor only runs 2
+concurrent workers -- draining 172 of them needs several real minutes,
+not the fixed 30s this script originally waited. Drain timeout now
+scales with the pending count instead of a naive fixed constant.
+
 Run from the repo root: `python benchmarks/townhall_10min_accuracy.py`.
 """
 import glob
@@ -33,7 +40,6 @@ sys.path.insert(0, REPO_ROOT)
 VIDEO_NAME_HINT = "TOWNHALL"
 WINDOW_MINUTES = 10
 SAMPLE_EVERY_N = 10
-VLM_DRAIN_TIMEOUT_SEC = 30
 
 RESULTS_PATH = os.path.join(REPO_ROOT, "townhall_10min_accuracy_results.json")
 
@@ -104,13 +110,26 @@ def main():
     # Tracks near the end of the window may have just dispatched a VLM
     # call (0.5-7s real latency) that hasn't completed yet -- give it
     # real wall-clock time rather than dropping a rescue that was almost
-    # there.
+    # there. VehicleTracker's _vlm_executor only runs 2 concurrent
+    # workers (see tracking.py), so draining N pending calls takes real
+    # minutes, not seconds, once N gets into the hundreds -- scale the
+    # timeout with the backlog instead of a naive fixed constant (a
+    # fixed 30s drained 0 of 172 pending calls on the first real run of
+    # this script, not because the VLM fallback failed, just because
+    # the wait was nowhere near long enough).
     pending = tracker.pending_vlm_futures()
     if pending:
-        print(f"draining {len(pending)} pending VLM future(s), up to {VLM_DRAIN_TIMEOUT_SEC}s...")
-        deadline = time.time() + VLM_DRAIN_TIMEOUT_SEC
+        drain_timeout = min(1200, max(60, len(pending) * 4))
+        print(f"draining {len(pending)} pending VLM future(s), up to {drain_timeout}s...")
+        deadline = time.time() + drain_timeout
+        last_report = time.time()
         while time.time() < deadline and any(not f.done() for f in pending):
-            time.sleep(1)
+            time.sleep(2)
+            if time.time() - last_report > 15:
+                still_pending = sum(1 for f in pending if not f.done())
+                print(f"  still pending: {still_pending}/{len(pending)} "
+                      f"({time.time()-deadline+drain_timeout:.0f}s elapsed)", flush=True)
+                last_report = time.time()
         confirmed_events.extend(tracker.pop_ready_vlm_confirmations())
 
     elapsed = time.perf_counter() - t0
