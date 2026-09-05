@@ -212,7 +212,7 @@ export default function DashboardPage() {
           )}
 
           {!loading && error && (
-            <div className="bg-brand-card border border-red-800/60 text-red-400 p-4 rounded-lg mb-6 flex items-center justify-between gap-4">
+            <div className="bg-panel border border-red-800/60 text-red-400 p-4 rounded-lg mb-6 flex items-center justify-between gap-4">
               <div>
                 <p className="font-semibold text-sm">Camera registry unavailable</p>
                 <p className="text-xs text-gray-400 mt-1">{error}</p>

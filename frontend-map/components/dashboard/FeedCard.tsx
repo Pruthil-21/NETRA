@@ -117,11 +117,11 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`bg-brand-card border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
-        isDragOver ? 'border-blue-500 border-2' : 'border-brand-border'
+      className={`bg-panel border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
+        isDragOver ? 'border-blue-500 border-2' : 'border-line'
       } ${shouldRenderPlayer ? 'scale-[1.06] shadow-2xl relative z-10' : 'scale-100'}`}
     >
-      <div className="p-3 border-b border-brand-border flex items-center justify-between bg-gray-900/40">
+      <div className="p-3 border-b border-line flex items-center justify-between bg-gray-900/40">
         <div className="flex items-center gap-1.5 min-w-0">
           {onReorder && (
             <GripVertical

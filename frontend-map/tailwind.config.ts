@@ -7,28 +7,53 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      // Every value here is a CSS variable defined in app/globals.css --
+      // that's the actual light/dark design-system foundation (token
+      // definitions, theming rules, which colors are deliberately left
+      // theme-invariant and why). Nothing below picks a color; it only
+      // wires Tailwind's class names to the variables that do.
       colors: {
-        ink: '#05070A',
-        panel: '#0E141B',
-        'panel-raised': '#141B24',
-        line: '#1F2A35',
+        white: 'var(--color-white)',
+        ink: 'var(--color-ink)',
+        panel: 'var(--color-panel)',
+        'panel-raised': 'var(--color-panel-raised)',
+        line: 'var(--color-line)',
         command: {
-          DEFAULT: '#2F6FED',
-          dim: '#1E4FBE',
+          DEFAULT: 'var(--color-command)',
+          dim: 'var(--color-command-dim)',
         },
         signal: {
-          amber: '#F5A623',
-          green: '#22C55E',
-          red: '#EF4444',
+          amber: 'var(--color-signal-amber)',
+          green: 'var(--color-signal-green)',
+          red: 'var(--color-signal-red)',
         },
-        // Ported 1:1 from frontend-dashboard/tailwind.config.js -- the
-        // Dashboard page's components (components/dashboard/*, AlertBanner,
-        // AlertLog, HlsPlayer) reference these class names directly, so they
-        // need to exist for that page to render as designed.
-        brand: {
-          dark: '#0b0f19',
-          card: '#111827',
-          border: '#1f2937',
+        // gray and slate are the same palette under two names -- both were
+        // used interchangeably for the same "muted text / dark surface"
+        // role across the app before this pass; aliasing them to identical
+        // variables unifies them visually without renaming every call site.
+        slate: {
+          100: 'var(--color-slate-100)',
+          200: 'var(--color-slate-200)',
+          300: 'var(--color-slate-300)',
+          400: 'var(--color-slate-400)',
+          500: 'var(--color-slate-500)',
+          600: 'var(--color-slate-600)',
+          700: 'var(--color-slate-700)',
+          800: 'var(--color-slate-800)',
+          900: 'var(--color-slate-900)',
+          950: 'var(--color-slate-950)',
+        },
+        gray: {
+          100: 'var(--color-slate-100)',
+          200: 'var(--color-slate-200)',
+          300: 'var(--color-slate-300)',
+          400: 'var(--color-slate-400)',
+          500: 'var(--color-slate-500)',
+          600: 'var(--color-slate-600)',
+          700: 'var(--color-slate-700)',
+          800: 'var(--color-slate-800)',
+          900: 'var(--color-slate-900)',
+          950: 'var(--color-slate-950)',
         },
       },
       fontFamily: {

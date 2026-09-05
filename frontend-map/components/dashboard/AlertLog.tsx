@@ -40,7 +40,7 @@ export function AlertLog({ alerts, onJumpToCamera }: AlertLogProps) {
   );
 
   return (
-    <div className="bg-brand-card border border-brand-border rounded-lg mb-6 overflow-hidden">
+    <div className="bg-panel border border-line rounded-lg mb-6 overflow-hidden">
       <button
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-900/40"
@@ -50,7 +50,7 @@ export function AlertLog({ alerts, onJumpToCamera }: AlertLogProps) {
         {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
       </button>
       {open && (
-        <div className="max-h-72 overflow-y-auto border-t border-brand-border divide-y divide-brand-border">
+        <div className="max-h-72 overflow-y-auto border-t border-line divide-y divide-line">
           {sorted.length === 0 && (
             <p className="text-xs text-gray-500 px-4 py-3">No alerts recorded yet.</p>
           )}

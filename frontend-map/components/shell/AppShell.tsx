@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, Film, LogOut, UserCircle2 } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
+import { ThemeToggle } from '@/components/common/ThemeToggle';
 import { logout } from '@/lib/session';
 import { usePermissions } from '@/hooks/usePermissions';
 
@@ -142,6 +143,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="hidden md:block h-4 w-px bg-line" />
             <AlertsBell />
+            <ThemeToggle />
             <Link
               href="/profile"
               aria-label="My profile"
