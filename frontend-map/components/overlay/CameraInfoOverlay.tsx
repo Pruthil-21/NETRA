@@ -6,6 +6,7 @@ import { X } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import MapPopupPreviewPlayer from '@/components/map/MapPopupPreviewPlayer';
 import { getCameraStreamUrl } from '@/lib/stream';
+import { useCameraHealth } from '@/hooks/useCameraHealth';
 
 interface CameraInfoOverlayProps {
   camera: Camera | null;
@@ -45,6 +46,11 @@ export function CameraInfoOverlay({
   onMouseEnterOverlay,
   onMouseLeaveOverlay,
 }: CameraInfoOverlayProps) {
+  // Hook must run every render regardless of the early-return below (rules of
+  // hooks) -- passing null when there's no camera yet is exactly what
+  // useCameraHealth expects (see its own null-cameraId branch).
+  const { device: health, loading: healthLoading } = useCameraHealth(camera?.id ?? null);
+
   if (!camera || typeof document === 'undefined') return null;
 
   return createPortal(
@@ -93,7 +99,20 @@ export function CameraInfoOverlay({
             <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
               Device health (SNMP)
             </p>
-            <p className="text-slate-600 italic">Not yet available for this camera.</p>
+            {healthLoading && <p className="text-slate-600 italic">Checking…</p>}
+            {!healthLoading && !health && <p className="text-slate-600 italic">Not available</p>}
+            {health && (
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono">
+                <span className="text-slate-500">CPU</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.cpu_percent}%` : '—'}</span>
+                <span className="text-slate-500">Mem</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.memory_percent}%` : '—'}</span>
+                <span className="text-slate-500">Net</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.network_mbps} Mbps` : '—'}</span>
+                <span className="text-slate-500">Temp</span>
+                <span className="text-slate-200">{health.metrics ? `${health.metrics.temperature_celsius}°C` : '—'}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

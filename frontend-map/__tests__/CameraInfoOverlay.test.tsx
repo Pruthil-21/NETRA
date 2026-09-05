@@ -1,11 +1,23 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { CameraInfoOverlay } from '@/components/overlay/CameraInfoOverlay';
 import type { Camera } from '@/types/camera';
 
 vi.mock('@/components/map/MapPopupPreviewPlayer', () => ({
   default: () => <div data-testid="preview-player" />,
 }));
+
+// Every test renders a camera, which now fires useCameraHealth's fetch --
+// stub it globally so tests are deterministic instead of hitting a real
+// network call. Individual tests override this via vi.stubGlobal when they
+// need to assert on the health panel's contents.
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 404 } as Response)));
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 const CAMERA: Camera = {
   id: 42, name: 'Junagadh Gate Cam', dept: 'Anand', lat: 22.5, long: 72.9,
@@ -26,6 +38,29 @@ describe('CameraInfoOverlay', () => {
     expect(screen.getByText('APC Circle')).toBeInTheDocument();
     expect(screen.getByText('Anand')).toBeInTheDocument();
     expect(screen.getByTestId('preview-player')).toBeInTheDocument();
+  });
+
+  it('shows the SNMP monitor\'s device health metrics when available', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            id: 'cam42', name: 'cam42', status: 'online', reachable: true,
+            snmp_mode: 'mock', snmp_state: 'simulated', last_checked_at: '2026-09-05T00:00:00Z',
+            metrics: { cpu_percent: 42, memory_percent: 55, network_mbps: 12.3, temperature_celsius: 48 },
+          }),
+        } as Response)
+      )
+    );
+    render(<CameraInfoOverlay camera={CAMERA} onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText('42%')).toBeInTheDocument());
+    expect(screen.getByText('55%')).toBeInTheDocument();
+    expect(screen.getByText('12.3 Mbps')).toBeInTheDocument();
+    expect(screen.getByText('48°C')).toBeInTheDocument();
   });
 
   it('shows "Unassigned" when circleName is not provided', () => {

@@ -56,6 +56,20 @@ describe('DistrictCircleTree', () => {
     expect(onSelect).toHaveBeenCalledWith({ type: 'camera', value: 101 });
   });
 
+  it('shows cameras with no circle_id under an "Unassigned" bucket instead of hiding them', () => {
+    const onSelect = vi.fn();
+    const camerasWithOrphan = [...CAMERAS, { id: 104, name: 'Camera 04', dept: 'Anand', circle_id: null }];
+    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={camerasWithOrphan} selected={null} onSelect={onSelect} />);
+    fireEvent.click(screen.getByLabelText('Expand Anand'));
+    expect(screen.getByText('Unassigned (1)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Expand unassigned cameras in Anand'));
+    expect(screen.getByText('Camera 04')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Camera 04'));
+    expect(onSelect).toHaveBeenCalledWith({ type: 'camera', value: 104 });
+  });
+
   it('gives a circle with no cameras no expand toggle', () => {
     render(
       <DistrictCircleTree

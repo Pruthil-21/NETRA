@@ -4,11 +4,11 @@ import React from 'react';
 import DashboardPage from '@/app/page';
 
 // This suite proves the fix for a regression where jumping to a camera from a live
-// alert ("View Camera") never touched `treeSelection`. Since the dashboard's grid is
-// gated on the District/Circle tree, that meant the jump either landed on the "pick a
-// district" empty state (no tree selection yet) or silently fell back to showing the
-// first camera in whatever district/circle happened to be selected (wrong camera, no
-// error) -- see handleSelectFocus in app/page.tsx.
+// alert ("View Camera") never touched `treeSelection`. Before the tree was made a pure
+// filter (see dashboardTreeFilter.ts's null -> all-feeds contract), the grid was gated
+// on making a District/Circle selection at all, so the jump either landed on an empty
+// state or silently fell back to showing the first camera in whatever district/circle
+// happened to be selected (wrong camera, no error) -- see handleSelectFocus in app/page.tsx.
 
 const FEEDS = [
   { id: '1', name: 'Anand Junction Cam', department: 'Anand', location: '', lat: 0, long: 0, hlsUrl: '', status: 'ONLINE' as const },
@@ -43,17 +43,18 @@ vi.mock('@/components/AlertBanner', () => ({
 }));
 
 describe('Dashboard: alert "Jump to Camera" vs. the tree-selection gate', () => {
-  it('selects the target camera\'s district and shows it, even when no tree selection was made yet', () => {
+  it('shows every registered camera by default, then narrows to the jumped-to camera', () => {
     render(<DashboardPage />);
 
-    // Nothing selected in the tree yet -- the empty-state gate is up.
-    expect(screen.getByText(/Pick a district/i)).toBeInTheDocument();
-    expect(screen.queryByText('Vadodara Highway Cam')).not.toBeInTheDocument();
+    // Nothing selected in the tree yet -- the tree is a filter, not a gate, so both
+    // cameras are already visible.
+    expect(screen.getByText('Anand Junction Cam')).toBeInTheDocument();
+    expect(screen.getByText('Vadodara Highway Cam')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Mock View Camera'));
 
-    // The jump must clear the empty-state gate and actually show the target camera.
-    expect(screen.queryByText(/Pick a district/i)).not.toBeInTheDocument();
+    // The jump switches to focus layout, which shows exactly the target camera.
+    expect(screen.queryByText('Anand Junction Cam')).not.toBeInTheDocument();
     expect(screen.getByText('Vadodara Highway Cam')).toBeInTheDocument();
   });
 

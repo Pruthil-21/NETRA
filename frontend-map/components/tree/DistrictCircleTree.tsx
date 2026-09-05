@@ -49,6 +49,7 @@ const STATE_NAME = 'Gujarat';
 export function DistrictCircleTree({ districts, circles, cameras, selected, onSelect }: DistrictCircleTreeProps) {
   const [expandedDistricts, setExpandedDistricts] = useState<Set<string>>(new Set());
   const [expandedCircles, setExpandedCircles] = useState<Set<number>>(new Set());
+  const [expandedUnassigned, setExpandedUnassigned] = useState<Set<string>>(new Set());
 
   const toggleDistrict = (district: string) => {
     setExpandedDistricts((prev) => {
@@ -64,6 +65,15 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
       const next = new Set(prev);
       if (next.has(circleId)) next.delete(circleId);
       else next.add(circleId);
+      return next;
+    });
+  };
+
+  const toggleUnassigned = (district: string) => {
+    setExpandedUnassigned((prev) => {
+      const next = new Set(prev);
+      if (next.has(district)) next.delete(district);
+      else next.add(district);
       return next;
     });
   };
@@ -89,6 +99,21 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
     return map;
   }, [cameras]);
 
+  // Cameras registered against a district but never assigned to one of its
+  // Areas yet -- without this, they'd be invisible in the tree entirely
+  // (camerasByCircle only ever indexes cameras that DO have a circle_id),
+  // which is exactly the "where did my camera go" gap this tree used to have.
+  const unassignedCamerasByDistrict = useMemo(() => {
+    const map = new Map<string, Camera[]>();
+    for (const camera of cameras) {
+      if (camera.circle_id != null) continue;
+      const list = map.get(camera.dept) ?? [];
+      list.push(camera);
+      map.set(camera.dept, list);
+    }
+    return map;
+  }, [cameras]);
+
   return (
     <nav aria-label="Camera hierarchy" className="w-full h-full bg-panel overflow-y-auto text-xs">
       <div className="flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold">
@@ -101,6 +126,8 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
         const isDistrictExpanded = expandedDistricts.has(district);
         const isDistrictSelected = selected?.type === 'district' && selected.value === district;
         const districtCircles = circlesByDistrict.get(district) ?? [];
+        const unassignedCameras = unassignedCamerasByDistrict.get(district) ?? [];
+        const hasNoChildren = districtCircles.length === 0 && unassignedCameras.length === 0;
         return (
           <div key={district} className="relative pl-4">
             <TreeLines isLast={isLastDistrict} />
@@ -128,11 +155,12 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
             </div>
             {isDistrictExpanded && (
               <div className="pl-5">
-                {districtCircles.length === 0 ? (
+                {hasNoChildren ? (
                   <p className="px-2 py-1.5 text-slate-600 italic">No areas yet</p>
                 ) : (
-                  districtCircles.map((circle, i) => {
-                    const isLastCircle = i === districtCircles.length - 1;
+                  <>
+                  {districtCircles.map((circle, i) => {
+                    const isLastCircle = i === districtCircles.length - 1 && unassignedCameras.length === 0;
                     const isCircleSelected = selected?.type === 'circle' && selected.value === circle.id;
                     const isCircleExpanded = expandedCircles.has(circle.id);
                     const circleCameras = camerasByCircle.get(circle.id) ?? [];
@@ -190,7 +218,53 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
                         )}
                       </div>
                     );
-                  })
+                  })}
+                  {unassignedCameras.length > 0 && (() => {
+                    const isUnassignedExpanded = expandedUnassigned.has(district);
+                    return (
+                      <div className="relative pl-4">
+                        <TreeLines isLast />
+                        <div className="flex items-center gap-1 py-1.5 hover:bg-panel-raised text-slate-400">
+                          <button
+                            type="button"
+                            aria-label={isUnassignedExpanded ? `Collapse unassigned cameras in ${district}` : `Expand unassigned cameras in ${district}`}
+                            onClick={() => toggleUnassigned(district)}
+                            className="p-0.5 text-slate-500 hover:text-white shrink-0"
+                          >
+                            {isUnassignedExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                          </button>
+                          <span className="flex items-center gap-1.5 flex-1 min-w-0 text-left truncate italic text-slate-500">
+                            <MapPin size={11} className="shrink-0" />
+                            <span className="truncate">Unassigned ({unassignedCameras.length})</span>
+                          </span>
+                        </div>
+                        {isUnassignedExpanded && (
+                          <div className="pl-4">
+                            {unassignedCameras.map((camera, j) => {
+                              const isLastCamera = j === unassignedCameras.length - 1;
+                              const isCameraSelected = selected?.type === 'camera' && selected.value === camera.id;
+                              return (
+                                <div key={camera.id} className="relative pl-4">
+                                  <TreeLines isLast={isLastCamera} />
+                                  <button
+                                    type="button"
+                                    onClick={() => onSelect({ type: 'camera', value: camera.id })}
+                                    className={`flex items-center gap-1.5 w-full py-1.5 text-left truncate hover:bg-panel-raised ${
+                                      isCameraSelected ? 'bg-command/10 text-command' : 'text-slate-500'
+                                    }`}
+                                  >
+                                    <Video size={10} className="shrink-0" />
+                                    <span className="truncate">{camera.name}</span>
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                  </>
                 )}
               </div>
             )}

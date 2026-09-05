@@ -18,8 +18,8 @@ const CIRCLES: Circle[] = [
 const CIRCLE_BY_CAMERA_ID: Record<string, number | null> = { '1': 10, '2': null, '3': null };
 
 describe('filterFeedsByTreeSelection', () => {
-  it('returns an empty array when nothing is selected', () => {
-    expect(filterFeedsByTreeSelection(FEEDS, null, CIRCLE_BY_CAMERA_ID)).toEqual([]);
+  it('returns every registered feed when nothing is selected', () => {
+    expect(filterFeedsByTreeSelection(FEEDS, null, CIRCLE_BY_CAMERA_ID)).toEqual(FEEDS);
   });
 
   it('returns every camera in the district (including unassigned) when a district is selected', () => {

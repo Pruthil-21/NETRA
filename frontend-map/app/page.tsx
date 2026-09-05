@@ -226,26 +226,20 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {!loading && treeSelection === null ? (
-            <div className="text-center py-16 border border-dashed border-gray-800 rounded-lg">
-              <p className="text-gray-400 text-sm">Pick a district (or an area within it) from the tree to view its cameras.</p>
+          {!loading && (
+            <div className={isStale ? "opacity-60 grayscale-[30%] transition-all" : "transition-all"}>
+              <CameraGrid
+                feeds={visibleFeeds}
+                layout={layout}
+                onSelectFocus={handleSelectFocus}
+                registryEmpty={allFeeds.length === 0}
+                mode={playAllMode ? 'playAll' : 'hoverOnly'}
+                activeIds={new Set(Array.from(activeCameraIds).map(String))}
+                onHoverStart={handleHoverStart}
+                onHoverEnd={handleHoverEnd}
+                onReorder={moveTile}
+              />
             </div>
-          ) : (
-            !loading && (
-              <div className={isStale ? "opacity-60 grayscale-[30%] transition-all" : "transition-all"}>
-                <CameraGrid
-                  feeds={visibleFeeds}
-                  layout={layout}
-                  onSelectFocus={handleSelectFocus}
-                  registryEmpty={allFeeds.length === 0}
-                  mode={playAllMode ? 'playAll' : 'hoverOnly'}
-                  activeIds={new Set(Array.from(activeCameraIds).map(String))}
-                  onHoverStart={handleHoverStart}
-                  onHoverEnd={handleHoverEnd}
-                  onReorder={moveTile}
-                />
-              </div>
-            )
           )}
         </div>
       </div>
