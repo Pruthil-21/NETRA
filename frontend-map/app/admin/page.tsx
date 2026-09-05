@@ -16,6 +16,7 @@ import {
 import { adminService, OfficerOut, RolePermissionsOut } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
 import { CircleManagementSection } from './CircleManagementSection';
+import { AuditLogSection } from './AuditLogSection';
 
 const ASSIGNABLE_ROLES = ['district_command', 'station_officer', 'control_room_operator', 'auditor'];
 
@@ -279,7 +280,8 @@ function RolePermissionsSection() {
  * UI's job is to make the common case pleasant, not to be the security
  * boundary itself. */
 export default function AdminPage() {
-  const { permissions, role, scopeValue } = usePermissions();
+  const { permissions, role, scopeValue, loading: permissionsLoading } = usePermissions();
+  const canManageUsers = permissions.includes('manage_users_roles');
   const [officers, setOfficers] = useState<OfficerOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -300,7 +302,15 @@ export default function AdminPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, []);
+  // Waits on permissions to resolve first -- an Auditor (view_audit_logs
+  // only, never manage_users_roles) hitting this page shouldn't fire a
+  // request the backend will 403 just to render an error banner for a
+  // section they were never meant to see.
+  useEffect(() => {
+    if (permissionsLoading || !canManageUsers) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permissionsLoading, canManageUsers]);
 
   const openReassign = (officerId: number) => {
     setReassigningId(officerId);
@@ -340,6 +350,8 @@ export default function AdminPage() {
   return (
     <main className="flex-1 overflow-y-auto min-h-0 w-full">
       <div className="max-w-4xl mx-auto p-4 sm:p-6">
+        {canManageUsers && (
+        <>
         <div className="flex items-center gap-3 mb-1">
           <span className="inline-flex p-2 bg-command/10 border border-command/30 text-command rounded-lg">
             <Users size={18} />
@@ -542,12 +554,16 @@ export default function AdminPage() {
             </div>
           )}
         </div>
+        </>
+        )}
 
         {permissions.includes('manage_roles') && <RolePermissionsSection />}
 
         {permissions.includes('manage_circles') && (
           <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
         )}
+
+        {permissions.includes('view_audit_logs') && <AuditLogSection />}
       </div>
     </main>
   );

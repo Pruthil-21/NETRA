@@ -4,6 +4,13 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import AdminPage from '@/app/admin/page';
 
+const AUDIT_LOG_PAGE = {
+  logs: [
+    { id: 1, badge_number: 'GJ-AUD-001', action: 'update', resource_type: 'camera', resource_id: 7, reason_code: null, timestamp: '2026-09-05T10:00:00Z' },
+  ],
+  next_cursor: null,
+};
+
 const MOCK_OFFICERS = [
   {
     id: 1, badge_number: 'GJ-SO-001', name: 'Demo Station Officer', rank: 'PI',
@@ -22,6 +29,9 @@ describe('AdminPage', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
+        }
         if (url.includes('/admin/officers')) {
           return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         }
@@ -46,6 +56,9 @@ describe('AdminPage', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string, opts?: RequestInit) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
+        }
         if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         if (url.includes('/admin/postings') && opts?.method === 'POST') return postSpy(url, opts);
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -60,5 +73,32 @@ describe('AdminPage', () => {
     fireEvent.click(screen.getByRole('button', { name: /confirm reassignment/i }));
 
     await waitFor(() => expect(postSpy).toHaveBeenCalled());
+  });
+
+  it('shows only the Audit Log section for an Auditor, never the officers list or its fetch', async () => {
+    const officersFetch = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['view_audit_logs'] }) });
+        }
+        if (url.includes('/admin/officers')) {
+          officersFetch();
+          return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
+        }
+        if (url.includes('/audit-logs')) {
+          return Promise.resolve({ ok: true, json: async () => AUDIT_LOG_PAGE });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    render(<AdminPage />);
+
+    expect(await screen.findByText('Audit Log')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('GJ-AUD-001')).toBeInTheDocument());
+    expect(screen.queryByText('Officers & Postings')).not.toBeInTheDocument();
+    expect(officersFetch).not.toHaveBeenCalled();
   });
 });

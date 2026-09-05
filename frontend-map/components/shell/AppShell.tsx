@@ -93,7 +93,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { has } = usePermissions();
-  const navItems = has('manage_users_roles')
+  // Every permission gating a section actually rendered on /admin (see that
+  // page's own per-section `permissions.includes(...)` checks) -- an Auditor
+  // holds only view_audit_logs, never manage_users_roles, so gating the nav
+  // link on manage_users_roles alone left them with no way to reach the one
+  // section they're actually meant to use.
+  const canSeeAdmin =
+    has('manage_users_roles') || has('manage_roles') || has('manage_circles') || has('view_audit_logs');
+  const navItems = canSeeAdmin
     ? [...BASE_NAV_ITEMS, { href: '/admin', label: 'Admin', icon: Shield }]
     : BASE_NAV_ITEMS;
 
