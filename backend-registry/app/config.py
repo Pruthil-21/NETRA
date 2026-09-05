@@ -13,6 +13,10 @@ class Settings:
     # demo infrastructure, not always running, so this has a default rather
     # than the hard-required DATABASE_URL/JWT_SECRET above.
     snmp_monitor_url: str = os.environ.get("SNMP_MONITOR_URL", "http://localhost:9116")
+    # MediaMTX's Playback API (streaming/mediamtx.yml's `playback` server) --
+    # only used to list a camera's available recorded segments; the frontend
+    # streams/exports clips by hitting MediaMTX's playback server directly.
+    playback_api_url: str = os.environ.get("PLAYBACK_API_URL", "http://localhost:9996")
 
 
 settings = Settings()

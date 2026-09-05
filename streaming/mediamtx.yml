@@ -219,7 +219,10 @@ pprofTrustedProxies: []
 # Global settings -> Playback server
 
 # Enable the playback server, which allows to download recordings from the server.
-playback: false
+# Backs the recorded-footage timeline (backend-registry's recordings_service
+# proxies GET /list and the frontend hits GET /get directly for playback/export --
+# see streaming/README.md's "Recorded footage / VOD playback" section).
+playback: true
 # Address of the TCP/HTTP listener.
 playbackAddress: :9996
 # Enable HTTPS.
@@ -555,8 +558,11 @@ pathDefaults:
   ###############################################
   # Default path settings -> Record
 
-  # Record streams to disk.
-  record: false
+  # Record streams to disk. Backs the recorded-footage timeline -- see
+  # streaming/README.md's "Recorded footage / VOD playback" section for the
+  # path-naming convention (MediaMTX path == camera.stream_id, same as the
+  # live HLS URL) and the playback API this feeds.
+  record: true
   # Path of recording segments.
   # Extension is added automatically.
   # Available variables are %path (path name), %Y %m %d (year, month, day),
@@ -573,10 +579,10 @@ pathDefaults:
   # This prevents RAM exhaustion.
   recordMaxPartSize: 50M
   # Minimum duration of each segment.
-  recordSegmentDuration: 1h
+  recordSegmentDuration: 10m
   # Delete segments after this timespan.
   # Set to 0s to disable automatic deletion.
-  recordDeleteAfter: 1d
+  recordDeleteAfter: 7d
 
   ###############################################
   # Default path settings -> Publisher source (when source is "publisher")

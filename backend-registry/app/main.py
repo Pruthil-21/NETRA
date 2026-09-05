@@ -55,6 +55,7 @@ from .services import (
     gap_analysis_service,
     police_stations_service,
     rbac_service,
+    recordings_service,
     reports_service,
     snmp_service,
     synthetic_events_service,
@@ -615,6 +616,17 @@ def camera_snmp_health(camera_id: int, user=Depends(get_current_user)):
     if device is None:
         raise HTTPException(status_code=404, detail="No SNMP health data available for this camera")
     return device
+
+
+@app.get("/cameras/{camera_id}/recordings")
+def camera_recordings(camera_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        camera = cameras_service.get_camera(conn, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        if not camera["stream_id"]:
+            return {"available": False, "segments": []}
+        return recordings_service.list_recordings(camera["stream_id"])
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)

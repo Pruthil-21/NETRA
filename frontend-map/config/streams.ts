@@ -4,6 +4,9 @@ import { CameraFeed } from "@/types/stream";
 export const REGISTRY_API_URL = process.env.NEXT_PUBLIC_REGISTRY_API_URL || "http://localhost:8000";
 export const WATCHLIST_API_URL = process.env.NEXT_PUBLIC_WATCHLIST_API_URL || "http://localhost:8001";
 export const MEDIAMTX_HLS_URL = process.env.NEXT_PUBLIC_MEDIAMTX_HLS_URL || "http://localhost:8888";
+// MediaMTX's Playback API (streaming/mediamtx.yml's `playback` server) --
+// see streaming/README.md's "Recorded footage / VOD playback" section.
+export const MEDIAMTX_PLAYBACK_URL = process.env.NEXT_PUBLIC_MEDIAMTX_PLAYBACK_URL || "http://localhost:9996";
 
 // Used when a camera has no resolvable live path (e.g. local dev with no MediaMTX running).
 export const FALLBACK_STREAM = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
@@ -55,4 +58,22 @@ export function buildHlsUrl(
   if (hlsUrl) return hlsUrl;
   const pathId = streamId || cameraId;
   return `${MEDIAMTX_HLS_URL}/stream/${pathId}/index.m3u8`;
+}
+
+/**
+ * Builds a MediaMTX Playback API clip URL for an arbitrary time range --
+ * `start` is an RFC3339 timestamp, `durationSeconds` how much of the
+ * recording to include from there. Same URL serves both inline playback
+ * (as a `<video>` src, MediaMTX supports HTTP range requests for seeking
+ * within it) and export (as a download link) -- there's no separate export
+ * endpoint, just this with `download` set on the anchor that opens it.
+ */
+export function buildPlaybackClipUrl(pathId: string | number, start: string, durationSeconds: number): string {
+  const params = new URLSearchParams({
+    path: String(pathId),
+    start,
+    duration: String(durationSeconds),
+    format: 'mp4',
+  });
+  return `${MEDIAMTX_PLAYBACK_URL}/get?${params.toString()}`;
 }

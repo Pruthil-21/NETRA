@@ -53,6 +53,27 @@ Runtime logs are stored in `streaming/logs/`.
 
 Logs, generated certificates, PID files, the MediaMTX binary and downloaded MediaMTX archives are excluded from Git.
 
+## Recorded footage / VOD playback
+
+MediaMTX records every live path to disk (`record: true`, 10-minute fMP4
+segments, 7-day retention -- see `mediamtx.yml`'s per-path Record settings)
+and serves them back through its own Playback API (`playback: true`, port
+`9996`):
+
+- `GET /list?path={cameraId}` -- available recorded segments for a camera
+  (start time + duration each). `backend-registry`'s `recordings_service`
+  proxies this as `GET /cameras/{id}/recordings`, since only the backend
+  knows the camera-id -> MediaMTX-path (`stream_id`) mapping.
+- `GET /get?path={cameraId}&start={RFC3339}&duration={seconds}&format=mp4`
+  -- streams (and, with a `download` link, exports) an arbitrary clip range,
+  concatenating segments as needed. The frontend hits this directly (same
+  as it already does for live HLS via `NEXT_PUBLIC_MEDIAMTX_HLS_URL`) using
+  `NEXT_PUBLIC_MEDIAMTX_PLAYBACK_URL`, rather than proxying video bytes
+  through the backend.
+
+Nothing is recorded for a camera until it has been read live at least once
+after the stack starts (MediaMTX only records while a path is active).
+
 ## Utility scripts
 
 - `start_all_cameras.sh`: alias for the live proxy workflow
