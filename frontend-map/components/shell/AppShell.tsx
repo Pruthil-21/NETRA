@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, LogOut } from 'lucide-react';
+import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, LogOut, UserCircle2 } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { AlertsBell } from '@/components/alerts/AlertsBell';
 import { logout } from '@/lib/session';
@@ -34,6 +34,24 @@ function LiveClock() {
     <span className="font-mono text-slate-400 tabular-nums">
       {now.toLocaleTimeString('en-IN', { hour12: false })} IST
     </span>
+  );
+}
+
+// Fixed to the viewport corner (not inside the scrollable page content) so
+// it stays visible on every page regardless of scroll position -- an
+// officer glancing at "when did I last log in" shouldn't have to scroll up.
+function LastLoginBadge() {
+  const { lastLogin, loading } = usePermissions();
+  if (loading || !lastLogin) return null;
+
+  return (
+    <Link
+      href="/profile"
+      className="fixed bottom-2 right-3 z-40 px-2 py-1 rounded bg-panel/90 border border-line text-[10px] text-slate-500 hover:text-slate-300 hover:border-command/50 font-mono backdrop-blur-sm transition-colors"
+      title="View your profile"
+    >
+      Last login: {new Date(lastLogin).toLocaleString('en-IN', { dateStyle: 'short', timeStyle: 'short' })}
+    </Link>
   );
 }
 
@@ -123,6 +141,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className="hidden md:block h-4 w-px bg-line" />
             <AlertsBell />
+            <Link
+              href="/profile"
+              aria-label="My profile"
+              aria-current={pathname === '/profile' ? 'page' : undefined}
+              className={`p-1.5 rounded border border-line focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command ${
+                pathname === '/profile'
+                  ? 'text-command bg-panel-raised border-command/50'
+                  : 'text-slate-400 hover:text-white bg-panel-raised'
+              }`}
+            >
+              <UserCircle2 size={14} />
+            </Link>
             <button
               type="button"
               onClick={handleLogout}
@@ -136,6 +166,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <div className="flex-1 flex overflow-hidden min-h-0">{children}</div>
+      <LastLoginBadge />
     </div>
   );
 }

@@ -28,7 +28,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 def get_officer_by_badge(conn, badge_number: str) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, badge_number, name, rank, password_hash FROM officers WHERE badge_number = %s",
+            "SELECT id, badge_number, name, rank, password_hash, photo_url FROM officers WHERE badge_number = %s",
             (badge_number,),
         )
         row = cur.fetchone()
@@ -36,6 +36,49 @@ def get_officer_by_badge(conn, badge_number: str) -> dict | None:
             return None
         cols = [c.name for c in cur.description]
         return dict(zip(cols, row))
+
+
+def get_officer_by_id(conn, officer_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, badge_number, name, rank, password_hash, photo_url FROM officers WHERE id = %s",
+            (officer_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, row))
+
+
+def get_last_login(conn, officer_id: int):
+    """Reuses the existing append-only audit_logs table (every successful
+    login already writes a "login"/"officer" row there) rather than adding a
+    redundant last_login column that would need its own write path."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(timestamp) FROM audit_logs WHERE action = 'login' AND resource_type = 'officer' AND resource_id = %s",
+            (officer_id,),
+        )
+        return cur.fetchone()[0]
+
+
+def set_password(conn, officer_id: int, new_password_hash: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE officers SET password_hash = %s WHERE id = %s",
+            (new_password_hash, officer_id),
+        )
+        conn.commit()
+
+
+def set_photo_url(conn, officer_id: int, photo_url: str | None) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE officers SET photo_url = %s WHERE id = %s",
+            (photo_url, officer_id),
+        )
+        conn.commit()
 
 
 def get_active_posting(conn, officer_id: int) -> dict | None:
