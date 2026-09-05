@@ -53,3 +53,22 @@ export async function fetchGapAnalysisReport(): Promise<GapAnalysisReport> {
   if (!res.ok) throw new Error(`Registry API returned ${res.status}`);
   return res.json();
 }
+
+export interface ReportSummary {
+  total_cameras: number;
+  cameras_by_department: Record<string, number>;
+  cameras_by_connectivity_status: Record<string, number>;
+  cameras_by_health_status: Record<string, number>;
+  // null when backend-watchlist's schema hasn't been applied in this
+  // environment yet -- see backend-registry's reports_service._count_last_24h.
+  alerts_last_24h: number | null;
+  detections_last_24h: number | null;
+  blacklist_entries_last_24h: number | null;
+  avg_alert_response_seconds: number | null;
+}
+
+export async function fetchReportSummary(): Promise<ReportSummary> {
+  const res = await fetch(`${REGISTRY_API_URL}/reports/summary`, { headers: authHeaders(), cache: 'no-store' });
+  if (!res.ok) throw new Error(`Registry API returned ${res.status}`);
+  return res.json();
+}

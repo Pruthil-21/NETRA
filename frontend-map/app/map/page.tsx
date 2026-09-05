@@ -6,7 +6,6 @@ import { useCameraRegistry, HEALTH_CHECK_INTERVAL_MS } from '@/context/CameraReg
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import CameraFilterBar from '@/components/registry/CameraFilterBar';
 import CameraListSkeleton from '@/components/registry/CameraListSkeleton';
-import VirtualizedCameraList from '@/components/registry/VirtualizedCameraList';
 import AddCameraModal from '@/components/registry/AddCameraModal';
 import { StaleIndicator, useStaleness } from '@/components/common/StaleIndicator';
 import { RefreshCw, AlertTriangle, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
@@ -159,14 +158,20 @@ export default function MapPage() {
             </div>
           ) : isLoading ? (
             <CameraListSkeleton />
-          ) : filteredCameras.length === 0 ? (
-            <div className="p-6 text-center text-xs text-slate-500">No cameras match the active filters.</div>
           ) : (
             <div className={`flex-1 min-h-0 flex flex-col ${isStale ? 'opacity-60 transition-opacity' : 'transition-opacity'}`}>
-              <VirtualizedCameraList
-                cameras={filteredCameras}
-                selectedCamera={selectedCamera}
-                onSelect={setSelectedCamera}
+              <DistrictCircleTree
+                districts={districts}
+                circles={circles}
+                cameras={cameras}
+                selected={treeSelection}
+                onSelect={(selection) => {
+                  setTreeSelection(selection);
+                  if (selection?.type === 'camera') {
+                    const found = cameras.find((cam) => cam.id === selection.value);
+                    if (found) setSelectedCamera(found);
+                  }
+                }}
               />
             </div>
           )}
@@ -189,13 +194,6 @@ export default function MapPage() {
 
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         <div className="flex-1 flex overflow-hidden min-h-0">
-          <DistrictCircleTree
-            districts={districts}
-            circles={circles}
-            cameras={cameras}
-            selected={treeSelection}
-            onSelect={setTreeSelection}
-          />
           <div className="flex-1 relative">
             <CameraMap
               cameras={filteredCameras}

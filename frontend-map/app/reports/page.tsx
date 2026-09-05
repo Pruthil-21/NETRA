@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { GapAnalysisSection } from '@/components/reports/GapAnalysisSection';
+import { ReportsSummarySection } from '@/components/reports/ReportsSummarySection';
 import AddCoverageTargetModal from '@/components/registry/AddCoverageTargetModal';
 import { usePermissions } from '@/hooks/usePermissions';
 
@@ -27,6 +28,7 @@ export default function ReportsPage() {
         )}
       </div>
 
+      <ReportsSummarySection />
       <GapAnalysisSection key={refreshKey} />
 
       {showAddModal && (

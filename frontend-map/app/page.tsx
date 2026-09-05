@@ -166,13 +166,15 @@ export default function DashboardPage() {
 
   return (
     <main className="flex-1 flex overflow-hidden min-h-0 w-full">
-      <DistrictCircleTree
-        districts={districts}
-        circles={circles}
-        cameras={cameras}
-        selected={treeSelection}
-        onSelect={setTreeSelection}
-      />
+      <div className="w-56 shrink-0 h-full border-r border-line">
+        <DistrictCircleTree
+          districts={districts}
+          circles={circles}
+          cameras={cameras}
+          selected={treeSelection}
+          onSelect={setTreeSelection}
+        />
+      </div>
 
       <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
         <AlertBanner onAlertsUpdate={setAllAlerts} onJumpToCamera={handleSelectFocus} />

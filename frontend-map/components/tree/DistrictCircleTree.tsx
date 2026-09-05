@@ -90,7 +90,7 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
   }, [cameras]);
 
   return (
-    <nav aria-label="Camera hierarchy" className="w-56 shrink-0 border-r border-line bg-panel overflow-y-auto text-xs">
+    <nav aria-label="Camera hierarchy" className="w-full h-full bg-panel overflow-y-auto text-xs">
       <div className="flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold">
         <Landmark size={12} className="shrink-0" />
         <span className="truncate">{STATE_NAME}</span>
