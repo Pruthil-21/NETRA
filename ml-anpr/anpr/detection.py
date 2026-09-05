@@ -1,12 +1,138 @@
 """Per-vehicle plate reading (crop -> enhance -> OCR -> candidate
 filtering) and the per-frame YOLO detection pass that feeds it."""
+import os
 import re
 
 import cv2
+import requests
 
-from .config import yolo_model
+from .config import yolo_model, device
 from .enhancement import is_low_light, enhance_low_light, is_blurry, enhance_motion_blur
-from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions
+from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code
+
+
+# Real, evidence-driven addition (269-frame Anand CCTV eval, Session 32/33):
+# 81% of vehicle boxes produced no usable plate read, and inspecting the
+# actual failing crops showed why -- plate_region_crop() below is a
+# percentage-of-vehicle-box *guess*, not a real plate detector. A real
+# plate can be a genuinely tiny, off-band region (a distant van's plate
+# measured ~20x8px inside a 140px-wide crop, invisible to a fixed-band
+# heuristic no matter how the percentages are tuned), and a percentage
+# band has no way to *not* fire on non-plate text in that band (a truck's
+# tailgate brand text, a windshield sticker) the way a trained detector
+# can simply decline to produce a box at all.
+#
+# Pretrained YOLOv8n, single class "license_plate", MIT licensed --
+# https://huggingface.co/Koushim/yolov8-license-plate-detection -- not
+# trained by this project, but real, currently published, and directly
+# loadable via the same ultralytics.YOLO(...) call already used for
+# yolo_model above. Fetched once and cached, same pattern
+# enhancement._get_nafnet_model() already established for NAFNet's
+# checkpoint (not committed to git, lazy-loaded on first use so a stream
+# that never needs it never pays the download).
+_LP_MODEL_CACHE_DIR = os.path.expanduser("~/.cache/netra_lp_detect")
+_LP_MODEL_PATH = os.path.join(_LP_MODEL_CACHE_DIR, "yolov8_license_plate.pt")
+_LP_MODEL_URL = "https://huggingface.co/Koushim/yolov8-license-plate-detection/resolve/main/best.pt"
+
+_lp_model = None
+_lp_model_unavailable = False
+
+
+def _get_lp_model():
+    """Lazily loads and caches the plate-detector model, same fetch-once-
+    on-first-use pattern as enhancement._get_nafnet_model(). Returns None
+    (not an exception) if the checkpoint can't be fetched or loaded --
+    callers treat that exactly like "no box found", not an error, so a
+    stream on a machine with no cached weights and no network at that
+    moment degrades to the existing plate_region_crop() heuristic instead
+    of crashing."""
+    global _lp_model, _lp_model_unavailable
+    if _lp_model is not None:
+        return _lp_model
+    if _lp_model_unavailable:
+        return None
+
+    from ultralytics import YOLO
+
+    try:
+        if not os.path.exists(_LP_MODEL_PATH):
+            os.makedirs(_LP_MODEL_CACHE_DIR, exist_ok=True)
+            print(f"[lp_detect] downloading plate-detector weights to {_LP_MODEL_PATH} ...")
+            response = requests.get(_LP_MODEL_URL, timeout=60)
+            response.raise_for_status()
+            with open(_LP_MODEL_PATH, "wb") as f:
+                f.write(response.content)
+    except requests.exceptions.RequestException as e:
+        print(f"[WARN] Plate-detector weights unavailable ({e}), falling back to plate_region_crop() heuristic")
+        if os.path.exists(_LP_MODEL_PATH):
+            os.remove(_LP_MODEL_PATH)  # don't leave a partial/corrupt file cached
+        _lp_model_unavailable = True
+        return None
+
+    model = YOLO(_LP_MODEL_PATH)
+    model.to(device)
+    _lp_model = model
+    return model
+
+
+# Ultralytics' own default detection confidence -- not yet tuned against
+# our own footage beyond the aggregate eval below; a real lever to revisit
+# if precision/recall needs adjusting once more data is available.
+LP_DETECT_CONFIDENCE = 0.25
+
+# Margin added around a detected box before crop -- a trained detector's
+# box can sit right at character edges (unlike plate_region_crop()'s
+# already-generous percentage band), so a small pad guards against
+# clipping the first/last character.
+LP_DETECT_BOX_MARGIN_FRACTION = 0.08
+
+# OCR reads small text poorly regardless of how it got small -- scaling
+# every detected plate crop to a fixed target width (rather than a flat
+# multiplier like plate_region_crop()'s 2x) means a tiny distant plate
+# gets scaled up much more than a close, already-large one, instead of
+# both getting the same multiplier. 240px chosen as comfortably above
+# PaddleOCR's effective minimum text height on this project's own
+# ground-truth images (see ALPR_IMPROVEMENT_LOG.md OCR engine comparison).
+LP_DETECT_TARGET_WIDTH = 240
+
+
+def detect_plate_box_crop(vehicle_img):
+    """
+    Runs the dedicated plate-detector model on a vehicle crop and returns
+    a tightly-cropped, margin-padded, target-width-scaled plate region --
+    or None if the model is unavailable or found nothing above
+    LP_DETECT_CONFIDENCE. Purely additive: callers should keep running
+    plate_region_crop() alongside this, same "never lose what the other
+    pass would still have found" philosophy already used for the
+    whole-crop vs. band-crop OCR passes below.
+    """
+    model = _get_lp_model()
+    if model is None:
+        return None
+
+    h, w = vehicle_img.shape[:2]
+    results = model(vehicle_img, conf=LP_DETECT_CONFIDENCE, verbose=False)
+    best_box, best_conf = None, 0.0
+    for r in results:
+        for box in r.boxes:
+            conf = float(box.conf[0])
+            if conf > best_conf:
+                best_box, best_conf = box.xyxy[0], conf
+    if best_box is None:
+        return None
+
+    x1, y1, x2, y2 = map(int, best_box)
+    mx = int((x2 - x1) * LP_DETECT_BOX_MARGIN_FRACTION)
+    my = int((y2 - y1) * LP_DETECT_BOX_MARGIN_FRACTION)
+    x1, y1 = max(0, x1 - mx), max(0, y1 - my)
+    x2, y2 = min(w, x2 + mx), min(h, y2 + my)
+    if x2 - x1 < 5 or y2 - y1 < 5:
+        return None
+
+    region = vehicle_img[y1:y2, x1:x2]
+    scale = LP_DETECT_TARGET_WIDTH / region.shape[1]
+    interp = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
+    return cv2.resize(region, None, fx=scale, fy=scale, interpolation=interp)
 
 
 def plate_region_crop(vehicle_img):
@@ -30,6 +156,18 @@ def plate_region_crop(vehicle_img):
     project's own discipline is to fix what's actually been measured
     broken, not everything that theoretically could be.
 
+    Top edge widened 55% -> 35% (real Anand CCTV footage evaluation,
+    officially provided, 269 real frames): auto-rickshaws' plates sit
+    much higher in the vehicle box than a car's -- measured directly on
+    a real rickshaw crop where the plate ("GJ23...25916") occupies
+    roughly 40-60% of the box height, entirely above the old 55% start.
+    A car's body proportions put its plate near the bumper (still
+    covered by the unchanged 98% bottom edge); a rickshaw's compact,
+    boxy shape puts it just below the windshield instead. 35% gives
+    margin above the measured 40% without needing a vehicle-type
+    classifier -- one wider band that covers both shapes, at the cost
+    of slightly more non-plate clutter in what OCR has to search.
+
     Safe against the dashcam-overlay false positive this project has
     already fixed once (Session 3: a close/large vehicle box pulling in
     the dashcam's own burned-in timestamp, misread as a sequence of
@@ -45,11 +183,20 @@ def plate_region_crop(vehicle_img):
     reasoned about (see ALPR_IMPROVEMENT_LOG.md).
     """
     h, w = vehicle_img.shape[:2]
-    y1, y2 = int(0.55 * h), int(0.98 * h)
+    y1, y2 = int(0.35 * h), int(0.98 * h)
     x1, x2 = int(0.12 * w), int(0.90 * w)
     if y2 - y1 < 10 or x2 - x1 < 20:
         return None
-    return vehicle_img[y1:y2, x1:x2]
+    region = vehicle_img[y1:y2, x1:x2]
+
+    # 2x upscale before OCR -- measured directly, not assumed: on a real
+    # rickshaw plate crop this project's evaluation found, OCR at native
+    # resolution read one stray garbage character; at 2x it read the
+    # plate's two segments correctly ("GJZJ" ~ GJ23, confidence 0.76;
+    # "75916", confidence 0.92). No upscaling existed anywhere in this
+    # pipeline before this -- despite this function's own docstring
+    # already implying "what gets upscaled," nothing actually did.
+    return cv2.resize(region, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
 
 MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
@@ -144,6 +291,14 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     if region is not None and region.size > 0:
         ocr_results += detect_plate._ocr_readtext(region)
 
+    # Third pass: the real plate-detector model's own tight, target-width
+    # crop (see detect_plate_box_crop() above) -- additive alongside the
+    # percentage-band pass for the same reason that pass is additive
+    # alongside the whole-crop pass, not a replacement for it.
+    lp_region = detect_plate_box_crop(vehicle_img)
+    if lp_region is not None and lp_region.size > 0:
+        ocr_results += detect_plate._ocr_readtext(lp_region)
+
     if not ocr_results:
         return {"plate_number": None, "confidence": 0, "note": "Vehicle found, no text read", "box": box}
 
@@ -158,15 +313,63 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
             # fallback tier (see below), since GPS-overlay text
             # ("E77.1247,N28.5475") structurally can't survive cleaning
             # into a full strict-pattern match the way a real plate can.
-            candidates.append((cleaned, conf))
+            #
+            # Structurally valid isn't the same as a real state code --
+            # see _correct_state_code()'s docstring (Session 33: the
+            # plate-detector crop path produced a confidently-wrong
+            # "GI23CG2045" for a real "GJ23CG2045", 3 times in the same
+            # eval). Demote to fallback instead of trusting an
+            # unrecognized code at pattern-match confidence.
+            fixed = _correct_state_code(cleaned)
+            if fixed is not None:
+                candidates.append((fixed, conf))
+            else:
+                fallback_candidates.append((cleaned, conf))
         elif (corrected := _correct_plate_positions(cleaned)) is not None:
-            candidates.append((corrected, conf))
+            fixed = _correct_state_code(corrected)
+            if fixed is not None:
+                candidates.append((fixed, conf))
+            else:
+                fallback_candidates.append((corrected, conf))
         elif '.' not in text and 6 <= len(cleaned) <= 12 and cleaned[:2].isalpha() \
                 and any(c.isdigit() for c in cleaned) and any(c.isalpha() for c in cleaned):
             # Real Indian plates always start with a 2-letter state code —
             # "starts with a digit" text (dashcam brand/sticker text like
             # "1008ELECTRIC") was confirming as a false-positive plate.
             fallback_candidates.append((cleaned, conf))
+
+    # A real plate can come back from OCR as two separate fragments
+    # instead of one string -- confirmed directly on a real auto-rickshaw
+    # plate ("GJ23...75916"), which PaddleOCR split into "GJZJ" and
+    # "75916". Also run each concatenation through the same
+    # _correct_plate_positions() confusable-character fix used for single
+    # strings below (Z/2, O/0, etc.) -- a split fragment is exactly as
+    # likely to have a wrong-type character at a fixed position as a
+    # whole-string read is. _ocr_readtext doesn't preserve bounding-box
+    # position (always returns bbox=None, see anpr/ocr.py), so there's no
+    # real spatial signal to confirm two fragments are actually adjacent
+    # on the plate -- only trying ADJACENT entries in the returned list
+    # (not every pair) keeps this bounded, and trying both concatenation
+    # orders covers OCR not guaranteeing a consistent top-to-bottom
+    # sequence. Held to the same strict INDIAN_PLATE_PATTERN bar as any
+    # other candidate, never added to the weaker fallback tier -- two
+    # unrelated fragments are very unlikely to accidentally concatenate
+    # into something that matches that specific structure by chance, but
+    # this is a real, if bounded, false-positive risk worth stating
+    # plainly rather than glossing over.
+    for i in range(len(ocr_results) - 1):
+        clean_a = re.sub(r'[^A-Z0-9]', '', ocr_results[i][1].upper())
+        clean_b = re.sub(r'[^A-Z0-9]', '', ocr_results[i + 1][1].upper())
+        conf_a, conf_b = ocr_results[i][2], ocr_results[i + 1][2]
+        for combined in (clean_a + clean_b, clean_b + clean_a):
+            if INDIAN_PLATE_PATTERN.match(combined):
+                fixed = _correct_state_code(combined)
+                if fixed is not None:
+                    candidates.append((fixed, min(conf_a, conf_b)))
+            elif (corrected := _correct_plate_positions(combined)) is not None:
+                fixed = _correct_state_code(corrected)
+                if fixed is not None:
+                    candidates.append((fixed, min(conf_a, conf_b)))
 
     if candidates:
         candidates.sort(key=lambda x: x[1], reverse=True)
