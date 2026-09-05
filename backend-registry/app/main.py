@@ -449,6 +449,10 @@ def gap_analysis_report(
 def list_audit_logs(
     badge_number: str | None = None,
     resource_type: str | None = None,
+    category: str | None = None,
+    camera_id: int | None = None,
+    camera_district: str | None = None,
+    camera_circle_id: int | None = None,
     date_from: datetime | None = Query(None, alias="from"),
     date_to: datetime | None = Query(None, alias="to"),
     cursor: int | None = None,
@@ -458,9 +462,18 @@ def list_audit_logs(
     district = user.get("scope_value") if user.get("scope_type") == "district" else None
     with get_conn() as conn:
         logs, next_cursor = audit_logs_service.list_logs(
-            conn, badge_number, resource_type, date_from, date_to, district, cursor, limit
+            conn, badge_number, resource_type, category, camera_id, camera_district, camera_circle_id,
+            date_from, date_to, district, cursor, limit,
         )
         return {"logs": logs, "next_cursor": next_cursor}
+
+
+@app.get("/audit-logs/categories")
+def list_audit_log_categories(user=Depends(require_permission("view_audit_logs"))):
+    """Backs the category filter chips -- keeps the frontend from having to
+    duplicate the action/resource_type -> category mapping (single source of
+    truth stays audit_logs_service.CATEGORIES)."""
+    return {"categories": list(audit_logs_service.CATEGORIES.keys()) + ["other"]}
 
 
 @app.get("/police-stations", response_model=list[PoliceStationOut])

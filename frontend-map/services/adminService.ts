@@ -39,6 +39,11 @@ export interface AuditLogOut {
   resource_id: number | null;
   reason_code: string | null;
   timestamp: string;
+  category: string;
+  actor_name: string | null;
+  camera_name: string | null;
+  camera_district: string | null;
+  camera_area: string | null;
 }
 
 export interface AuditLogsPage {
@@ -49,6 +54,10 @@ export interface AuditLogsPage {
 export interface AuditLogsQuery {
   badge_number?: string;
   resource_type?: string;
+  category?: string;
+  camera_id?: number;
+  camera_district?: string;
+  camera_circle_id?: number;
   from?: string;
   to?: string;
   cursor?: number;
@@ -100,6 +109,10 @@ export const adminService = {
     const params = new URLSearchParams();
     if (query.badge_number) params.set('badge_number', query.badge_number);
     if (query.resource_type) params.set('resource_type', query.resource_type);
+    if (query.category) params.set('category', query.category);
+    if (query.camera_id != null) params.set('camera_id', String(query.camera_id));
+    if (query.camera_district) params.set('camera_district', query.camera_district);
+    if (query.camera_circle_id != null) params.set('camera_circle_id', String(query.camera_circle_id));
     if (query.from) params.set('from', query.from);
     if (query.to) params.set('to', query.to);
     if (query.cursor != null) params.set('cursor', String(query.cursor));
@@ -107,5 +120,12 @@ export const adminService = {
     const res = await fetch(`${REGISTRY_API_URL}/audit-logs${qs ? `?${qs}` : ''}`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`Failed to fetch audit logs: HTTP ${res.status}`);
     return res.json();
+  },
+
+  async listAuditLogCategories(): Promise<string[]> {
+    const res = await fetch(`${REGISTRY_API_URL}/audit-logs/categories`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Failed to fetch audit log categories: HTTP ${res.status}`);
+    const body = await res.json();
+    return body.categories;
   },
 };

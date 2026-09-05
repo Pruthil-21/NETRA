@@ -3,10 +3,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import AdminPage from '@/app/admin/page';
+import { CameraRegistryProvider } from '@/context/CameraRegistryContext';
+
+function renderAdminPage() {
+  return render(
+    <CameraRegistryProvider>
+      <AdminPage />
+    </CameraRegistryProvider>
+  );
+}
 
 const AUDIT_LOG_PAGE = {
   logs: [
-    { id: 1, badge_number: 'GJ-AUD-001', action: 'update', resource_type: 'camera', resource_id: 7, reason_code: null, timestamp: '2026-09-05T10:00:00Z' },
+    {
+      id: 1, badge_number: 'GJ-AUD-001', action: 'update', resource_type: 'camera', resource_id: 7,
+      reason_code: null, timestamp: '2026-09-05T10:00:00Z', category: 'camera_registry',
+      actor_name: 'Demo Auditor', camera_name: 'Ring Road Cam', camera_district: 'Traffic Police', camera_area: 'Ring Road Circle',
+    },
   ],
   next_cursor: null,
 };
@@ -39,7 +52,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
 
     await waitFor(() => {
       expect(screen.getByText('Demo Station Officer')).toBeInTheDocument();
@@ -65,7 +78,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
     await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /reassign/i }));
@@ -89,7 +102,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
     await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
@@ -117,7 +130,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
     await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
@@ -141,7 +154,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
     await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: /reset password/i })).not.toBeInTheDocument();
   });
@@ -158,6 +171,9 @@ describe('AdminPage', () => {
           officersFetch();
           return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         }
+        if (url.includes('/audit-logs/categories')) {
+          return Promise.resolve({ ok: true, json: async () => ({ categories: ['camera_registry'] }) });
+        }
         if (url.includes('/audit-logs')) {
           return Promise.resolve({ ok: true, json: async () => AUDIT_LOG_PAGE });
         }
@@ -165,7 +181,7 @@ describe('AdminPage', () => {
       })
     );
 
-    render(<AdminPage />);
+    renderAdminPage();
 
     expect(await screen.findByText('Audit Log')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('GJ-AUD-001')).toBeInTheDocument());

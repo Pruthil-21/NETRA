@@ -285,6 +285,11 @@ class AuditLogOut(BaseModel):
     resource_id: Optional[int] = None
     reason_code: Optional[str] = None
     timestamp: datetime
+    category: str
+    actor_name: Optional[str] = None
+    camera_name: Optional[str] = None
+    camera_district: Optional[str] = None
+    camera_area: Optional[str] = None
 
 
 class AuditLogsPage(BaseModel):
