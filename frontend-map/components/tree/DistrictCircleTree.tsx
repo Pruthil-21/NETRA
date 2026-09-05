@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, MapPin, Video } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, MapPin, Video, Landmark } from 'lucide-react';
 import { Circle } from '@/services/circlesService';
 import { Camera } from '@/types/camera';
 
@@ -35,10 +35,17 @@ function TreeLines({ isLast }: { isLast: boolean }) {
   );
 }
 
-/** VS Code Explorer-style tree: District -> Circle -> Camera, each level
- * independently expandable. Shared, byte-identical between the dashboard
- * and map pages so their navigation never drifts apart in behavior or
- * styling. */
+// This deployment only ever covers Gujarat -- a hardcoded single root rather
+// than a real data-driven state level, since there's nothing to select
+// between yet. Districts render as its children so the tree reads
+// State -> District -> Area -> Camera, matching how officers actually
+// describe the hierarchy on the ground.
+const STATE_NAME = 'Gujarat';
+
+/** VS Code Explorer-style tree: State -> District -> Area -> Camera, each
+ * level (below the fixed state root) independently expandable. Shared,
+ * byte-identical between the dashboard and map pages so their navigation
+ * never drifts apart in behavior or styling. */
 export function DistrictCircleTree({ districts, circles, cameras, selected, onSelect }: DistrictCircleTreeProps) {
   const [expandedDistricts, setExpandedDistricts] = useState<Set<string>>(new Set());
   const [expandedCircles, setExpandedCircles] = useState<Set<number>>(new Set());
@@ -84,14 +91,21 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
 
   return (
     <nav aria-label="Camera hierarchy" className="w-56 shrink-0 border-r border-line bg-panel overflow-y-auto text-xs">
-      {districts.map((district) => {
+      <div className="flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold">
+        <Landmark size={12} className="shrink-0" />
+        <span className="truncate">{STATE_NAME}</span>
+      </div>
+      <div className="pl-4">
+      {districts.map((district, di) => {
+        const isLastDistrict = di === districts.length - 1;
         const isDistrictExpanded = expandedDistricts.has(district);
         const isDistrictSelected = selected?.type === 'district' && selected.value === district;
         const districtCircles = circlesByDistrict.get(district) ?? [];
         return (
-          <div key={district}>
+          <div key={district} className="relative pl-4">
+            <TreeLines isLast={isLastDistrict} />
             <div
-              className={`flex items-center gap-1 px-2 py-1.5 hover:bg-panel-raised ${
+              className={`flex items-center gap-1 py-1.5 hover:bg-panel-raised ${
                 isDistrictSelected ? 'bg-command/10 text-command' : 'text-slate-300'
               }`}
             >
@@ -115,7 +129,7 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
             {isDistrictExpanded && (
               <div className="pl-5">
                 {districtCircles.length === 0 ? (
-                  <p className="px-2 py-1.5 text-slate-600 italic">No circles yet</p>
+                  <p className="px-2 py-1.5 text-slate-600 italic">No areas yet</p>
                 ) : (
                   districtCircles.map((circle, i) => {
                     const isLastCircle = i === districtCircles.length - 1;
@@ -183,6 +197,7 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
           </div>
         );
       })}
+      </div>
     </nav>
   );
 }

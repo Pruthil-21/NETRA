@@ -56,8 +56,8 @@ describe('CircleManagementSection', () => {
     mockCameras([{ id: 101, dept: 'Junagadh', circle_id: null }]);
     render(<CircleManagementSection districtScope={null} />);
     await waitFor(() => expect(screen.getByText('Junagadh')).toBeInTheDocument());
-    expect(screen.getByLabelText('Add circle to Junagadh')).toBeInTheDocument();
-    expect(screen.getByText('No circles yet')).toBeInTheDocument();
+    expect(screen.getByLabelText('Add area to Junagadh')).toBeInTheDocument();
+    expect(screen.getByText('No areas yet')).toBeInTheDocument();
   });
 
   it('disables delete and shows an explanatory tooltip when a circle still has cameras assigned', async () => {

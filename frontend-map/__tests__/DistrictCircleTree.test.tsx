@@ -40,7 +40,7 @@ describe('DistrictCircleTree', () => {
   it('shows an empty state for a district with no circles once expanded', () => {
     render(<DistrictCircleTree districts={['Anand']} circles={[]} cameras={[]} selected={null} onSelect={() => {}} />);
     fireEvent.click(screen.getByLabelText('Expand Anand'));
-    expect(screen.getByText('No circles yet')).toBeInTheDocument();
+    expect(screen.getByText('No areas yet')).toBeInTheDocument();
   });
 
   it('expands a circle to reveal its cameras as leaves, and selecting one calls onSelect', () => {

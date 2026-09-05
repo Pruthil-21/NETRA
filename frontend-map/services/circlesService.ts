@@ -21,7 +21,7 @@ export interface CircleUpdateBody {
 export const circlesService = {
   async listCircles(): Promise<Circle[]> {
     const res = await fetch(`${REGISTRY_API_URL}/circles`, { headers: authHeaders(), cache: 'no-store' });
-    if (!res.ok) throw new Error(`Failed to fetch circles: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`Failed to fetch areas: HTTP ${res.status}`);
     return res.json();
   },
 
@@ -31,7 +31,7 @@ export const circlesService = {
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to create circle: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`Failed to create area: HTTP ${res.status}`);
     return res.json();
   },
 
@@ -41,7 +41,7 @@ export const circlesService = {
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to update circle: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`Failed to update area: HTTP ${res.status}`);
     return res.json();
   },
 
@@ -50,6 +50,6 @@ export const circlesService = {
       method: 'DELETE',
       headers: authHeaders(),
     });
-    if (!res.ok) throw new Error(`Failed to delete circle: HTTP ${res.status}`);
+    if (!res.ok) throw new Error(`Failed to delete area: HTTP ${res.status}`);
   },
 };
