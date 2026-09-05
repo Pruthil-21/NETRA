@@ -216,6 +216,15 @@ export default function AlertsPage() {
                           <div className="min-w-0">
                             <p className="font-mono font-semibold text-white">{alert.plate_number}</p>
                             <p className="text-slate-400 truncate">{camera?.name || `Camera #${alert.camera_id}`}</p>
+                            {alert.nearest_station && (
+                              <p className="text-slate-500 truncate">
+                                Nearest station: {alert.nearest_station.name} (
+                                {alert.nearest_station.distance_meters >= 1000
+                                  ? `${(alert.nearest_station.distance_meters / 1000).toFixed(1)}km`
+                                  : `${Math.round(alert.nearest_station.distance_meters)}m`}
+                                )
+                              </p>
+                            )}
                             <p className="text-slate-600">{new Date(alert.matched_at).toLocaleString()}</p>
                             {/* Owner details (VAHAN) / police records (eGujCop) -- only
                                 rendered once real access exists server-side (status "ok");

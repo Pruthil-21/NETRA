@@ -6,6 +6,67 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Design tokens -- every color Tailwind class in this app that isn't a
+   small self-contained status chip (bg-red-950, bg-black video backdrops,
+   the GIS map popup/cluster chrome below) resolves through one of these
+   variables, so tailwind.config.ts's `colors` block can point `slate`,
+   `gray`, `white`, and the app's own ink/panel/line/command/signal tokens
+   at the same set of names and get dark/light theming for free -- no
+   component needs to know which theme is active. Dark is this app's base
+   theme (matches every value already in use before this pass existed);
+   `[data-theme="light"]` overrides it explicitly, toggled by
+   components/common/ThemeToggle.tsx and applied pre-paint by the inline
+   script in app/layout.tsx (see that file for why it's inline). */
+:root {
+  color-scheme: dark;
+  --color-white: #ffffff;
+  --color-slate-100: #f1f5f9;
+  --color-slate-200: #e2e8f0;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+  --color-slate-500: #64748b;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  --color-slate-950: #020617;
+
+  --color-ink: #05070a;
+  --color-panel: #0e141b;
+  --color-panel-raised: #141b24;
+  --color-line: #1f2a35;
+  --color-command: #2f6fed;
+  --color-command-dim: #1e4fbe;
+  --color-signal-amber: #f5a623;
+  --color-signal-green: #22c55e;
+  --color-signal-red: #ef4444;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-white: #0f172a;
+  --color-slate-100: #0f172a;
+  --color-slate-200: #1e293b;
+  --color-slate-300: #334155;
+  --color-slate-400: #475569;
+  --color-slate-500: #64748b;
+  --color-slate-600: #94a3b8;
+  --color-slate-700: #cbd5e1;
+  --color-slate-800: #e2e8f0;
+  --color-slate-900: #f1f5f9;
+  --color-slate-950: #f8fafc;
+
+  --color-ink: #f7f8fa;
+  --color-panel: #ffffff;
+  --color-panel-raised: #f1f3f5;
+  --color-line: #dfe3e8;
+  --color-command: #2f6fed;
+  --color-command-dim: #1e4fbe;
+  --color-signal-amber: #b45309;
+  --color-signal-green: #16a34a;
+  --color-signal-red: #dc2626;
+}
+
 @layer base {
   body {
     @apply bg-ink text-slate-100;

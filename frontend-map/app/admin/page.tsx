@@ -1,544 +1,134 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import {
-  Users,
-  UserCog,
-  ArrowLeftRight,
-  Loader2,
-  AlertTriangle,
-  X,
-  CheckCircle2,
-  MapPin,
-  ShieldCheck,
-  Save,
-} from 'lucide-react';
-import { adminService, OfficerOut, RolePermissionsOut } from '@/services/adminService';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, LucideIcon } from 'lucide-react';
+import { adminService } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
+import { OfficersPostingsSection } from './OfficersPostingsSection';
+import { RolePermissionsSection } from './RolePermissionsSection';
+import { CircleManagementSection } from './CircleManagementSection';
+import { PasswordResetRequestsSection } from './PasswordResetRequestsSection';
+import { AuditLogSection } from './AuditLogSection';
 
-const ASSIGNABLE_ROLES = ['district_command', 'station_officer', 'control_room_operator', 'auditor'];
+interface Tile {
+  id: string;
+  label: string;
+  description: string;
+  icon: LucideIcon;
+  permission: string;
+}
 
-// The platform's full permission catalog (Task 1/10) -- every role's grant
-// set is a subset of this list. Kept in the same display order the backend
-// seeds them in, so the checkbox grid reads consistently across roles.
-const ALL_PERMISSIONS = [
-  'view_live_feeds',
-  'search_vehicles',
-  'edit_watchlist',
-  'manage_cameras',
-  'view_analytics',
-  'export_data',
-  'manage_users_roles',
-  'view_audit_logs',
-  'acknowledge_alerts',
-  'manage_roles',
+const TILES: Tile[] = [
+  { id: 'officers', label: 'Officers & Postings', description: 'Roster, jurisdiction, and credentials', icon: Users, permission: 'manage_users_roles' },
+  { id: 'roles', label: 'Role Permissions', description: 'Platform-wide role definitions', icon: ShieldCheck, permission: 'manage_roles' },
+  { id: 'circles', label: 'Areas', description: 'Manage Areas within districts', icon: MapIcon, permission: 'manage_circles' },
+  { id: 'password-requests', label: 'Password Reset Requests', description: 'Review and action officer requests', icon: KeyRound, permission: 'reset_officer_passwords' },
+  { id: 'audit-log', label: 'Audit Log', description: 'Every sensitive action, who and where', icon: ScrollText, permission: 'view_audit_logs' },
 ];
 
-// Humanized labels shown alongside each checkbox for readability -- the
-// aria-label stays the raw permission string so it stays a stable, testable
-// contract with the backend's permission names.
-const PERMISSION_LABELS: Record<string, string> = {
-  view_live_feeds: 'View Live Feeds',
-  search_vehicles: 'Search Vehicles',
-  edit_watchlist: 'Edit Watchlist',
-  manage_cameras: 'Manage Cameras',
-  view_analytics: 'View Analytics',
-  export_data: 'Export Data',
-  manage_users_roles: 'Manage Users & Roles',
-  view_audit_logs: 'View Audit Logs',
-  acknowledge_alerts: 'Acknowledge Alerts',
-  manage_roles: 'Manage Roles',
-};
-
-// Subtle per-role accent so a district commander can tell postings apart at a
-// glance in a long roster -- same pill shape for every role (a full theming
-// system would be overkill for five roles), just a different accent color.
-const ROLE_BADGE_CLASS: Record<string, string> = {
-  super_admin: 'bg-signal-red/10 text-signal-red border-signal-red/30',
-  district_command: 'bg-command/10 text-command border-command/30',
-  station_officer: 'bg-signal-amber/10 text-signal-amber border-signal-amber/30',
-  control_room_operator: 'bg-signal-green/10 text-signal-green border-signal-green/30',
-  auditor: 'bg-slate-500/10 text-slate-400 border-slate-500/30',
-};
-
-function roleBadgeClass(role: string): string {
-  return ROLE_BADGE_CLASS[role] ?? 'bg-panel-raised text-slate-300 border-line';
-}
-
-/** Role-permission editor -- only rendered for a Super Admin (the
- * `manage_roles` gate lives in the caller). Lets them redefine what each
- * role can do platform-wide; distinct from the officer/posting flow above,
- * which only reassigns individual officers *into* existing roles. */
-function RolePermissionsSection() {
-  const [roles, setRoles] = useState<RolePermissionsOut[]>([]);
-  const [draft, setDraft] = useState<Record<string, string[]>>({});
-  const [reasonCodes, setReasonCodes] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [savingRole, setSavingRole] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<{ role: string; message: string } | null>(null);
-  const [savedRole, setSavedRole] = useState<string | null>(null);
-
-  const load = () => {
-    setLoading(true);
-    setLoadError(null);
-    adminService
-      .getRoles()
-      .then((data) => {
-        setRoles(data);
-        setDraft(Object.fromEntries(data.map((r) => [r.name, [...r.permissions]])));
-      })
-      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load roles'))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
-
-  const toggle = (roleName: string, permission: string) => {
-    setDraft((prev) => {
-      const current = prev[roleName] ?? [];
-      const next = current.includes(permission)
-        ? current.filter((p) => p !== permission)
-        : [...current, permission];
-      return { ...prev, [roleName]: next };
-    });
-  };
-
-  const save = async (roleName: string) => {
-    setSavingRole(roleName);
-    setSaveError(null);
-    setSavedRole(null);
-    try {
-      const updated = await adminService.updateRolePermissions(
-        roleName,
-        draft[roleName] ?? [],
-        reasonCodes[roleName] || undefined,
-      );
-      setRoles((prev) => prev.map((r) => (r.name === roleName ? updated : r)));
-      setSavedRole(roleName);
-    } catch (err) {
-      setSaveError({
-        role: roleName,
-        message: err instanceof Error ? err.message : 'Failed to update role permissions',
-      });
-    } finally {
-      setSavingRole(null);
-    }
-  };
-
-  return (
-    <section className="mt-8">
-      <div className="flex items-center gap-3 mb-1">
-        <span className="inline-flex p-2 bg-signal-red/10 border border-signal-red/30 text-signal-red rounded-lg">
-          <ShieldCheck size={18} />
-        </span>
-        <div>
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wide">Role Permissions</h2>
-          <p className="text-[11px] text-slate-500">Redefine what each role is permitted to do, platform-wide</p>
-        </div>
-      </div>
-
-      <div className="mt-6">
-        {loadError && (
-          <div className="flex items-start gap-2.5 p-3 mb-4 rounded-lg border border-signal-red/30 bg-signal-red/10 text-signal-red">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <div>
-              <p className="text-xs font-semibold">Failed to load roles</p>
-              <p className="text-[11px] text-signal-red/80">{loadError}</p>
-            </div>
-            <button
-              type="button"
-              onClick={load}
-              className="ml-auto shrink-0 text-[11px] px-2.5 py-1 rounded bg-panel-raised border border-line text-slate-200 hover:text-white"
-            >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {loading ? (
-          <div className="flex flex-col gap-2.5 animate-pulse" aria-label="Loading roles">
-            {[1, 2].map((item) => (
-              <div key={item} className="border border-line rounded-lg bg-panel p-4 h-[140px]">
-                <div className="h-5 w-32 bg-panel-raised rounded-full mb-3" />
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                  {[1, 2, 3, 4, 5, 6].map((cell) => (
-                    <div key={cell} className="h-3 bg-panel-raised rounded w-3/4" />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : !loadError && roles.length === 0 ? (
-          <div className="flex flex-col items-center text-center gap-2 py-16 text-slate-500">
-            <ShieldCheck size={28} className="text-slate-600" />
-            <p className="text-xs font-semibold text-slate-400">No roles found</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-3 max-w-3xl">
-            {roles.map((role) => (
-              <div key={role.name} className="border border-line rounded-lg bg-panel p-4">
-                <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${roleBadgeClass(
-                        role.name
-                      )}`}
-                    >
-                      {role.display_name}
-                    </span>
-                    {role.hierarchy_level != null && (
-                      <span className="text-[11px] text-slate-600">Level {role.hierarchy_level}</span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-2">
-                  {ALL_PERMISSIONS.map((permission) => (
-                    <label
-                      key={permission}
-                      className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none"
-                    >
-                      <input
-                        type="checkbox"
-                        aria-label={permission}
-                        checked={(draft[role.name] ?? []).includes(permission)}
-                        onChange={() => toggle(role.name, permission)}
-                        className="accent-command w-3.5 h-3.5 shrink-0"
-                      />
-                      {PERMISSION_LABELS[permission] ?? permission}
-                    </label>
-                  ))}
-                </div>
-
-                {saveError?.role === role.name && (
-                  <p className="mt-3 text-[11px] text-signal-red flex items-center gap-1.5">
-                    <AlertTriangle size={12} className="shrink-0" />
-                    {saveError.message}
-                  </p>
-                )}
-
-                {savedRole === role.name && (
-                  <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
-                    <CheckCircle2 size={14} />
-                    Permissions updated.
-                  </div>
-                )}
-
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-3.5 pt-3.5 border-t border-line">
-                  <div className="flex-1">
-                    <label
-                      htmlFor={`reason-${role.name}`}
-                      className="block text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1"
-                    >
-                      Reason Code (optional)
-                    </label>
-                    <input
-                      id={`reason-${role.name}`}
-                      value={reasonCodes[role.name] ?? ''}
-                      onChange={(e) =>
-                        setReasonCodes((prev) => ({ ...prev, [role.name]: e.target.value }))
-                      }
-                      placeholder="SCOPE_REDUCTION"
-                      className="w-full sm:max-w-xs bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    disabled={savingRole === role.name}
-                    onClick={() => save(role.name)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-command hover:bg-command-dim text-white rounded-md uppercase tracking-wide transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command self-start sm:self-auto"
-                  >
-                    {savingRole === role.name ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Save size={12} />
-                    )}
-                    Save
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </section>
-  );
-}
-
-/** Admin console -- District Command / Super Admin officers reassign
- * postings here. Nav, auth, and the global header live in the shared
- * AppShell (gated by usePermissions()'s manage_users_roles check); this
- * page owns only the officer roster and the reassignment flow. The backend
- * (Task 4) is the actual authority on the delegated-admin boundary -- this
- * UI's job is to make the common case pleasant, not to be the security
- * boundary itself. */
+/** Admin console -- a tile per concern (officers, roles, areas, password
+ * requests, audit log), one shown at a time. Previously every section was
+ * stacked on one page regardless of which the admin actually came here for;
+ * this tile switcher is the whole fix for that. Nav, auth, and the global
+ * header live in the shared AppShell; the backend is the actual authority
+ * on every permission boundary here -- this UI's job is to make the common
+ * case pleasant, not to be the security boundary itself. */
 export default function AdminPage() {
-  const { permissions } = usePermissions();
-  const [officers, setOfficers] = useState<OfficerOut[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reassigningId, setReassigningId] = useState<number | null>(null);
-  const [newRole, setNewRole] = useState('station_officer');
-  const [newScopeValue, setNewScopeValue] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [confirmedFor, setConfirmedFor] = useState<number | null>(null);
+  const { permissions, role, scopeValue, loading: permissionsLoading } = usePermissions();
+  const [pendingRequestCount, setPendingRequestCount] = useState<number | null>(null);
 
-  const load = () => {
-    setLoading(true);
-    setError(null);
+  const visibleTiles = useMemo(
+    () => TILES.filter((tile) => permissions.includes(tile.permission)),
+    [permissions]
+  );
+  const [activeTileId, setActiveTileId] = useState<string | null>(null);
+
+  // Land on the first section this admin actually has, once permissions
+  // resolve -- avoids a flash of "no sections" before /auth/me returns.
+  useEffect(() => {
+    if (permissionsLoading || activeTileId !== null || visibleTiles.length === 0) return;
+    setActiveTileId(visibleTiles[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [permissionsLoading, visibleTiles]);
+
+  useEffect(() => {
+    if (permissionsLoading || !permissions.includes('reset_officer_passwords')) return;
     adminService
-      .listOfficers()
-      .then(setOfficers)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load officers'))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(load, []);
-
-  const openReassign = (officerId: number) => {
-    setReassigningId(officerId);
-    setSubmitError(null);
-    setConfirmedFor(null);
-  };
-
-  const closeReassign = () => {
-    setReassigningId(null);
-    setSubmitError(null);
-    setNewRole('station_officer');
-    setNewScopeValue('');
-  };
-
-  const handleConfirmReassignment = async (officerId: number) => {
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      await adminService.reassignPosting({
-        officer_id: officerId,
-        role_name: newRole,
-        scope_type: newRole === 'super_admin' ? 'platform' : 'district',
-        scope_value: newRole === 'super_admin' ? null : newScopeValue || null,
+      .listPasswordResetRequests('pending')
+      .then((rows) => setPendingRequestCount(rows.length))
+      .catch(() => {
+        // Non-fatal: the tile just shows without a count badge.
       });
-      setReassigningId(null);
-      setNewRole('station_officer');
-      setNewScopeValue('');
-      setConfirmedFor(officerId);
-      load();
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : 'Failed to reassign posting');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  }, [permissionsLoading, permissions]);
+
+  if (permissionsLoading) {
+    return (
+      <main className="flex-1 overflow-y-auto min-h-0 w-full">
+        <div className="max-w-5xl mx-auto p-4 sm:p-6">
+          <h1 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Admin Console</h1>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 animate-pulse" aria-label="Loading admin console">
+            {[1, 2, 3, 4, 5].map((item) => (
+              <div key={item} className="h-[110px] rounded-lg border border-line bg-panel" />
+            ))}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (visibleTiles.length === 0) {
+    return (
+      <main className="flex-1 overflow-y-auto min-h-0 w-full flex items-center justify-center">
+        <p className="text-sm text-slate-500">You don&apos;t have access to any admin sections.</p>
+      </main>
+    );
+  }
 
   return (
     <main className="flex-1 overflow-y-auto min-h-0 w-full">
-      <div className="max-w-4xl mx-auto p-4 sm:p-6">
-        <div className="flex items-center gap-3 mb-1">
-          <span className="inline-flex p-2 bg-command/10 border border-command/30 text-command rounded-lg">
-            <Users size={18} />
-          </span>
-          <div>
-            <h1 className="text-sm font-semibold text-white uppercase tracking-wide">Officers &amp; Postings</h1>
-            <p className="text-[11px] text-slate-500">Reassign a station&apos;s role and jurisdiction</p>
-          </div>
-        </div>
+      <div className="max-w-5xl mx-auto p-4 sm:p-6">
+        <h1 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Admin Console</h1>
 
-        <div className="mt-6">
-          {error && (
-            <div className="flex items-start gap-2.5 p-3 mb-4 rounded-lg border border-signal-red/30 bg-signal-red/10 text-signal-red">
-              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-              <div>
-                <p className="text-xs font-semibold">Failed to load officers</p>
-                <p className="text-[11px] text-signal-red/80">{error}</p>
-              </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 mb-6">
+          {visibleTiles.map((tile) => {
+            const Icon = tile.icon;
+            const isActive = activeTileId === tile.id;
+            const badgeCount = tile.id === 'password-requests' ? pendingRequestCount : null;
+            return (
               <button
+                key={tile.id}
                 type="button"
-                onClick={load}
-                className="ml-auto shrink-0 text-[11px] px-2.5 py-1 rounded bg-panel-raised border border-line text-slate-200 hover:text-white"
+                onClick={() => setActiveTileId(tile.id)}
+                className={`relative flex flex-col items-center text-center gap-2 p-4 rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command ${
+                  isActive
+                    ? 'bg-command/10 border-command/40 text-white'
+                    : 'bg-panel border-line text-slate-300 hover:border-slate-500 hover:text-white'
+                }`}
               >
-                Retry
+                {!!badgeCount && (
+                  <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-signal-red text-white text-[10px] font-bold flex items-center justify-center">
+                    {badgeCount}
+                  </span>
+                )}
+                <Icon size={20} className={isActive ? 'text-command' : 'text-slate-400'} />
+                <span className="text-xs font-semibold">{tile.label}</span>
+                <span className="text-[10px] text-slate-500 leading-tight">{tile.description}</span>
               </button>
-            </div>
-          )}
-
-          {loading ? (
-            <div className="flex flex-col gap-2.5 animate-pulse" aria-label="Loading officers">
-              {[1, 2, 3].map((item) => (
-                <div key={item} className="border border-line rounded-lg bg-panel p-4 h-[76px] flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-full bg-panel-raised shrink-0" />
-                  <div className="flex-1 space-y-2">
-                    <div className="h-3 bg-panel-raised rounded w-1/3" />
-                    <div className="h-2.5 bg-panel-raised rounded w-1/4" />
-                  </div>
-                  <div className="h-6 w-20 bg-panel-raised rounded-full" />
-                </div>
-              ))}
-            </div>
-          ) : !error && officers.length === 0 ? (
-            <div className="flex flex-col items-center text-center gap-2 py-16 text-slate-500">
-              <Users size={28} className="text-slate-600" />
-              <p className="text-xs font-semibold text-slate-400">No officers found</p>
-              <p className="text-[11px] text-slate-600">Officers you&apos;re authorized to manage will appear here.</p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {officers.map((officer) => (
-                <div
-                  key={officer.id}
-                  className="border border-line rounded-lg bg-panel p-4 transition-colors hover:border-slate-600"
-                >
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="inline-flex items-center justify-center w-9 h-9 rounded-full bg-panel-raised border border-line text-slate-400 shrink-0">
-                        <UserCog size={16} />
-                      </span>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-white truncate">{officer.name}</p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[11px] font-mono text-slate-400 tracking-wide">{officer.badge_number}</span>
-                          {officer.rank && (
-                            <>
-                              <span className="text-slate-700">&middot;</span>
-                              <span className="text-[11px] text-slate-500">{officer.rank}</span>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {officer.active_posting ? (
-                        <>
-                          <span
-                            className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${roleBadgeClass(
-                              officer.active_posting.role
-                            )}`}
-                          >
-                            {officer.active_posting.role}
-                          </span>
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-line bg-panel-raised text-[10px] text-slate-400">
-                            <MapPin size={10} />
-                            {officer.active_posting.scope_value ?? 'Platform-wide'}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="text-[11px] text-slate-600 italic">No active posting</span>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => openReassign(officer.id)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-white hover:border-slate-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
-                      >
-                        <ArrowLeftRight size={12} />
-                        Reassign
-                      </button>
-                    </div>
-                  </div>
-
-                  {confirmedFor === officer.id && (
-                    <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
-                      <CheckCircle2 size={14} />
-                      Posting reassigned successfully.
-                    </div>
-                  )}
-
-                  {reassigningId === officer.id && (
-                    <div className="mt-4 pt-4 border-t border-line">
-                      <div className="rounded-md border border-line bg-panel-raised/60 p-3.5">
-                        <div className="flex items-center justify-between mb-3">
-                          <p className="text-[10px] font-semibold tracking-wider uppercase text-slate-400">
-                            New Posting
-                          </p>
-                          <button
-                            type="button"
-                            onClick={closeReassign}
-                            aria-label="Cancel reassignment"
-                            className="text-slate-500 hover:text-white p-1 -m-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-
-                        <div className="flex flex-col sm:flex-row gap-3">
-                          <div className="flex-1">
-                            <label
-                              htmlFor={`role-${officer.id}`}
-                              className="block text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1"
-                            >
-                              New Role
-                            </label>
-                            <select
-                              id={`role-${officer.id}`}
-                              value={newRole}
-                              onChange={(e) => setNewRole(e.target.value)}
-                              className="w-full bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
-                            >
-                              {ASSIGNABLE_ROLES.map((role) => (
-                                <option key={role} value={role}>
-                                  {role}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          {newRole !== 'super_admin' && (
-                            <div className="flex-1">
-                              <label
-                                htmlFor={`scope-${officer.id}`}
-                                className="block text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1"
-                              >
-                                District / Department
-                              </label>
-                              <input
-                                id={`scope-${officer.id}`}
-                                value={newScopeValue}
-                                onChange={(e) => setNewScopeValue(e.target.value)}
-                                placeholder="Traffic Police"
-                                className="w-full bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
-                              />
-                            </div>
-                          )}
-                        </div>
-
-                        {submitError && (
-                          <p className="mt-3 text-[11px] text-signal-red flex items-center gap-1.5">
-                            <AlertTriangle size={12} className="shrink-0" />
-                            {submitError}
-                          </p>
-                        )}
-
-                        <div className="flex items-center gap-2 mt-3.5">
-                          <button
-                            type="button"
-                            disabled={submitting}
-                            onClick={() => handleConfirmReassignment(officer.id)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-command hover:bg-command-dim text-white rounded-md uppercase tracking-wide transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
-                          >
-                            {submitting && <Loader2 size={12} className="animate-spin" />}
-                            Confirm Reassignment
-                          </button>
-                          <button
-                            type="button"
-                            disabled={submitting}
-                            onClick={closeReassign}
-                            className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white rounded-md transition disabled:opacity-50"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+            );
+          })}
         </div>
 
-        {permissions.includes('manage_roles') && <RolePermissionsSection />}
+        <div className="border-t border-line pt-6">
+          {activeTileId === 'officers' && (
+            <OfficersPostingsSection canResetPasswords={permissions.includes('reset_officer_passwords')} />
+          )}
+          {activeTileId === 'roles' && <RolePermissionsSection />}
+          {activeTileId === 'circles' && (
+            <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
+          )}
+          {activeTileId === 'password-requests' && <PasswordResetRequestsSection />}
+          {activeTileId === 'audit-log' && <AuditLogSection />}
+        </div>
       </div>
     </main>
   );

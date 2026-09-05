@@ -1,11 +1,37 @@
 """Business logic for ANPR detections — the permanent, insert-only sighting
 history. Every plate read is recorded here regardless of watchlist status;
 a match additionally gets an alerts row (see alerts_service.process_detection).
+
+Every recorded detection also appends its exact timestamp to a derived
+daily-rollup row in vehicle_daily_sightings, keyed on
+(camera_id, plate_number, IST calendar day) -- see _upsert_daily_sighting.
+That table is non-evidentiary and never replaces the detections history
+above; it exists purely to answer "where was this plate seen today"
+without scanning detections by hand.
 """
+from datetime import datetime
+
 from psycopg2.extras import RealDictCursor
 
 from ..schemas import DetectionIn, normalize_plate
 from . import camera_metadata
+
+
+def _upsert_daily_sighting(
+    db: RealDictCursor, camera_id: int, plate_number: str, detected_at: datetime
+) -> None:
+    db.execute(
+        """
+        INSERT INTO vehicle_daily_sightings
+            (camera_id, plate_number, sighting_date, detection_times)
+        VALUES
+            (%s, %s, (%s::timestamptz AT TIME ZONE 'Asia/Kolkata')::date, ARRAY[%s::timestamptz])
+        ON CONFLICT (camera_id, plate_number, sighting_date)
+        DO UPDATE SET detection_times =
+            vehicle_daily_sightings.detection_times || EXCLUDED.detection_times
+        """,
+        (camera_id, plate_number, detected_at, detected_at),
+    )
 
 
 def record_detection(db: RealDictCursor, detection: DetectionIn):
@@ -59,6 +85,7 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
         )
         row = db.fetchone()
         if row is not None:
+            _upsert_daily_sighting(db, row["camera_id"], row["plate_number"], row["detected_at"])
             return row, False
 
         # Suppressed duplicate — a retried POST for an event_id already on
@@ -88,6 +115,7 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
         )
         row = db.fetchone()
         if row is not None:
+            _upsert_daily_sighting(db, row["camera_id"], row["plate_number"], row["detected_at"])
             return row, False
 
         # Suppressed duplicate — return the sighting already on record for
@@ -115,7 +143,9 @@ def record_detection(db: RealDictCursor, detection: DetectionIn):
             detection.source,
         ),
     )
-    return db.fetchone(), False
+    row = db.fetchone()
+    _upsert_daily_sighting(db, row["camera_id"], row["plate_number"], row["detected_at"])
+    return row, False
 
 
 def search_detections(

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { FeedCard } from '@/components/dashboard/FeedCard';
 import { CameraFeed } from '@/types/stream';
@@ -13,33 +13,37 @@ describe('FeedCard hover-to-play', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('starts playing after a 2s hold and stops after leaving for the grace period', () => {
-    const { container } = render(<FeedCard feed={FEED} />);
-    const tile = container.querySelector('.cursor-pointer')!;
+  it('hoverOnly mode calls onHoverStart after the hold delay, not immediately', () => {
+    vi.useFakeTimers();
+    const onHoverStart = vi.fn();
+    render(<FeedCard feed={FEED} mode="hoverOnly" onHoverStart={onHoverStart} onHoverEnd={() => {}} />);
 
-    fireEvent.mouseEnter(tile);
-    act(() => vi.advanceTimersByTime(2000));
-    expect(screen.queryByText('Hover or click to play live feed')).not.toBeInTheDocument();
+    fireEvent.mouseEnter(screen.getByTestId('feed-card-viewport'));
+    expect(onHoverStart).not.toHaveBeenCalled();
 
-    fireEvent.mouseLeave(tile);
-    act(() => vi.advanceTimersByTime(1199));
-    expect(screen.queryByText('Hover or click to play live feed')).not.toBeInTheDocument(); // still inside grace
-
-    act(() => vi.advanceTimersByTime(1));
-    expect(screen.getByText('Hover or click to play live feed')).toBeInTheDocument(); // grace elapsed, stopped
+    vi.advanceTimersByTime(2000);
+    expect(onHoverStart).toHaveBeenCalledWith(FEED.id);
+    expect(screen.queryByTestId('hls-player')).not.toBeInTheDocument();
+    vi.useRealTimers();
   });
 
-  it('a quick re-hover within the grace period keeps it playing without a restart', () => {
-    const { container } = render(<FeedCard feed={FEED} />);
-    const tile = container.querySelector('.cursor-pointer')!;
+  it('hoverOnly mode calls onHoverEnd after the grace period following mouse-leave', () => {
+    vi.useFakeTimers();
+    const onHoverEnd = vi.fn();
+    render(<FeedCard feed={FEED} mode="hoverOnly" onHoverStart={() => {}} onHoverEnd={onHoverEnd} />);
 
-    fireEvent.mouseEnter(tile);
-    act(() => vi.advanceTimersByTime(2000));
-    fireEvent.mouseLeave(tile);
-    act(() => vi.advanceTimersByTime(500)); // inside the 1200ms grace window
-    fireEvent.mouseEnter(tile); // re-hover cancels the pending stop
+    fireEvent.mouseEnter(screen.getByTestId('feed-card-viewport'));
+    vi.advanceTimersByTime(2000); // past the hold delay, hover is now "active"
+    fireEvent.mouseLeave(screen.getByTestId('feed-card-viewport'));
+    expect(onHoverEnd).not.toHaveBeenCalled();
 
-    act(() => vi.advanceTimersByTime(5000));
-    expect(screen.queryByText('Hover or click to play live feed')).not.toBeInTheDocument();
+    vi.advanceTimersByTime(1200); // past the grace period
+    expect(onHoverEnd).toHaveBeenCalledWith(FEED.id);
+    vi.useRealTimers();
+  });
+
+  it('playAll mode renders HlsPlayer when isPlaying is true, with no hover needed', () => {
+    render(<FeedCard feed={FEED} mode="playAll" isPlaying />);
+    expect(screen.getByTestId('hls-player')).toBeInTheDocument();
   });
 });

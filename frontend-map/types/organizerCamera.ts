@@ -22,4 +22,9 @@ export interface OrganizerCamera {
   // camera is registry-only (no live feed) until it's supplied.
   stream_path?: string;
   hls_url?: string;
+  // Also not part of the organizer API. Lets a manually added camera be
+  // assigned to a circle (see services/circlesService.ts) at add/edit time.
+  // There's no reliable district for a camera at this point in the form, so
+  // this is set directly from an unfiltered circle list rather than derived.
+  circleId?: number;
 }

@@ -26,6 +26,16 @@ CREATE TABLE cameras (
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 
+CREATE TABLE circles (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    district    TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (district, name)
+);
+
+ALTER TABLE cameras ADD COLUMN circle_id INTEGER REFERENCES circles(id);
+
 -- Mirrors backend-watchlist's alert_status_history: append-only, one row per
 -- real connectivity transition. Written by cameras_service.update_camera()
 -- only when the new status differs from the current one -- repeated PUTs
@@ -106,10 +116,35 @@ CREATE TABLE IF NOT EXISTS postings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_postings_one_active_per_officer
     ON postings (officer_id) WHERE is_active;
 
+-- An officer's self-service request for a Super Admin to reset their
+-- password (e.g. forgotten password) -- deliberately carries no password
+-- value at all, in either direction. The admin reviews the requesting
+-- officer's identity (name, badge, rank, posting) and reason, then either
+-- rejects it or approves it by setting a brand-new password through the
+-- existing POST /admin/officers/{id}/reset-password flow -- this table only
+-- tracks the request's lifecycle, never a credential.
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+    id           SERIAL PRIMARY KEY,
+    officer_id   INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    reason       TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_by  TEXT,
+    reviewed_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status ON password_reset_requests (status, requested_at);
+
 CREATE INDEX IF NOT EXISTS idx_postings_officer ON postings (officer_id);
 
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS badge_number TEXT;
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason_code TEXT;
+
+-- Self-service profile photo -- a URL, not an upload: this codebase has no
+-- file-storage/upload pipeline anywhere (camera rtsp_url/hls_url are also
+-- plain URL strings), so an officer sets/pastes a URL rather than the app
+-- hosting the image itself.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS photo_url TEXT;
 
 -- Scale demo: edge nodes + synthetic-camera flag + an isolated detection-events
 -- table for load-testing ingestion throughput. Additive only -- every

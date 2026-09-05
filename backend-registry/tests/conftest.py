@@ -116,3 +116,20 @@ def police_station_test_rows():
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM police_stations WHERE id = ANY(%s)", (created_ids,))
             conn.commit()
+
+
+@pytest.fixture
+def circle_test_rows():
+    """Guaranteed cleanup for circles rows a test creates, even if an
+    assertion fails first. Must run after any camera FK'ing to these rows
+    is deleted -- tests that assign a camera to a circle append that
+    camera's id to gap_analysis_test_cameras (or synthetic_test_cameras),
+    not this fixture, so ordering is handled by pytest tearing down
+    fixtures in reverse dependency order."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM circles WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()

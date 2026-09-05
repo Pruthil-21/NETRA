@@ -73,6 +73,6 @@ def test_district_command_token_carries_district_scope(client):
     payload = pyjwt.decode(resp.json()["token"], settings.jwt_secret, algorithms=["HS256"])
     assert payload["role"] == "district_command"
     assert payload["scope_type"] == "district"
-    assert payload["scope_value"] == "Traffic Police"
+    assert payload["scope_value"] == "Ahmedabad"
     assert "export_data" in payload["permissions"]
     assert "manage_cameras" in payload["permissions"]

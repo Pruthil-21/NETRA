@@ -23,6 +23,7 @@ class CameraCreate(BaseModel):
     # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraUpdate(BaseModel):
@@ -39,6 +40,7 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraOut(CameraCreate):
@@ -95,9 +97,54 @@ class MeResponse(BaseModel):
     badge_number: str
     name: str
     role: str
+    rank: Optional[str] = None
+    photo_url: Optional[str] = None
+    last_login: Optional[datetime] = None
     scope_type: str
     scope_value: Optional[str] = None
     permissions: list[str]
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class PasswordResetBody(BaseModel):
+    new_password: str
+    # When this reset fulfills a pending password_reset_requests row, pass its
+    # id so the request is atomically marked approved in the same call --
+    # otherwise an admin could set the password but leave the request stuck
+    # "pending" forever.
+    request_id: Optional[int] = None
+
+
+class PasswordResetRequestCreate(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestOut(BaseModel):
+    id: int
+    officer_id: int
+    badge_number: str
+    officer_name: str
+    rank: Optional[str] = None
+    role_name: Optional[str] = None
+    scope_type: Optional[str] = None
+    scope_value: Optional[str] = None
+    reason: Optional[str] = None
+    status: str
+    requested_at: datetime
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+
+
+class ProfilePhotoUpdate(BaseModel):
+    photo_url: Optional[str] = None
 
 
 class PostingSummary(BaseModel):
@@ -223,6 +270,21 @@ class PoliceStationOut(PoliceStationCreate):
     id: int
 
 
+class CircleCreate(BaseModel):
+    name: str
+    district: str
+
+
+class CircleUpdate(BaseModel):
+    name: Optional[str] = None
+    district: Optional[str] = None
+
+
+class CircleOut(CircleCreate):
+    id: int
+    created_at: datetime
+
+
 class UncoveredZone(BaseModel):
     target_id: int
     name: str
@@ -252,8 +314,14 @@ class AuditLogOut(BaseModel):
     resource_id: Optional[int] = None
     reason_code: Optional[str] = None
     timestamp: datetime
+    category: str
+    actor_name: Optional[str] = None
+    camera_name: Optional[str] = None
+    camera_district: Optional[str] = None
+    camera_area: Optional[str] = None
 
 
 class AuditLogsPage(BaseModel):
     logs: list[AuditLogOut]
     next_cursor: Optional[int] = None
+

@@ -7,11 +7,9 @@ import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
 import { createCustomMarkerIcon, createVehicleTraceIcon } from './MapCustomMarker';
 import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
-import MapPopupCard from './MapPopupCard';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
 import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
-import { getCameraStreamUrl } from '@/lib/stream';
 import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
 
 // Hold the hover this long before the popup grows into a live preview — long
@@ -25,9 +23,10 @@ const HOVER_PREVIEW_GRACE_MS = 1200;
 interface MapControllerProps {
   selectedCamera: Camera | null;
   routePositions: [number, number][];
+  highlightedPositions: [number, number][];
 }
 
-const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePositions }) => {
+const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePositions, highlightedPositions }) => {
   const map = useMap();
 
   useEffect(() => {
@@ -51,6 +50,22 @@ const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePosi
       map.flyToBounds(L.latLngBounds(routePositions), { padding: [64, 64], duration: 1 });
     }
   }, [routePositions, map]);
+
+  // Selecting a district/circle in the tree pans/zooms to frame its cameras --
+  // it never hides any marker (see Global Constraints: every camera in scope
+  // stays visible/clickable regardless of tree selection). Mirrors the
+  // routePositions effect above: a single camera gets a flyTo, several get a
+  // flyToBounds. Deliberately independent of that effect so a tree selection
+  // and an active sighting route don't fight over which one "wins" the frame
+  // -- whichever's positions last changed is the one that moves the view.
+  useEffect(() => {
+    if (highlightedPositions.length === 0) return;
+    if (highlightedPositions.length === 1) {
+      map.flyTo(highlightedPositions[0], Math.max(map.getZoom(), 14), { duration: 1 });
+    } else {
+      map.flyToBounds(L.latLngBounds(highlightedPositions), { padding: [64, 64], duration: 1 });
+    }
+  }, [highlightedPositions, map]);
 
   return null;
 };
@@ -118,6 +133,16 @@ interface CameraMapProps {
   // regular camera pins. Omitting this prop leaves every other consumer of
   // CameraMap byte-identical to before.
   sightings?: Detection[];
+  /** Reports which camera (if any) should currently show the shared
+   * CameraInfoOverlay -- the map page owns that overlay's actual rendering
+   * (and the circleName lookup it needs), this component only tells it
+   * which camera id is being hovered. */
+  onHoverChange?: (cameraId: number | null) => void;
+  /** Camera ids belonging to the tree's currently selected district/circle.
+   * Purely a "pan/zoom + visually distinguish" signal (see MapController's
+   * highlightedPositions effect and createCustomMarkerIcon's isHighlighted
+   * ring) -- never used to filter which markers render below. */
+  highlightedCameraIds?: Set<number>;
 }
 
 export const CameraMap: React.FC<CameraMapProps> = ({
@@ -125,6 +150,8 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   selectedCamera,
   onSelectCamera,
   sightings,
+  onHoverChange,
+  highlightedCameraIds,
 }) => {
   // Police station pins -- a separate data source from cameras (backend-registry's
   // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
@@ -170,20 +197,52 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     [sightingPoints]
   );
 
-  // Which marker's popup should render the live preview -- only ever one at a
-  // time, since only one marker can be hovered. The Leaflet marker instances
-  // themselves are refs (not React state) so opening/closing a popup on hover
-  // doesn't need a re-render just to call .openPopup()/.closePopup().
-  const [previewingCameraId, setPreviewingCameraId] = useState<number | null>(null);
+  // Stringified so the effect below (and this memo) don't refire just because
+  // the caller passed a new Set instance with the same members -- app/map/page.tsx
+  // recomputes highlightedCameraIds whenever its own state changes, which is more
+  // often than the actual membership does.
+  const highlightedIdsKey = useMemo(
+    () => (highlightedCameraIds ? Array.from(highlightedCameraIds).sort((a, b) => a - b).join(',') : ''),
+    [highlightedCameraIds]
+  );
+  // Positions (not just membership) drive MapController's bounds-fit effect,
+  // so highlightedIdsKey alone isn't enough to keep highlightedPositions'
+  // array reference stable -- a raw `cameras` dependency here re-triggers
+  // that effect (and yanks the viewport back via flyToBounds) on every real
+  // connectivity-status flip, since `cameras` gets a new array reference on
+  // every such flip (see CameraRegistryContext's updateCameraConnectivity).
+  // This key captures the lat/long of just the highlighted cameras, so it
+  // only changes when a highlighted camera's position (or the highlighted
+  // set itself) actually changes -- mirrors cameraIdKey/highlightedIdsKey above.
+  const highlightedPositionsKey = useMemo(() => {
+    if (!highlightedCameraIds || highlightedCameraIds.size === 0) return '';
+    return cameras
+      .filter((cam) => highlightedCameraIds.has(cam.id))
+      .map((cam) => `${cam.lat},${cam.long ?? 0}`)
+      .join('|');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameras, highlightedIdsKey]);
+  const highlightedPositions = useMemo(() => {
+    if (!highlightedPositionsKey) return [];
+    return highlightedPositionsKey.split('|').map((pair) => {
+      const [lat, long] = pair.split(',').map(Number);
+      return [lat, long] as [number, number];
+    });
+  }, [highlightedPositionsKey]);
+
+  // The Leaflet marker instances are refs (not React state) so this component's
+  // per-marker bookkeeping doesn't need a re-render just to look one up.
   const markerRefs = useRef<Map<number, L.Marker>>(new Map());
   // One stable ref-callback per camera id, reused across renders -- without this,
   // the inline arrow passed to each <Marker ref={...}> below is a brand-new function
   // every render, which makes React detach-then-reattach every marker's ref on every
   // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
   // background connectivity poller in CameraRegistryContext, whether or not this
-  // specific camera's own data changed). Built via useMemo (keyed on `cameras`) rather
+  // specific camera's own data changed). Built via useMemo (keyed on the stable set of
+  // camera ids, not the `cameras` array reference -- see below) rather
   // than a lazy ref-cache read during render -- the closures themselves only touch
   // markerRefs.current when React actually calls them (mount/unmount), never here.
+  const cameraIdKey = useMemo(() => cameras.map((cam) => cam.id).join(','), [cameras]);
   const markerRefCallbacks = useMemo(() => {
     const map = new Map<number, (marker: L.Marker | null) => void>();
     for (const cam of cameras) {
@@ -199,41 +258,58 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       });
     }
     return map;
-  }, [cameras]);
+    // Keyed on the stable set of camera ids (cameraIdKey), not the `cameras`
+    // array reference -- that reference still changes on every real
+    // connectivity-status flip (see updateCameraConnectivity in
+    // CameraRegistryContext.tsx), which previously forced every marker's ref
+    // to detach/reattach on every such flip. During a hover, if the 20s
+    // background health-poll flipped even one *other* camera's status, all
+    // marker refs churned and Leaflet closed whatever popup was open --
+    // this is the actual cause of the reported "hover flickers and shows
+    // nothing" bug. Keying on ids-only means a status-only update never
+    // touches marker refs; only cameras actually being added/removed does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraIdKey]);
   // One hover-grace controller per camera id, created lazily on first hover and
   // reused after -- mirrors the per-marker-ref cache above for the same reason
   // (this component manages every marker from one instance, so per-marker state
   // lives in a Map rather than one-hook-per-marker).
   const hoverControllers = useRef<Map<number, HoverGraceController>>(new Map());
+  // Tracks which camera id's onStart fired most recently, so a stale onEnd (its
+  // grace timer firing after the mouse has already moved to a *different*
+  // marker, which starts immediately) can't clobber that newer hover back to
+  // null -- same race the marker-ref memoization above exists to prevent, just
+  // on the reporting side instead of Leaflet's popup.
+  const activeHoverIdRef = useRef<number | null>(null);
   const getHoverController = useCallback((camId: number) => {
     let controller = hoverControllers.current.get(camId);
     if (!controller) {
       controller = createHoverGraceController(
         HOVER_PREVIEW_DELAY_MS,
         HOVER_PREVIEW_GRACE_MS,
-        () => setPreviewingCameraId(camId),
         () => {
-          setPreviewingCameraId((current) => (current === camId ? null : current));
-          markerRefs.current.get(camId)?.closePopup();
+          activeHoverIdRef.current = camId;
+          onHoverChange?.(camId);
+        },
+        () => {
+          if (activeHoverIdRef.current === camId) {
+            activeHoverIdRef.current = null;
+            onHoverChange?.(null);
+          }
         }
       );
       hoverControllers.current.set(camId, controller);
     }
     return controller;
-  }, []);
+  }, [onHoverChange]);
 
   const handleMarkerHoverStart = useCallback(
-    (camId: number) => {
-      markerRefs.current.get(camId)?.openPopup();
-      getHoverController(camId).hoverStart();
-    },
+    (camId: number) => getHoverController(camId).hoverStart(),
     [getHoverController]
   );
 
   const handleMarkerHoverEnd = useCallback(
-    (camId: number) => {
-      getHoverController(camId).hoverEnd();
-    },
+    (camId: number) => getHoverController(camId).hoverEnd(),
     [getHoverController]
   );
 
@@ -268,34 +344,34 @@ export const CameraMap: React.FC<CameraMapProps> = ({
         <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
         <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
 
-        <MapController selectedCamera={selectedCamera} routePositions={routePositions} />
+        <MapController
+          selectedCamera={selectedCamera}
+          routePositions={routePositions}
+          highlightedPositions={highlightedPositions}
+        />
 
         <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
+          {/* Unconditional over every camera passed in -- the tree's highlightedCameraIds
+              (below) only adds a visual ring and drives the pan/zoom effect above, it
+              never filters this list. Every camera in the caller's RBAC scope stays
+              visible and clickable regardless of what's selected in the tree. */}
           {cameras.map((cam: Camera) => {
             const longitude = cam.long ?? 0;
             const isSelected = selectedCamera?.id === cam.id;
             const isOnRoute = routeCameraIds.has(cam.id);
+            const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
             return (
               <Marker
                 key={cam.id}
                 ref={markerRefCallbacks.get(cam.id)}
                 position={[cam.lat, longitude]}
-                icon={createCustomMarkerIcon(cam, isSelected, isOnRoute)}
+                icon={createCustomMarkerIcon(cam, isSelected, isOnRoute, isHighlighted)}
                 eventHandlers={{
                   click: () => onSelectCamera(cam),
                   mouseover: () => handleMarkerHoverStart(cam.id),
                   mouseout: () => handleMarkerHoverEnd(cam.id),
                 }}
-              >
-                <Popup className="dark-gis-popup">
-                  <MapPopupCard
-                    camera={cam}
-                    onInspect={() => onSelectCamera(cam)}
-                    isPreviewing={previewingCameraId === cam.id}
-                    previewSrc={previewingCameraId === cam.id ? getCameraStreamUrl(cam).url : null}
-                  />
-                </Popup>
-              </Marker>
+              />
             );
           })}
         </MarkerClusterGroup>

@@ -20,6 +20,10 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    ChangePasswordRequest,
+    CircleCreate,
+    CircleOut,
+    CircleUpdate,
     CoverageTargetCreate,
     CoverageTargetOut,
     CoverageTargetUpdate,
@@ -31,8 +35,13 @@ from .schemas import (
     PoliceStationCreate,
     PoliceStationOut,
     PoliceStationUpdate,
+    PasswordResetBody,
+    PasswordResetRequestCreate,
+    PasswordResetRequestOut,
+    PasswordResetRequestReject,
     PostingCreate,
     PostingOut,
+    ProfilePhotoUpdate,
     ReportSummary,
     RolePermissionsOut,
     RolePermissionsUpdate,
@@ -45,11 +54,15 @@ from .services import (
     audit_service,
     auth_service,
     cameras_service,
+    circles_service,
     coverage_targets_service,
     gap_analysis_service,
+    password_reset_requests_service,
     police_stations_service,
     rbac_service,
+    recordings_service,
     reports_service,
+    snmp_service,
     synthetic_events_service,
 )
 
@@ -94,20 +107,126 @@ def login(body: LoginRequest):
 
 @app.get("/auth/me", response_model=MeResponse)
 def me(user=Depends(get_current_user)):
-    return {
+    response = {
         "badge_number": user.get("badge_number", user.get("sub", "")),
         "name": user.get("name", ""),
         "role": user.get("role", ""),
+        "rank": None,
+        "photo_url": None,
+        "last_login": None,
         "scope_type": user.get("scope_type", "platform"),
         "scope_value": user.get("scope_value"),
         "permissions": user.get("permissions", []),
     }
+    # A real RBAC-issued token's `sub` is the officer's numeric id (see
+    # auth_service.issue_token) -- a legacy hand-crafted token (role:
+    # "officer"/"admin", every existing test fixture and the demo JWT) has no
+    # matching officers row, so profile fields beyond the JWT's own claims
+    # just stay at their defaults above rather than erroring.
+    officer_id = user.get("sub")
+    if officer_id and str(officer_id).isdigit():
+        with get_conn() as conn:
+            officer = auth_service.get_officer_by_id(conn, int(officer_id))
+            if officer is not None:
+                response["rank"] = officer["rank"]
+                response["photo_url"] = officer["photo_url"]
+                response["last_login"] = auth_service.get_last_login(conn, officer["id"])
+    return response
+
+
+@app.post("/auth/change-password", status_code=204)
+def change_password(body: ChangePasswordRequest, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to update")
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, int(officer_id))
+        if officer is None or not auth_service.verify_password(body.current_password, officer["password_hash"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
+        audit_service.log(conn, officer["badge_number"], "change_password", "officer", officer["id"], badge_number=officer["badge_number"])
+
+
+@app.put("/auth/me/photo", response_model=MeResponse)
+def update_my_photo(body: ProfilePhotoUpdate, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to update")
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, int(officer_id))
+        if officer is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        auth_service.set_photo_url(conn, officer["id"], body.photo_url)
+        return me(user)
 
 
 @app.get("/admin/officers", response_model=list[OfficerOut])
 def list_officers(user=Depends(require_permission("manage_users_roles"))):
     with get_conn() as conn:
         return admin_service.list_officers(conn)
+
+
+# Deliberately gated on its own permission (reset_officer_passwords), not
+# manage_users_roles -- district_command holds manage_users_roles for
+# reassigning postings within its own district, but resetting an officer's
+# password bypasses their current credential entirely (no current_password
+# check, unlike self-service POST /auth/change-password) and must stay
+# platform-wide-admin-only by default, the same way manage_roles was split
+# out from manage_users_roles for role-definition edits.
+@app.post("/admin/officers/{officer_id}/reset-password", status_code=204)
+def reset_officer_password(
+    officer_id: int, body: PasswordResetBody, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, officer_id)
+        if officer is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reset_password", "officer", officer["id"])
+        if body.request_id is not None:
+            password_reset_requests_service.mark_reviewed(
+                conn, body.request_id, "approved", user.get("badge_number", user.get("sub"))
+            )
+
+
+@app.post("/auth/password-reset-requests", response_model=PasswordResetRequestOut, status_code=201)
+def request_password_reset(body: PasswordResetRequestCreate, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to request a reset for")
+    with get_conn() as conn:
+        created = password_reset_requests_service.create_request(conn, int(officer_id), body.reason)
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "request_password_reset", "officer", int(officer_id)
+        )
+        requests = password_reset_requests_service.list_requests(conn)
+        return next(r for r in requests if r["id"] == created["id"])
+
+
+@app.get("/admin/password-reset-requests", response_model=list[PasswordResetRequestOut])
+def list_password_reset_requests(
+    status: str | None = None, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        return password_reset_requests_service.list_requests(conn, status)
+
+
+@app.post("/admin/password-reset-requests/{request_id}/reject", response_model=PasswordResetRequestOut)
+def reject_password_reset_request(
+    request_id: int, body: PasswordResetRequestReject, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        updated = password_reset_requests_service.mark_reviewed(
+            conn, request_id, "rejected", user.get("badge_number", user.get("sub"))
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Request not found or already reviewed")
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "reject_password_reset", "officer", updated["officer_id"],
+            reason_code=body.reason,
+        )
+        requests = password_reset_requests_service.list_requests(conn)
+        return next(r for r in requests if r["id"] == request_id)
 
 
 @app.get("/admin/postings", response_model=list[PostingOut])
@@ -250,9 +369,27 @@ def get_camera(camera_id: int, user=Depends(get_current_user)):
         return camera
 
 
+def _validate_circle_for_dept(conn, circle_id: int | None, dept: str) -> None:
+    """Shared cross-district guard: a camera's circle_id (when set) must
+    belong to a circle whose district matches the camera's own dept --
+    otherwise the camera ends up "in" a circle that lives in a different
+    district, which is the exact corrupted state the global constraint
+    forbids. Raises HTTPException(404/400) same as the inline checks this
+    replaces in create_camera/update_camera; also used by the bulk-import
+    loop below."""
+    if circle_id is None:
+        return
+    circle = circles_service.get_circle(conn, circle_id)
+    if circle is None:
+        raise HTTPException(status_code=404, detail="Circle not found")
+    if circle["district"] != dept:
+        raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+
+
 @app.post("/cameras", response_model=CameraOut, status_code=201)
 def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
+        _validate_circle_for_dept(conn, camera.circle_id, camera.dept)
         created = cameras_service.create_camera(conn, camera.model_dump())
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
         return created
@@ -272,6 +409,12 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("ma
                     f"{'.'.join(str(loc) for loc in err['loc'])}: {err['msg']}" for err in e.errors()
                 )
                 results.append(CameraBulkResult(index=index, status="error", reason=reason))
+                continue
+
+            try:
+                _validate_circle_for_dept(conn, validated.circle_id, validated.dept)
+            except HTTPException as e:
+                results.append(CameraBulkResult(index=index, status="error", reason=str(e.detail)))
                 continue
 
             try:
@@ -354,6 +497,10 @@ def gap_analysis_report(
 def list_audit_logs(
     badge_number: str | None = None,
     resource_type: str | None = None,
+    category: str | None = None,
+    camera_id: int | None = None,
+    camera_district: str | None = None,
+    camera_circle_id: int | None = None,
     date_from: datetime | None = Query(None, alias="from"),
     date_to: datetime | None = Query(None, alias="to"),
     cursor: int | None = None,
@@ -363,9 +510,18 @@ def list_audit_logs(
     district = user.get("scope_value") if user.get("scope_type") == "district" else None
     with get_conn() as conn:
         logs, next_cursor = audit_logs_service.list_logs(
-            conn, badge_number, resource_type, date_from, date_to, district, cursor, limit
+            conn, badge_number, resource_type, category, camera_id, camera_district, camera_circle_id,
+            date_from, date_to, district, cursor, limit,
         )
         return {"logs": logs, "next_cursor": next_cursor}
+
+
+@app.get("/audit-logs/categories")
+def list_audit_log_categories(user=Depends(require_permission("view_audit_logs"))):
+    """Backs the category filter chips -- keeps the frontend from having to
+    duplicate the action/resource_type -> category mapping (single source of
+    truth stays audit_logs_service.CATEGORIES)."""
+    return {"categories": list(audit_logs_service.CATEGORIES.keys()) + ["other"]}
 
 
 @app.get("/police-stations", response_model=list[PoliceStationOut])
@@ -410,6 +566,80 @@ def delete_police_station(station_id: int, user=Depends(require_permission("mana
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "police_station", station_id)
 
 
+def _guard_circle_district(user: dict, district: str):
+    """District-scoped users may only create/edit/delete circles in their
+    own district -- same cross-district guard create_posting already
+    applies for postings."""
+    if user.get("scope_type") == "district" and district != user.get("scope_value"):
+        raise HTTPException(status_code=403, detail="Cannot manage circles outside your own district")
+
+
+@app.get("/circles", response_model=list[CircleOut])
+def list_circles(user=Depends(get_current_user)):
+    with get_conn() as conn:
+        district = user.get("scope_value") if user.get("scope_type") == "district" else None
+        return circles_service.list_circles(conn, district)
+
+
+@app.get("/circles/{circle_id}", response_model=CircleOut)
+def get_circle(circle_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        circle = circles_service.get_circle(conn, circle_id)
+        if circle is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        return circle
+
+
+@app.post("/circles", response_model=CircleOut, status_code=201)
+def create_circle(body: CircleCreate, user=Depends(require_permission("manage_circles"))):
+    _guard_circle_district(user, body.district)
+    with get_conn() as conn:
+        try:
+            created = circles_service.create_circle(conn, body.model_dump())
+        except circles_service.DuplicateCircleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "circle", created["id"])
+        return created
+
+
+@app.put("/circles/{circle_id}", response_model=CircleOut)
+def update_circle(circle_id: int, body: CircleUpdate, user=Depends(require_permission("manage_circles"))):
+    with get_conn() as conn:
+        existing = circles_service.get_circle(conn, circle_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        _guard_circle_district(user, existing["district"])
+        if body.district is not None:
+            _guard_circle_district(user, body.district)
+            if body.district != existing["district"] and circles_service.camera_count_for_circle(conn, circle_id) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot change district of a circle that still has cameras assigned",
+                )
+        try:
+            updated = circles_service.update_circle(conn, circle_id, body.model_dump(exclude_unset=True))
+        except circles_service.DuplicateCircleError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "circle", circle_id)
+        return updated
+
+
+@app.delete("/circles/{circle_id}", status_code=204)
+def delete_circle(circle_id: int, user=Depends(require_permission("manage_circles"))):
+    with get_conn() as conn:
+        existing = circles_service.get_circle(conn, circle_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        _guard_circle_district(user, existing["district"])
+        try:
+            deleted = circles_service.delete_circle(conn, circle_id)
+        except circles_service.CircleInUseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Circle not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete", "circle", circle_id)
+
+
 @app.get("/reports/summary", response_model=ReportSummary)
 def reports_summary(user=Depends(get_current_user)):
     with get_conn() as conn:
@@ -421,6 +651,14 @@ def reports_summary(user=Depends(get_current_user)):
 def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         fields = camera.model_dump(exclude_unset=True)
+        if "circle_id" in fields or "dept" in fields:
+            existing = cameras_service.get_camera(conn, camera_id)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="Camera not found")
+            effective_circle_id = fields.get("circle_id", existing.get("circle_id"))
+            effective_dept = fields.get("dept", existing["dept"])
+            _validate_circle_for_dept(conn, effective_circle_id, effective_dept)
+
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:
             raise HTTPException(status_code=404, detail="Camera not found")
@@ -446,6 +684,30 @@ def camera_uptime(camera_id: int, user=Depends(get_current_user)):
             "current_status": camera["connectivity_status"],
             "windows": windows,
         }
+
+
+@app.get("/snmp/devices")
+def snmp_devices(user=Depends(get_current_user)):
+    return snmp_service.get_devices()
+
+
+@app.get("/cameras/{camera_id}/health")
+def camera_snmp_health(camera_id: int, user=Depends(get_current_user)):
+    device = snmp_service.get_device_for_camera(camera_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="No SNMP health data available for this camera")
+    return device
+
+
+@app.get("/cameras/{camera_id}/recordings")
+def camera_recordings(camera_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        camera = cameras_service.get_camera(conn, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        if not camera["stream_id"]:
+            return {"available": False, "segments": []}
+        return recordings_service.list_recordings(camera["stream_id"])
 
 
 @app.delete("/cameras/{camera_id}", status_code=204)

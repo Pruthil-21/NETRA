@@ -59,3 +59,20 @@ def test_control_room_operator_cannot_edit_watchlist_or_export():
     assert perms == {"view_live_feeds", "acknowledge_alerts"}
     assert "edit_watchlist" not in perms
     assert "export_data" not in perms
+
+
+def test_valid_permissions_covers_every_seeded_permission():
+    """Regression guard: rbac_service.VALID_PERMISSIONS must contain every
+    permission scripts/seed_rbac.py grants to any role, or a super_admin
+    editing that role's permissions via PUT /admin/roles/{name}/permissions
+    would be rejected as "unknown permission" for a permission the role
+    already has in the seeded database."""
+    import sys
+    sys.path.insert(0, "scripts")
+    from seed_rbac import PERMISSIONS
+
+    from app.services.rbac_service import VALID_PERMISSIONS
+
+    all_seeded = {perm for perms in PERMISSIONS.values() for perm in perms}
+    missing = all_seeded - VALID_PERMISSIONS
+    assert not missing, f"VALID_PERMISSIONS is missing: {missing}"
