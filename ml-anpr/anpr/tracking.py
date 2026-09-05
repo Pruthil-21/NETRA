@@ -258,6 +258,30 @@ class VehicleTracker:
         self.confirmed_plates.add(plate)
         self.confirmed_by_tier[note] = self.confirmed_by_tier.get(note, 0) + 1
 
+    def already_confirmed_box(self, box):
+        """Read-only lookup for detection.detect_plate_from_frame's
+        confirm-threshold gating (Session 34): does `box` match an
+        existing track whose PlateConfirmationTracker has already
+        confirmed at least one plate? Uses the exact same motion-
+        predicted IoU logic as update() itself (same _predict_box(),
+        same IOU_MATCH_THRESHOLD), so this can never disagree with what
+        update() would go on to match this box to -- callers use this
+        purely to decide whether OCR is worth running at all, never to
+        change how the box is actually tracked.
+
+        A confirmed track still needs its position updated every frame
+        (motion prediction depends on that), so this is deliberately
+        just an OCR-skip signal, not a "stop tracking" signal -- the
+        caller still passes the box through to update() as normal
+        (typically with plate_number=None, which update() already
+        handles as "no read this frame," no tracking.py change needed
+        for that part).
+        """
+        return any(
+            t["tracker"].confirmed and _iou(_predict_box(t), box) >= self.IOU_MATCH_THRESHOLD
+            for t in self.tracks
+        )
+
     def update(self, detections, raw_frame=None):
         """
         detections: detection.detect_plate_from_frame's list output for
