@@ -390,7 +390,7 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     }
 
 
-def detect_plate_from_frame(infer_frame, raw_frame):
+def detect_plate_from_frame(infer_frame, raw_frame, tracker=None):
     """
     Runs YOLO on the small infer_frame (fast), but crops the plate
     region(s) from the full-resolution raw_frame for OCR (maximum
@@ -406,7 +406,24 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     Each result dict includes a "box" key ((x1,y1,x2,y2) in raw_frame
     coordinates) so stateful callers (see tracking.VehicleTracker) can
     associate detections into per-vehicle tracks across frames -- this
-    function itself stays stateless and per-frame.
+    function itself stays stateless and per-frame, EXCEPT for the
+    optional `tracker` argument below.
+
+    tracker: optional tracking.VehicleTracker for this same camera
+    stream. When given, a box that already matches an existing,
+    already-confirmed track (tracker.already_confirmed_box()) skips the
+    expensive per-box pipeline entirely (crop, enhance, deblur, three
+    OCR passes, the plate-detector model) -- once PlateConfirmationTracker
+    has already voted a plate confirmed for that vehicle, further frames
+    can't add anything a caller reads differently, only cost. Measured
+    real per-frame latency (Session 33/34's solo GPU test): ~600ms avg,
+    ~1.6s p95, dominated by exactly these per-box passes, with the GPU
+    itself sitting at 21% utilization the whole time -- the cost is the
+    number of sequential steps per box, not raw compute, so cutting
+    steps for boxes that don't need any more evidence is the direct
+    fix. Backward compatible: omitting `tracker` (the default) reproduces
+    the exact old behavior, unconditionally OCR'ing every box -- existing
+    callers that don't pass a tracker are completely unaffected.
 
     Returns an empty list if no qualifying vehicle box was found at all.
     """
@@ -487,7 +504,16 @@ def detect_plate_from_frame(infer_frame, raw_frame):
     if not boxes:
         return [{"plate_number": None, "confidence": 0, "note": "No vehicle detected", "box": None}]
 
-    return [_read_plate_from_box(box, raw_frame, raw_h, frame_is_dark) for box in boxes]
+    results_out = []
+    for box in boxes:
+        if tracker is not None and tracker.already_confirmed_box(box):
+            results_out.append({
+                "plate_number": None, "confidence": 0,
+                "note": "Skipped - track already confirmed", "box": box,
+            })
+        else:
+            results_out.append(_read_plate_from_box(box, raw_frame, raw_h, frame_is_dark))
+    return results_out
 
 
 def detect_plate(image_path):

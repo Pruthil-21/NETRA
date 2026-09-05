@@ -59,7 +59,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
             if frame_count % process_every_n_frames != 0:
                 continue
 
-            results = detect_plate_from_frame(infer_frame, raw_frame)
+            results = detect_plate_from_frame(infer_frame, raw_frame, tracker=tracker)
 
             for confirmed in tracker.update(results, raw_frame=raw_frame) + tracker.pop_ready_vlm_confirmations():
                 event = {
@@ -118,7 +118,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
         if frame_count % process_every_n_frames != 0:
             continue
 
-        results = detect_plate_from_frame(frame, frame)
+        results = detect_plate_from_frame(frame, frame, tracker=tracker)
         for result in results:
             if result.get("plate_number"):
                 print(f"[reading, frame {frame_count}] {result}")
@@ -247,7 +247,7 @@ def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_th
             if frame_count % process_every_n_frames != 0:
                 continue
 
-            results = detect_plate_from_frame(frame, frame)
+            results = detect_plate_from_frame(frame, frame, tracker=tracker)
 
             for confirmed in tracker.update(results, raw_frame=frame) + tracker.pop_ready_vlm_confirmations():
                 event = {
