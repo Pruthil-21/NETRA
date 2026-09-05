@@ -4663,3 +4663,93 @@ what's in this log's own tables, cross-checked, not just trusted.
   session's own work -- a genuinely forward-looking workflow would log
   a new MLflow run automatically at the end of `reeval.py`-style
   scripts going forward, not done here.
+
+# Session 36 -- confirm-threshold gating: skip the expensive per-box pipeline once a track is already confirmed
+
+Real GPU-server diagnostics (solo 1-camera test, isolated from the
+6-camera stress test's contention) found the per-frame cost itself is
+the bottleneck, not GPU or CPU saturation: ~600ms avg inference latency
+per frame, but GPU utilization only 21% average and CPU only 15% --
+neither resource maxed out. Pointed at architecture, not compute: too
+many small sequential steps per vehicle box (crop, enhance, deblur
+check, three separate OCR subprocess round-trips, the plate-detector's
+own YOLO pass), each paying real dispatch/IPC overhead, adding up
+despite no single resource being saturated.
+
+## The fix
+
+`detect_plate_from_frame(infer_frame, raw_frame, tracker=None)` --
+new optional `tracker` argument. When given, a box that already matches
+an existing track whose `PlateConfirmationTracker` has already
+confirmed at least one plate skips the entire expensive per-box
+pipeline (`_read_plate_from_box()` -- crop, enhance, deblur, three OCR
+passes, the plate-detector model) and returns a placeholder result
+instead. Once a track is confirmed, further OCR evidence can't change
+anything a caller reads differently -- only cost. Omitting `tracker`
+(the default) reproduces the exact old behavior byte-for-byte; the four
+existing callers (`inference_worker.py`'s `_worker_loop`,
+`streaming.py`'s three entry points) were updated to pass their
+already-constructed tracker in.
+
+`VehicleTracker.already_confirmed_box(box)`: new read-only method, uses
+the *exact* same motion-predicted IoU matching logic `update()` itself
+uses (same `_predict_box()`, same `IOU_MATCH_THRESHOLD`) so this can
+never disagree with what `update()` would go on to match the box to.
+Deliberately just an OCR-skip signal, not a tracking change -- the box
+still flows through to `update()` as normal afterward (with
+`plate_number=None`, which `update()` already handles as "no read this
+frame," no change needed there) so position/motion tracking keeps
+working exactly as before even for gated boxes.
+
+## Verification: real A/B on the same video, not reasoned about
+
+Same-video, same-frame-range A/B (`confirm_gating_ab_test.py`,
+scratchpad): 150 processed frames (161 APC Circle, same segment
+Session 34's tracking A/B used), full `detect_plate_from_frame()` +
+`tracker.update()` loop run twice -- once with `tracker=None` (old
+behavior), once with `tracker=tracker` (gated) -- against the identical
+frame sequence.
+
+| | elapsed | vehicles_tracked | confirmed plates |
+|---|---|---|---|
+| Without gating (old) | 135.8s | 17 | 4 (`GJ07DE4937`, `GJ23CJ8`, `GJ99OS8043`, `MH12MW9177`) |
+| With gating (new) | 33.7s | 17 | identical 4 |
+
+**4.03x speedup, identical confirmed-plate output** -- same plates, same
+tiers, same vehicle count. On this real segment, gating cost nothing
+detectable while cutting wall-clock time by 4x.
+
+## Known, deliberate tradeoff (not hidden)
+
+Once a track confirms, its evidence is frozen -- the old behavior kept
+re-reading every subsequent frame, so a track's confirmed plate *could*
+in principle still be upgraded by additional votes after the first
+confirmation (e.g. a low-confidence early confirmation later reinforced
+by a clearer read). Gating trades that theoretical upside away for the
+real, measured 4x speedup. Not observed to matter on this test segment
+(identical output either way), but it's a real behavior change worth
+stating plainly, not a strict improvement in every possible case.
+
+## Verification (regression)
+
+`tests/test_pipeline_smoke.py` (3/3, doesn't pass a tracker -- exercises
+the default/backward-compatible path unchanged), `tests/test_reconfirm_
+cooldown.py` (OK, doesn't touch detect_plate_from_frame at all), and
+`tests/test_pipeline_mp_smoke.py` (real process-based pipeline against
+dashcam_trimmed.mp4, real confirmed plates `HR26EO6477`/`HR38AC7748`,
+same known-good plates as prior runs of this test) -- all re-run after
+this change.
+
+## What's not done / open
+
+- Only one 150-frame real segment A/B tested -- same caveat Session 34's
+  tracking fix noted for the same reason (real result, single segment).
+- The deliberate tradeoff above (frozen evidence after first
+  confirmation) hasn't been stress-tested against a case where the
+  *first* confirmation is wrong and more evidence would have corrected
+  it -- worth watching for in future real-footage evaluations, not
+  proactively fixed without that evidence.
+- Doesn't reduce cost for boxes that are new or not yet confirmed (the
+  common case early in any track's life) -- this specifically targets
+  sustained, long-running streams where confirmed tracks accumulate
+  over time, not short clips with mostly-fresh vehicles.

@@ -72,12 +72,18 @@ def _worker_loop(frame_queue, event_queue, stats_queue, stop_event, confirm_thre
             continue
 
         t0 = time.monotonic()
-        results = detect_plate_from_frame(frame, frame)
         tracker = trackers.get(camera_id)
         if tracker is None:
             tracker = VehicleTracker(window_size=window_size, confirm_threshold=confirm_threshold)
             trackers[camera_id] = tracker
 
+        # Passing tracker here lets detect_plate_from_frame skip the
+        # expensive per-box OCR pipeline for boxes that already match an
+        # already-confirmed track (Session 34) -- see its own docstring
+        # and VehicleTracker.already_confirmed_box() for why this is
+        # safe (same matching logic update() itself uses, position
+        # tracking is unaffected either way).
+        results = detect_plate_from_frame(frame, frame, tracker=tracker)
         confirmed = tracker.update(results, raw_frame=frame) + tracker.pop_ready_vlm_confirmations()
 
         try:
