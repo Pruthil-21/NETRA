@@ -75,6 +75,77 @@ describe('AdminPage', () => {
     await waitFor(() => expect(postSpy).toHaveBeenCalled());
   });
 
+  it('lets a super admin reset an officer\'s password', async () => {
+    const resetSpy = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles', 'reset_officer_passwords'] }) });
+        }
+        if (url.includes('/reset-password')) return resetSpy(url, opts);
+        if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
+    fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'new-secure-password-1' } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'new-secure-password-1' } });
+    fireEvent.click(screen.getByRole('button', { name: /confirm reset/i }));
+
+    await waitFor(() => expect(resetSpy).toHaveBeenCalled());
+    const [, opts] = resetSpy.mock.calls[0];
+    expect(JSON.parse(opts.body)).toEqual({ new_password: 'new-secure-password-1' });
+    expect(await screen.findByText(/password reset/i)).toBeInTheDocument();
+  });
+
+  it('rejects a reset when the two password fields do not match, without calling the API', async () => {
+    const resetSpy = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles', 'reset_officer_passwords'] }) });
+        }
+        if (url.includes('/reset-password')) return resetSpy();
+        if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
+    fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'password-one-here' } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'password-two-here' } });
+    fireEvent.click(screen.getByRole('button', { name: /confirm reset/i }));
+
+    expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
+    expect(resetSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not show the Reset Password button for a district command (manage_users_roles only)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
+        }
+        if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /reset password/i })).not.toBeInTheDocument();
+  });
+
   it('shows only the Audit Log section for an Auditor, never the officers list or its fetch', async () => {
     const officersFetch = vi.fn();
     vi.stubGlobal(

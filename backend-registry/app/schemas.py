@@ -110,6 +110,10 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class PasswordResetRequest(BaseModel):
+    new_password: str
+
+
 class ProfilePhotoUpdate(BaseModel):
     photo_url: Optional[str] = None
 

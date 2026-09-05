@@ -12,6 +12,7 @@ import {
   MapPin,
   ShieldCheck,
   Save,
+  KeyRound,
 } from 'lucide-react';
 import { adminService, OfficerOut, RolePermissionsOut } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -36,6 +37,7 @@ const ALL_PERMISSIONS = [
   'manage_roles',
   'manage_stations',
   'manage_circles',
+  'reset_officer_passwords',
 ];
 
 // Humanized labels shown alongside each checkbox for readability -- the
@@ -54,6 +56,7 @@ const PERMISSION_LABELS: Record<string, string> = {
   manage_roles: 'Manage Roles',
   manage_stations: 'Manage Police Stations',
   manage_circles: 'Manage Circles',
+  reset_officer_passwords: "Reset Officers' Passwords",
 };
 
 // Subtle per-role accent so a district commander can tell postings apart at a
@@ -292,6 +295,14 @@ export default function AdminPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [confirmedFor, setConfirmedFor] = useState<number | null>(null);
 
+  const canResetPasswords = permissions.includes('reset_officer_passwords');
+  const [resettingId, setResettingId] = useState<number | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetConfirmedFor, setResetConfirmedFor] = useState<number | null>(null);
+
   const load = () => {
     setLoading(true);
     setError(null);
@@ -344,6 +355,45 @@ export default function AdminPage() {
       setSubmitError(err instanceof Error ? err.message : 'Failed to reassign posting');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const openResetPassword = (officerId: number) => {
+    setResettingId(officerId);
+    setResetError(null);
+    setResetConfirmedFor(null);
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const closeResetPassword = () => {
+    setResettingId(null);
+    setResetError(null);
+    setNewPassword('');
+    setConfirmPassword('');
+  };
+
+  const handleConfirmResetPassword = async (officerId: number) => {
+    if (newPassword.length < 8) {
+      setResetError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setResetError('Passwords do not match.');
+      return;
+    }
+    setResetSubmitting(true);
+    setResetError(null);
+    try {
+      await adminService.resetOfficerPassword(officerId, newPassword);
+      setResettingId(null);
+      setNewPassword('');
+      setConfirmPassword('');
+      setResetConfirmedFor(officerId);
+    } catch (err) {
+      setResetError(err instanceof Error ? err.message : 'Failed to reset password');
+    } finally {
+      setResetSubmitting(false);
     }
   };
 
@@ -452,6 +502,16 @@ export default function AdminPage() {
                         <ArrowLeftRight size={12} />
                         Reassign
                       </button>
+                      {canResetPasswords && (
+                        <button
+                          type="button"
+                          onClick={() => openResetPassword(officer.id)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-white hover:border-slate-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
+                        >
+                          <KeyRound size={12} />
+                          Reset Password
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -459,6 +519,95 @@ export default function AdminPage() {
                     <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
                       <CheckCircle2 size={14} />
                       Posting reassigned successfully.
+                    </div>
+                  )}
+
+                  {resetConfirmedFor === officer.id && (
+                    <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
+                      <CheckCircle2 size={14} />
+                      Password reset. Share the new password with the officer through a secure channel.
+                    </div>
+                  )}
+
+                  {resettingId === officer.id && (
+                    <div className="mt-4 pt-4 border-t border-line">
+                      <div className="rounded-md border border-line bg-panel-raised/60 p-3.5">
+                        <div className="flex items-center justify-between mb-3">
+                          <p className="text-[10px] font-semibold tracking-wider uppercase text-slate-400">
+                            Reset Password
+                          </p>
+                          <button
+                            type="button"
+                            onClick={closeResetPassword}
+                            aria-label="Cancel password reset"
+                            className="text-slate-500 hover:text-white p-1 -m-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-3">
+                          <div className="flex-1">
+                            <label
+                              htmlFor={`new-password-${officer.id}`}
+                              className="block text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1"
+                            >
+                              New Password
+                            </label>
+                            <input
+                              id={`new-password-${officer.id}`}
+                              type="password"
+                              value={newPassword}
+                              onChange={(e) => setNewPassword(e.target.value)}
+                              placeholder="At least 8 characters"
+                              className="w-full bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <label
+                              htmlFor={`confirm-password-${officer.id}`}
+                              className="block text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1"
+                            >
+                              Confirm Password
+                            </label>
+                            <input
+                              id={`confirm-password-${officer.id}`}
+                              type="password"
+                              value={confirmPassword}
+                              onChange={(e) => setConfirmPassword(e.target.value)}
+                              placeholder="Re-type the new password"
+                              className="w-full bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+                            />
+                          </div>
+                        </div>
+
+                        {resetError && (
+                          <p className="mt-3 text-[11px] text-signal-red flex items-center gap-1.5">
+                            <AlertTriangle size={12} className="shrink-0" />
+                            {resetError}
+                          </p>
+                        )}
+
+                        <div className="flex items-center gap-2 mt-3.5">
+                          <button
+                            type="button"
+                            disabled={resetSubmitting}
+                            onClick={() => handleConfirmResetPassword(officer.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-command hover:bg-command-dim text-white rounded-md uppercase tracking-wide transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
+                          >
+                            {resetSubmitting && <Loader2 size={12} className="animate-spin" />}
+                            Confirm Reset
+                          </button>
+                          <button
+                            type="button"
+                            disabled={resetSubmitting}
+                            onClick={closeResetPassword}
+                            className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white rounded-md transition disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
 

@@ -35,6 +35,7 @@ from .schemas import (
     PoliceStationCreate,
     PoliceStationOut,
     PoliceStationUpdate,
+    PasswordResetRequest,
     PostingCreate,
     PostingOut,
     ProfilePhotoUpdate,
@@ -159,6 +160,25 @@ def update_my_photo(body: ProfilePhotoUpdate, user=Depends(get_current_user)):
 def list_officers(user=Depends(require_permission("manage_users_roles"))):
     with get_conn() as conn:
         return admin_service.list_officers(conn)
+
+
+# Deliberately gated on its own permission (reset_officer_passwords), not
+# manage_users_roles -- district_command holds manage_users_roles for
+# reassigning postings within its own district, but resetting an officer's
+# password bypasses their current credential entirely (no current_password
+# check, unlike self-service POST /auth/change-password) and must stay
+# platform-wide-admin-only by default, the same way manage_roles was split
+# out from manage_users_roles for role-definition edits.
+@app.post("/admin/officers/{officer_id}/reset-password", status_code=204)
+def reset_officer_password(
+    officer_id: int, body: PasswordResetRequest, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, officer_id)
+        if officer is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reset_password", "officer", officer["id"])
 
 
 @app.get("/admin/postings", response_model=list[PostingOut])

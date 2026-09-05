@@ -61,6 +61,15 @@ export const adminService = {
     return res.json();
   },
 
+  async resetOfficerPassword(officerId: number, newPassword: string): Promise<void> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/officers/${officerId}/reset-password`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ new_password: newPassword }),
+    });
+    if (!res.ok) throw new Error(`Failed to reset password: HTTP ${res.status}`);
+  },
+
   async reassignPosting(body: PostingCreateBody): Promise<PostingSummary> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/postings`, {
       method: 'POST',

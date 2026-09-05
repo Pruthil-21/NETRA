@@ -99,7 +99,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // link on manage_users_roles alone left them with no way to reach the one
   // section they're actually meant to use.
   const canSeeAdmin =
-    has('manage_users_roles') || has('manage_roles') || has('manage_circles') || has('view_audit_logs');
+    has('manage_users_roles') ||
+    has('manage_roles') ||
+    has('manage_circles') ||
+    has('view_audit_logs') ||
+    has('reset_officer_passwords');
   const navItems = canSeeAdmin
     ? [...BASE_NAV_ITEMS, { href: '/admin', label: 'Admin', icon: Shield }]
     : BASE_NAV_ITEMS;
