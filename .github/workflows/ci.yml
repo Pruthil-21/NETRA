@@ -96,8 +96,18 @@ jobs:
         run: ruff check .
       - name: Apply schema (if any .sql files exist)
         run: |
+          # backend-watchlist's tests query tables backend-registry owns
+          # (cameras, police_stations, coverage_targets, edge_nodes) --
+          # both services share one physical Postgres instance in real
+          # deployments (see alerts_service.py's own comments on this), so
+          # CI needs backend-registry's schema applied here too, before
+          # this service's own.
+          export PGPASSWORD=postgres
+          if [ -f ../backend-registry/app/schema.sql ]; then
+            echo "Applying ../backend-registry/app/schema.sql"
+            psql -h localhost -U postgres -d netra_test -f ../backend-registry/app/schema.sql
+          fi
           if [ -n "$(find . -iname '*.sql' 2>/dev/null)" ]; then
-            export PGPASSWORD=postgres
             for f in $(find . -iname '*.sql' | sort); do
               echo "Applying $f"
               psql -h localhost -U postgres -d netra_test -f "$f"

@@ -11,7 +11,7 @@ def _direct_conn():
     return conn
 
 
-def _seed_watchlist_and_detection(client, internal_headers):
+def _seed_watchlist_and_detection(client, internal_headers, camera_id=1):
     plate = f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -22,7 +22,7 @@ def _seed_watchlist_and_detection(client, internal_headers):
 
     detect_resp = client.post(
         "/detections",
-        json={"camera_id": 1, "plate_number": plate},
+        json={"camera_id": camera_id, "plate_number": plate},
         headers=internal_headers,
     )
     assert detect_resp.status_code == 201
@@ -101,10 +101,22 @@ def test_require_role_accepts_rbac_role_names(client):
         assert resp.status_code == 200, f"role {rbac_role} was rejected"
 
 
-def test_alert_includes_nearest_station(client, internal_headers):
+def test_alert_includes_nearest_station(client, internal_headers, scoping_test_cameras):
+    # Camera id=1 isn't guaranteed to exist (e.g. a fresh CI database has
+    # the schema but no seed data) -- create our own camera at a known
+    # location instead of assuming one is already there.
     with psycopg2.connect(settings.database_url) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS long FROM cameras WHERE id = 1")
+        cur.execute(
+            "INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days) "
+            "VALUES ('Test Nearest-Station Camera', 'Traffic Police', "
+            "ST_SetSRID(ST_MakePoint(72.6100, 23.1100), 4326), 'Bullet', 'Test Rig', 'Cloud', 0) "
+            "RETURNING id, ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS long",
+        )
         cam = cur.fetchone()
+        conn.commit()
+    scoping_test_cameras.append(cam["id"])
+
+    with psycopg2.connect(settings.database_url) as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "INSERT INTO police_stations (name, location, district) "
             "VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'Traffic Police') RETURNING id",
@@ -114,13 +126,9 @@ def test_alert_includes_nearest_station(client, internal_headers):
         conn.commit()
 
     try:
-        # _seed_watchlist_and_detection (defined above) already produces a
-        # real matched alert against camera_id 1 -- the same camera used
-        # above -- via the watchlist-insert + POST /detections flow this
-        # file's other tests exercise, so it's reused here rather than
-        # duplicating that flow with a POST /watchlist call this file
-        # doesn't otherwise use.
-        alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+        # _seed_watchlist_and_detection (defined above) produces a real
+        # matched alert against the camera created above.
+        alert, _ = _seed_watchlist_and_detection(client, internal_headers, camera_id=cam["id"])
         assert alert["nearest_station"]["name"] == "Test Nearby Station"
         assert alert["nearest_station"]["distance_meters"] < 50
     finally:

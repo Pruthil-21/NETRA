@@ -53,7 +53,7 @@ class AlertsConnectionManager:
             self._connections.pop(ws, None)
             try:
                 await ws.close()
-            except Exception as exc:  # noqa: BLE001 -- best-effort close on an already-dead connection; must not block evicting the rest
+            except Exception as exc:  # noqa: BLE001 -- best-effort; a failure to close one dead connection must not block evicting the rest
                 logger.debug(f"failed to close already-dead connection: {exc!r}")
 
     def broadcast_sync(self, alert: dict, camera_district: str | None) -> None:

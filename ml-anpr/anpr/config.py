@@ -67,7 +67,16 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # detect_plate.py's own test invocation still uses "camera16" and will
 # now correctly skip the network call instead of silently misreporting).
 # ---------------------------------------------------------------------------
-DETECTION_API_URL = "http://localhost:8001/detections"
+# P6's real backend-watchlist gateway, confirmed live and working: bare
+# POST /detections (no prefix needed -- an earlier gateway config gap
+# that made it look like /watchlist/detections was required has been
+# fixed by P6), server-side event_id idempotency verified working,
+# INTERNAL_KEY below verified correct against this same host. This is a
+# Cloudflare quick tunnel, though -- it can change if P6's container
+# restarts, same caveat as any other trycloudflare.com URL in this
+# project; if calls start failing, ask P6 for a fresh URL before
+# assuming anything else broke.
+DETECTION_API_URL = "https://receiving-intl-mothers-santa.trycloudflare.com/detections"
 INTERNAL_KEY = "3fdcd2e3b5fe0ecacd29d0b011c6cca74caddcbae5196a6b"
 CAMERA_ID_MAP = {
     "direct-cam01": 43,
