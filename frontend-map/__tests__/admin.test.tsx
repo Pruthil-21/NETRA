@@ -113,7 +113,7 @@ describe('AdminPage', () => {
     await waitFor(() => expect(resetSpy).toHaveBeenCalled());
     const [, opts] = resetSpy.mock.calls[0];
     expect(JSON.parse(opts.body)).toEqual({ new_password: 'new-secure-password-1' });
-    expect(await screen.findByText(/password reset/i)).toBeInTheDocument();
+    expect(await screen.findByText(/share the new password/i)).toBeInTheDocument();
   });
 
   it('rejects a reset when the two password fields do not match, without calling the API', async () => {

@@ -56,6 +56,27 @@ describe('ProfilePage', () => {
     expect(BASE_PERMISSIONS.refetch).toHaveBeenCalled();
   });
 
+  it('submits a password reset request with the typed reason, and shows a confirmation', async () => {
+    const requestSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: 1, status: 'pending' }) });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, opts?: RequestInit) => requestSpy(_url, opts))
+    );
+    sessionStorage.setItem('netra_session_token', 'fake-jwt-token');
+
+    render(<ProfilePage />);
+    fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: 'Forgot after leave' } });
+    fireEvent.click(screen.getByRole('button', { name: /request password reset/i }));
+
+    await waitFor(() => expect(requestSpy).toHaveBeenCalled());
+    const [url, opts] = requestSpy.mock.calls[0];
+    expect(url).toContain('/auth/password-reset-requests');
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ reason: 'Forgot after leave' });
+    expect(await screen.findByText(/request submitted/i)).toBeInTheDocument();
+
+    vi.unstubAllGlobals();
+  });
+
   it('rejects a change-password submission when new password is too short', async () => {
     render(<ProfilePage />);
     fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'oldpass123' } });

@@ -25,12 +25,14 @@ describe('Role Permissions section (super_admin)', () => {
 
   it('shows the role and its current permissions', async () => {
     render(<AdminPage />);
-    expect(await screen.findByText('Role Permissions')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /role permissions/i }));
+    expect(await screen.findByText(/permitted to do, platform-wide/i)).toBeInTheDocument();
     expect(screen.getByText('Station Officer')).toBeInTheDocument();
   });
 
   it('includes manage_stations and manage_circles in the permission checkbox grid', async () => {
     render(<AdminPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /role permissions/i }));
     expect(await screen.findByLabelText('manage_stations')).toBeInTheDocument();
     expect(screen.getByText('Manage Police Stations')).toBeInTheDocument();
     expect(screen.getByLabelText('manage_circles')).toBeInTheDocument();
@@ -39,6 +41,7 @@ describe('Role Permissions section (super_admin)', () => {
 
   it('saves an updated permission set for the role, with the typed reason code', async () => {
     render(<AdminPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /role permissions/i }));
     const checkbox = await screen.findByLabelText('manage_cameras');
     fireEvent.click(checkbox);
     fireEvent.change(screen.getByLabelText(/reason code/i), { target: { value: 'SCOPE_REDUCTION' } });
@@ -54,6 +57,7 @@ describe('Role Permissions section (super_admin)', () => {
 
   it('omits the reason code when the field is left blank', async () => {
     render(<AdminPage />);
+    fireEvent.click(await screen.findByRole('button', { name: /role permissions/i }));
     const checkbox = await screen.findByLabelText('manage_cameras');
     fireEvent.click(checkbox);
     fireEvent.click(screen.getByRole('button', { name: /save/i }));

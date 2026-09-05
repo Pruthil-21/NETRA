@@ -17,7 +17,7 @@ from every category filter.
 """
 CATEGORIES: dict[str, dict[str, list[str]]] = {
     "authentication": {"actions": ["login"]},
-    "credentials": {"actions": ["change_password", "reset_password"]},
+    "credentials": {"actions": ["change_password", "reset_password", "request_password_reset", "reject_password_reset"]},
     "user_management": {"resource_types": ["posting", "role"]},
     "camera_registry": {"resource_types": ["camera"]},
     "infrastructure": {"resource_types": ["circle", "police_station", "coverage_target"]},

@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { UserCircle2, ShieldCheck, MapPin, Clock, KeyRound, Image as ImageIcon, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { changePassword, updateProfilePhoto } from '@/services/profileService';
+import { adminService } from '@/services/adminService';
 
 function formatRole(role: string | null): string {
   if (!role) return '—';
@@ -218,6 +219,70 @@ function ChangePasswordSection() {
   );
 }
 
+/** Self-service escalation for an officer who can't use ChangePasswordSection
+ * because they don't remember their CURRENT password -- creates a request a
+ * Super Admin reviews and actions from the admin console's Password Reset
+ * Requests tile. Carries only a reason, never a password value. */
+function RequestPasswordResetSection() {
+  const [reason, setReason] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
+      await adminService.requestPasswordReset(reason.trim() || undefined);
+      setSubmitted(true);
+      setReason('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit request');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (submitted) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-signal-green">
+        <CheckCircle2 size={13} /> Request submitted. A Super Admin will review it and set a new password for you.
+      </p>
+    );
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3 max-w-sm">
+      <div>
+        <label className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1" htmlFor="reset-request-reason">
+          Reason (optional)
+        </label>
+        <input
+          id="reset-request-reason"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Forgot my password"
+          className="w-full bg-ink border border-line rounded px-2.5 py-1.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+        />
+      </div>
+      {error && (
+        <p className="flex items-center gap-1.5 text-[11px] text-signal-red">
+          <AlertTriangle size={12} /> {error}
+        </p>
+      )}
+      <button
+        type="submit"
+        disabled={submitting}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-panel-raised border border-line text-slate-200 hover:text-white hover:border-slate-500 rounded disabled:opacity-50"
+      >
+        <KeyRound size={13} />
+        {submitting ? 'Submitting…' : 'Request Password Reset'}
+      </button>
+    </form>
+  );
+}
+
 export default function ProfilePage() {
   const { badgeNumber, name, role, rank, scopeValue, lastLogin, loading } = usePermissions();
 
@@ -272,6 +337,14 @@ export default function ProfilePage() {
         <section className="bg-panel border border-line rounded-lg p-4 sm:p-5">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wide mb-3">Change Password</h2>
           <ChangePasswordSection />
+        </section>
+
+        <section className="bg-panel border border-line rounded-lg p-4 sm:p-5">
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wide mb-1">Forgot Your Password?</h2>
+          <p className="text-xs text-slate-500 mb-3">
+            If you don&apos;t remember your current password, request a Super Admin reset it for you.
+          </p>
+          <RequestPasswordResetSection />
         </section>
       </div>
     </main>

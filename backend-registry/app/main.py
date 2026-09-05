@@ -35,7 +35,10 @@ from .schemas import (
     PoliceStationCreate,
     PoliceStationOut,
     PoliceStationUpdate,
-    PasswordResetRequest,
+    PasswordResetBody,
+    PasswordResetRequestCreate,
+    PasswordResetRequestOut,
+    PasswordResetRequestReject,
     PostingCreate,
     PostingOut,
     ProfilePhotoUpdate,
@@ -54,6 +57,7 @@ from .services import (
     circles_service,
     coverage_targets_service,
     gap_analysis_service,
+    password_reset_requests_service,
     police_stations_service,
     rbac_service,
     recordings_service,
@@ -171,7 +175,7 @@ def list_officers(user=Depends(require_permission("manage_users_roles"))):
 # out from manage_users_roles for role-definition edits.
 @app.post("/admin/officers/{officer_id}/reset-password", status_code=204)
 def reset_officer_password(
-    officer_id: int, body: PasswordResetRequest, user=Depends(require_permission("reset_officer_passwords"))
+    officer_id: int, body: PasswordResetBody, user=Depends(require_permission("reset_officer_passwords"))
 ):
     with get_conn() as conn:
         officer = auth_service.get_officer_by_id(conn, officer_id)
@@ -179,6 +183,50 @@ def reset_officer_password(
             raise HTTPException(status_code=404, detail="Officer not found")
         auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "reset_password", "officer", officer["id"])
+        if body.request_id is not None:
+            password_reset_requests_service.mark_reviewed(
+                conn, body.request_id, "approved", user.get("badge_number", user.get("sub"))
+            )
+
+
+@app.post("/auth/password-reset-requests", response_model=PasswordResetRequestOut, status_code=201)
+def request_password_reset(body: PasswordResetRequestCreate, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to request a reset for")
+    with get_conn() as conn:
+        created = password_reset_requests_service.create_request(conn, int(officer_id), body.reason)
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "request_password_reset", "officer", int(officer_id)
+        )
+        requests = password_reset_requests_service.list_requests(conn)
+        return next(r for r in requests if r["id"] == created["id"])
+
+
+@app.get("/admin/password-reset-requests", response_model=list[PasswordResetRequestOut])
+def list_password_reset_requests(
+    status: str | None = None, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        return password_reset_requests_service.list_requests(conn, status)
+
+
+@app.post("/admin/password-reset-requests/{request_id}/reject", response_model=PasswordResetRequestOut)
+def reject_password_reset_request(
+    request_id: int, body: PasswordResetRequestReject, user=Depends(require_permission("reset_officer_passwords"))
+):
+    with get_conn() as conn:
+        updated = password_reset_requests_service.mark_reviewed(
+            conn, request_id, "rejected", user.get("badge_number", user.get("sub"))
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Request not found or already reviewed")
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "reject_password_reset", "officer", updated["officer_id"],
+            reason_code=body.reason,
+        )
+        requests = password_reset_requests_service.list_requests(conn)
+        return next(r for r in requests if r["id"] == request_id)
 
 
 @app.get("/admin/postings", response_model=list[PostingOut])

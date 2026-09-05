@@ -63,6 +63,22 @@ export interface AuditLogsQuery {
   cursor?: number;
 }
 
+export interface PasswordResetRequestOut {
+  id: number;
+  officer_id: number;
+  badge_number: string;
+  officer_name: string;
+  rank: string | null;
+  role_name: string | null;
+  scope_type: string | null;
+  scope_value: string | null;
+  reason: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  requested_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+}
+
 export const adminService = {
   async listOfficers(): Promise<OfficerOut[]> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/officers`, { headers: authHeaders() });
@@ -70,13 +86,40 @@ export const adminService = {
     return res.json();
   },
 
-  async resetOfficerPassword(officerId: number, newPassword: string): Promise<void> {
+  async resetOfficerPassword(officerId: number, newPassword: string, requestId?: number): Promise<void> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/officers/${officerId}/reset-password`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ new_password: newPassword }),
+      body: JSON.stringify({ new_password: newPassword, request_id: requestId }),
     });
     if (!res.ok) throw new Error(`Failed to reset password: HTTP ${res.status}`);
+  },
+
+  async requestPasswordReset(reason?: string): Promise<PasswordResetRequestOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/auth/password-reset-requests`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) throw new Error(`Failed to submit password reset request: HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async listPasswordResetRequests(status?: string): Promise<PasswordResetRequestOut[]> {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    const res = await fetch(`${REGISTRY_API_URL}/admin/password-reset-requests${qs}`, { headers: authHeaders() });
+    if (!res.ok) throw new Error(`Failed to fetch password reset requests: HTTP ${res.status}`);
+    return res.json();
+  },
+
+  async rejectPasswordResetRequest(requestId: number, reason?: string): Promise<PasswordResetRequestOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/password-reset-requests/${requestId}/reject`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ reason }),
+    });
+    if (!res.ok) throw new Error(`Failed to reject request: HTTP ${res.status}`);
+    return res.json();
   },
 
   async reassignPosting(body: PostingCreateBody): Promise<PostingSummary> {

@@ -166,7 +166,7 @@ export function AuditLogSection() {
   };
 
   return (
-    <section className="mt-8">
+    <section>
       <div className="flex items-center gap-3 mb-1">
         <span className="inline-flex p-2 bg-slate-500/10 border border-slate-500/30 text-slate-400 rounded-lg">
           <ScrollText size={18} />

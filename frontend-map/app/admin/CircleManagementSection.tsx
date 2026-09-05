@@ -117,7 +117,7 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
   if (loading) return <p className="text-xs text-slate-500">Loading areas...</p>;
 
   return (
-    <section className="mt-8">
+    <section>
       <div className="flex items-center gap-3 mb-1">
         <span className="inline-flex p-2 bg-command/10 border border-command/30 text-command rounded-lg">
           <MapIcon size={18} />

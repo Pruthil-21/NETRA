@@ -110,8 +110,37 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
-class PasswordResetRequest(BaseModel):
+class PasswordResetBody(BaseModel):
     new_password: str
+    # When this reset fulfills a pending password_reset_requests row, pass its
+    # id so the request is atomically marked approved in the same call --
+    # otherwise an admin could set the password but leave the request stuck
+    # "pending" forever.
+    request_id: Optional[int] = None
+
+
+class PasswordResetRequestCreate(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestOut(BaseModel):
+    id: int
+    officer_id: int
+    badge_number: str
+    officer_name: str
+    rank: Optional[str] = None
+    role_name: Optional[str] = None
+    scope_type: Optional[str] = None
+    scope_value: Optional[str] = None
+    reason: Optional[str] = None
+    status: str
+    requested_at: datetime
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
 
 
 class ProfilePhotoUpdate(BaseModel):
