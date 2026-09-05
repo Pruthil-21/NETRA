@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ChevronRight, ChevronDown, Folder, MapPin, Video, Landmark, Search, X } from 'lucide-react';
 import { Circle } from '@/services/circlesService';
 import { Camera } from '@/types/camera';
@@ -54,32 +54,6 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
   const [expandedCircles, setExpandedCircles] = useState<Set<number>>(new Set());
   const [expandedUnassigned, setExpandedUnassigned] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
-
-  // Districts resolve asynchronously (usePermissions/useCameraRegistry fetch
-  // after mount), so a mount-time initializer would miss them. Auto-expand
-  // each district the first time it's seen so the hierarchy is visible
-  // without a click; a district the officer manually collapses afterwards
-  // stays collapsed (seenDistricts only ever adds, never re-triggers).
-  const seenDistricts = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    const newlySeen = districts.filter((d) => !seenDistricts.current.has(d));
-    if (newlySeen.length === 0) return;
-    newlySeen.forEach((d) => seenDistricts.current.add(d));
-    setExpandedDistricts((prev) => new Set([...prev, ...newlySeen]));
-  }, [districts]);
-
-  // Same auto-open treatment for Areas, one level down: an officer's whole
-  // point of opening this tree is to reach a camera, so the full
-  // City -> Area -> Camera chain should be visible without a click the
-  // first time an area's data arrives -- not just the city level.
-  const seenCircles = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    const ids = circles.map((c) => c.id);
-    const newlySeen = ids.filter((id) => !seenCircles.current.has(id));
-    if (newlySeen.length === 0) return;
-    newlySeen.forEach((id) => seenCircles.current.add(id));
-    setExpandedCircles((prev) => new Set([...prev, ...newlySeen]));
-  }, [circles]);
 
   const toggleDistrict = (district: string) => {
     setExpandedDistricts((prev) => {
