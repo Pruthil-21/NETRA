@@ -13,10 +13,12 @@ interface CameraGridProps {
   activeIds: Set<string>;
   onHoverStart: (id: string) => void;
   onHoverEnd: (id: string) => void;
+  /** Present only when tiles can be dragged into a new order -- see FeedCard. */
+  onReorder?: (draggedId: string, targetId: string) => void;
 }
 
 export const CameraGrid: React.FC<CameraGridProps> = ({
-  feeds, layout, onSelectFocus, registryEmpty, mode, activeIds, onHoverStart, onHoverEnd,
+  feeds, layout, onSelectFocus, registryEmpty, mode, activeIds, onHoverStart, onHoverEnd, onReorder,
 }) => {
   const getGridClass = () => {
     switch (layout) {
@@ -52,6 +54,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({
           isPlaying={layout === "focus" ? true : activeIds.has(feed.id)}
           onHoverStart={onHoverStart}
           onHoverEnd={onHoverEnd}
+          onReorder={layout !== "focus" ? onReorder : undefined}
         />
       ))}
     </div>
