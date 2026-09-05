@@ -81,7 +81,7 @@ export function CameraInfoOverlay({
           <dl className="space-y-2 text-slate-300">
             <Row label="Camera ID" value={String(camera.id)} />
             <Row label="District" value={camera.dept} />
-            <Row label="Circle" value={circleName ?? 'Unassigned'} />
+            <Row label="Area" value={circleName ?? 'Unassigned'} />
             <Row label="Type" value={camera.camera_type} />
             <Row label="Ownership" value={camera.ownership} />
             <Row label="Connectivity" value={camera.connectivity_status} />

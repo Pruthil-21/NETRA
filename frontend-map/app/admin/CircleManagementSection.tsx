@@ -28,7 +28,7 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
     circlesService
       .listCircles()
       .then(setCircles)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load circles'))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load areas'))
       .finally(() => setLoading(false));
   };
 
@@ -73,7 +73,7 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
       setNewCircleName((prev) => ({ ...prev, [district]: '' }));
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create circle');
+      setError(err instanceof Error ? err.message : 'Failed to create area');
     }
   };
 
@@ -83,7 +83,7 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
       await circlesService.deleteCircle(circle.id);
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete circle');
+      setError(err instanceof Error ? err.message : 'Failed to delete area');
     }
   };
 
@@ -110,11 +110,11 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
       cancelEdit();
       load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to rename circle');
+      setError(err instanceof Error ? err.message : 'Failed to rename area');
     }
   };
 
-  if (loading) return <p className="text-xs text-slate-500">Loading circles...</p>;
+  if (loading) return <p className="text-xs text-slate-500">Loading areas...</p>;
 
   return (
     <section className="mt-8">
@@ -123,8 +123,8 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
           <MapIcon size={18} />
         </span>
         <div>
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wide">Circles</h2>
-          <p className="text-[11px] text-slate-500">Manage the District→Circle grouping cameras are organized under</p>
+          <h2 className="text-sm font-semibold text-white uppercase tracking-wide">Areas</h2>
+          <p className="text-[11px] text-slate-500">Manage the District→Area grouping cameras are organized under</p>
         </div>
       </div>
 
@@ -190,7 +190,7 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
                           disabled={deleteDisabled}
                           title={
                             deleteDisabled
-                              ? `Cannot delete: ${count} camera${count === 1 ? '' : 's'} still assigned to this circle`
+                              ? `Cannot delete: ${count} camera${count === 1 ? '' : 's'} still assigned to this area`
                               : undefined
                           }
                           className={
@@ -207,15 +207,15 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
                 );
               })}
               {(circlesByDistrict.get(district) ?? []).length === 0 && (
-                <li className="text-slate-600 italic text-xs">No circles yet</li>
+                <li className="text-slate-600 italic text-xs">No areas yet</li>
               )}
             </ul>
             <div className="flex gap-2">
               <input
                 value={newCircleName[district] ?? ''}
                 onChange={(e) => setNewCircleName((prev) => ({ ...prev, [district]: e.target.value }))}
-                placeholder="New circle name"
-                aria-label={`Add circle to ${district}`}
+                placeholder="New area name"
+                aria-label={`Add area to ${district}`}
                 className="flex-1 bg-ink border border-line rounded px-2.5 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-command"
               />
               <button

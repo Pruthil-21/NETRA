@@ -212,7 +212,7 @@ export default function DashboardPage() {
 
           {!loading && treeSelection === null ? (
             <div className="text-center py-16 border border-dashed border-gray-800 rounded-lg">
-              <p className="text-gray-400 text-sm">Pick a district (or a circle within it) from the tree to view its cameras.</p>
+              <p className="text-gray-400 text-sm">Pick a district (or an area within it) from the tree to view its cameras.</p>
             </div>
           ) : (
             !loading && (
