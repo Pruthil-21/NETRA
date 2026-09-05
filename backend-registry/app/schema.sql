@@ -121,6 +121,12 @@ CREATE INDEX IF NOT EXISTS idx_postings_officer ON postings (officer_id);
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS badge_number TEXT;
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason_code TEXT;
 
+-- Self-service profile photo -- a URL, not an upload: this codebase has no
+-- file-storage/upload pipeline anywhere (camera rtsp_url/hls_url are also
+-- plain URL strings), so an officer sets/pastes a URL rather than the app
+-- hosting the image itself.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS photo_url TEXT;
+
 -- Scale demo: edge nodes + synthetic-camera flag + an isolated detection-events
 -- table for load-testing ingestion throughput. Additive only -- every
 -- existing cameras row gets is_synthetic=false via the DEFAULT below, and

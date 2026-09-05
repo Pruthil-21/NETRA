@@ -97,9 +97,21 @@ class MeResponse(BaseModel):
     badge_number: str
     name: str
     role: str
+    rank: Optional[str] = None
+    photo_url: Optional[str] = None
+    last_login: Optional[datetime] = None
     scope_type: str
     scope_value: Optional[str] = None
     permissions: list[str]
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class ProfilePhotoUpdate(BaseModel):
+    photo_url: Optional[str] = None
 
 
 class PostingSummary(BaseModel):

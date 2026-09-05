@@ -20,6 +20,7 @@ from .schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    ChangePasswordRequest,
     CircleCreate,
     CircleOut,
     CircleUpdate,
@@ -36,6 +37,7 @@ from .schemas import (
     PoliceStationUpdate,
     PostingCreate,
     PostingOut,
+    ProfilePhotoUpdate,
     ReportSummary,
     RolePermissionsOut,
     RolePermissionsUpdate,
@@ -98,14 +100,57 @@ def login(body: LoginRequest):
 
 @app.get("/auth/me", response_model=MeResponse)
 def me(user=Depends(get_current_user)):
-    return {
+    response = {
         "badge_number": user.get("badge_number", user.get("sub", "")),
         "name": user.get("name", ""),
         "role": user.get("role", ""),
+        "rank": None,
+        "photo_url": None,
+        "last_login": None,
         "scope_type": user.get("scope_type", "platform"),
         "scope_value": user.get("scope_value"),
         "permissions": user.get("permissions", []),
     }
+    # A real RBAC-issued token's `sub` is the officer's numeric id (see
+    # auth_service.issue_token) -- a legacy hand-crafted token (role:
+    # "officer"/"admin", every existing test fixture and the demo JWT) has no
+    # matching officers row, so profile fields beyond the JWT's own claims
+    # just stay at their defaults above rather than erroring.
+    officer_id = user.get("sub")
+    if officer_id and str(officer_id).isdigit():
+        with get_conn() as conn:
+            officer = auth_service.get_officer_by_id(conn, int(officer_id))
+            if officer is not None:
+                response["rank"] = officer["rank"]
+                response["photo_url"] = officer["photo_url"]
+                response["last_login"] = auth_service.get_last_login(conn, officer["id"])
+    return response
+
+
+@app.post("/auth/change-password", status_code=204)
+def change_password(body: ChangePasswordRequest, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to update")
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, int(officer_id))
+        if officer is None or not auth_service.verify_password(body.current_password, officer["password_hash"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
+        audit_service.log(conn, officer["badge_number"], "change_password", "officer", officer["id"], badge_number=officer["badge_number"])
+
+
+@app.put("/auth/me/photo", response_model=MeResponse)
+def update_my_photo(body: ProfilePhotoUpdate, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account to update")
+    with get_conn() as conn:
+        officer = auth_service.get_officer_by_id(conn, int(officer_id))
+        if officer is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        auth_service.set_photo_url(conn, officer["id"], body.photo_url)
+        return me(user)
 
 
 @app.get("/admin/officers", response_model=list[OfficerOut])
