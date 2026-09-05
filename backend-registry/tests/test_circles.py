@@ -14,12 +14,12 @@ def _district_command_headers(district: str):
 
 def test_create_list_get_circle(client, officer_headers, circle_test_rows):
     resp = client.post(
-        "/circles", json={"name": "APC Circle", "district": "Anand"}, headers=officer_headers
+        "/circles", json={"name": "Circle Create Test", "district": "Anand"}, headers=officer_headers
     )
     assert resp.status_code == 201
     body = resp.json()
     circle_test_rows.append(body["id"])
-    assert body["name"] == "APC Circle"
+    assert body["name"] == "Circle Create Test"
     assert body["district"] == "Anand"
 
     list_resp = client.get("/circles", headers=officer_headers)
@@ -28,7 +28,7 @@ def test_create_list_get_circle(client, officer_headers, circle_test_rows):
 
     get_resp = client.get(f"/circles/{body['id']}", headers=officer_headers)
     assert get_resp.status_code == 200
-    assert get_resp.json()["name"] == "APC Circle"
+    assert get_resp.json()["name"] == "Circle Create Test"
 
 
 def test_create_circle_requires_manage_circles_permission(client, viewer_headers):

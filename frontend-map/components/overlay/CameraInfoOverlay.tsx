@@ -71,13 +71,13 @@ export function CameraInfoOverlay({
       }}
     >
       <div
-        className="w-[60vw] h-[60vh] max-w-4xl bg-panel border border-line rounded-lg shadow-2xl flex overflow-hidden"
+        className="w-[85vw] h-[85vh] max-w-6xl bg-panel border border-line rounded-lg shadow-2xl flex overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="w-1/2 h-full bg-ink">
+        <div className="w-3/5 h-full bg-ink">
           <MapPopupPreviewPlayer src={getCameraStreamUrl(camera).url} />
         </div>
-        <div className="w-1/2 h-full p-5 overflow-y-auto text-xs">
+        <div className="w-2/5 h-full p-5 overflow-y-auto text-xs">
           <div className="flex items-start justify-between mb-3">
             <h2 className="text-sm font-semibold text-white">{camera.name}</h2>
             <button type="button" aria-label="Close" onClick={onClose} className="text-slate-400 hover:text-white">

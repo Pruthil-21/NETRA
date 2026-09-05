@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, MapPin, Video, Landmark } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, MapPin, Video, Landmark, Search, X } from 'lucide-react';
 import { Circle } from '@/services/circlesService';
 import { Camera } from '@/types/camera';
 
@@ -44,12 +44,16 @@ const STATE_NAME = 'Gujarat';
 
 /** VS Code Explorer-style tree: State -> District -> Area -> Camera, each
  * level (below the fixed state root) independently expandable. Shared,
- * byte-identical between the dashboard and map pages so their navigation
- * never drifts apart in behavior or styling. */
+ * byte-identical between the dashboard, map, and archive pages so their
+ * navigation never drifts apart in behavior or styling. A camera-name
+ * search narrows the whole tree at once: matching branches auto-expand,
+ * everything else collapses out of the way -- an officer looking for one
+ * camera by name shouldn't have to manually drill through every district. */
 export function DistrictCircleTree({ districts, circles, cameras, selected, onSelect }: DistrictCircleTreeProps) {
   const [expandedDistricts, setExpandedDistricts] = useState<Set<string>>(new Set());
   const [expandedCircles, setExpandedCircles] = useState<Set<number>>(new Set());
   const [expandedUnassigned, setExpandedUnassigned] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
 
   const toggleDistrict = (district: string) => {
     setExpandedDistricts((prev) => {
@@ -114,19 +118,62 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
     return map;
   }, [cameras]);
 
+  const isSearching = searchTerm.trim().length > 0;
+  const term = searchTerm.trim().toLowerCase();
+  const matchesTerm = (name: string) => name.toLowerCase().includes(term);
+
   return (
-    <nav aria-label="Camera hierarchy" className="w-full h-full bg-panel overflow-y-auto text-xs">
+    <nav aria-label="Camera hierarchy" className="w-full h-full bg-panel overflow-y-auto text-xs flex flex-col">
+      <div className="px-2 pt-2 pb-1 sticky top-0 bg-panel z-10 border-b border-line/60">
+        <div className="relative">
+          <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search cameras by name…"
+            aria-label="Search cameras by name"
+            className="w-full bg-ink border border-line rounded-md pl-6 pr-6 py-1.5 text-[11px] text-white placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setSearchTerm('')}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white p-0.5"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold">
         <Landmark size={12} className="shrink-0" />
         <span className="truncate">{STATE_NAME}</span>
       </div>
       <div className="pl-4">
       {districts.map((district, di) => {
+        const districtCirclesAll = circlesByDistrict.get(district) ?? [];
+        const unassignedCamerasAll = unassignedCamerasByDistrict.get(district) ?? [];
+
+        // With a search active, only keep circles/cameras that actually
+        // contain a match, and force this branch open so the officer never
+        // has to click through to see a result that's already found.
+        const districtCircles = isSearching
+          ? districtCirclesAll.filter(
+              (c) => (camerasByCircle.get(c.id) ?? []).some((cam) => matchesTerm(cam.name)) || matchesTerm(c.name)
+            )
+          : districtCirclesAll;
+        const unassignedCameras = isSearching
+          ? unassignedCamerasAll.filter((cam) => matchesTerm(cam.name))
+          : unassignedCamerasAll;
+
+        if (isSearching && districtCircles.length === 0 && unassignedCameras.length === 0) return null;
+
         const isLastDistrict = di === districts.length - 1;
-        const isDistrictExpanded = expandedDistricts.has(district);
+        const isDistrictExpanded = isSearching || expandedDistricts.has(district);
         const isDistrictSelected = selected?.type === 'district' && selected.value === district;
-        const districtCircles = circlesByDistrict.get(district) ?? [];
-        const unassignedCameras = unassignedCamerasByDistrict.get(district) ?? [];
         const hasNoChildren = districtCircles.length === 0 && unassignedCameras.length === 0;
         return (
           <div key={district} className="relative pl-4">
@@ -162,8 +209,11 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
                   {districtCircles.map((circle, i) => {
                     const isLastCircle = i === districtCircles.length - 1 && unassignedCameras.length === 0;
                     const isCircleSelected = selected?.type === 'circle' && selected.value === circle.id;
-                    const isCircleExpanded = expandedCircles.has(circle.id);
-                    const circleCameras = camerasByCircle.get(circle.id) ?? [];
+                    const circleCamerasAll = camerasByCircle.get(circle.id) ?? [];
+                    const circleCameras = isSearching
+                      ? circleCamerasAll.filter((cam) => matchesTerm(cam.name))
+                      : circleCamerasAll;
+                    const isCircleExpanded = isSearching || expandedCircles.has(circle.id);
                     return (
                       <div key={circle.id} className="relative pl-4">
                         <TreeLines isLast={isLastCircle} />
@@ -220,7 +270,7 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
                     );
                   })}
                   {unassignedCameras.length > 0 && (() => {
-                    const isUnassignedExpanded = expandedUnassigned.has(district);
+                    const isUnassignedExpanded = isSearching || expandedUnassigned.has(district);
                     return (
                       <div className="relative pl-4">
                         <TreeLines isLast />
@@ -271,6 +321,16 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
           </div>
         );
       })}
+      {isSearching && districts.every((district) => {
+        const districtCirclesAll = circlesByDistrict.get(district) ?? [];
+        const unassignedCamerasAll = unassignedCamerasByDistrict.get(district) ?? [];
+        const hasMatch =
+          districtCirclesAll.some((c) => (camerasByCircle.get(c.id) ?? []).some((cam) => matchesTerm(cam.name)) || matchesTerm(c.name)) ||
+          unassignedCamerasAll.some((cam) => matchesTerm(cam.name));
+        return !hasMatch;
+      }) && (
+        <p className="px-2 py-4 text-slate-600 italic text-center">No cameras match &quot;{searchTerm}&quot;</p>
+      )}
       </div>
     </nav>
   );

@@ -11,7 +11,6 @@ import { useLimitedPlayers } from "@/hooks/useLimitedPlayers";
 import { useCameraRegistry } from "@/context/CameraRegistryContext";
 import { useTileOrder } from "@/hooks/useTileOrder";
 import { CameraFeed } from "@/types/stream";
-import { TEST_FEEDS } from "@/config/streams";
 import { DistrictCircleTree, TreeSelection } from "@/components/tree/DistrictCircleTree";
 import { CameraInfoOverlay } from "@/components/overlay/CameraInfoOverlay";
 import { circlesService, Circle } from "@/services/circlesService";
@@ -42,11 +41,9 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const allFeeds = useMemo(() => [...feeds, ...TEST_FEEDS], [feeds]);
-
   const districts = useMemo(
-    () => Array.from(new Set(allFeeds.map((f) => f.department))).sort(),
-    [allFeeds]
+    () => Array.from(new Set(feeds.map((f) => f.department))).sort(),
+    [feeds]
   );
 
   const circleIdByCameraId = useMemo(() => {
@@ -56,8 +53,8 @@ export default function DashboardPage() {
   }, [cameras]);
 
   const treeFilteredFeeds = useMemo(
-    () => filterFeedsByTreeSelection(allFeeds, treeSelection, circleIdByCameraId),
-    [allFeeds, treeSelection, circleIdByCameraId]
+    () => filterFeedsByTreeSelection(feeds, treeSelection, circleIdByCameraId),
+    [feeds, treeSelection, circleIdByCameraId]
   );
 
   const filteredFeeds = useMemo(() => {
@@ -114,11 +111,11 @@ export default function DashboardPage() {
     setLayout("focus");
     setStatusFilter("all");
     setSearchTerm("");
-    const targetFeed = allFeeds.find((f) => f.id === id);
+    const targetFeed = feeds.find((f) => f.id === id);
     if (targetFeed) {
       setTreeSelection({ type: "district", value: targetFeed.department });
     }
-  }, [allFeeds]);
+  }, [feeds]);
 
   // Tracks whether the cursor is currently over the shared CameraInfoOverlay
   // itself (set by that component's onMouseEnterOverlay/onMouseLeaveOverlay
@@ -154,10 +151,9 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!playAllMode) return;
     visibleFeeds.slice(0, MAX_CONCURRENT_PLAYERS).forEach((feed) => {
-      // TEST_FEEDS entries can carry a non-numeric string id (e.g.
-      // "xiaomi-camera") -- Number(...) on those is NaN, which would
-      // otherwise occupy one of the six player slots and never resolve back
-      // to a real feed.
+      // A non-numeric feed id (defensive -- every real registry camera has a
+      // numeric one) would otherwise occupy one of the six player slots and
+      // never resolve back to a real feed.
       const numericId = Number(feed.id);
       if (!Number.isNaN(numericId)) openPlayer(numericId);
     });
@@ -232,7 +228,7 @@ export default function DashboardPage() {
                 feeds={visibleFeeds}
                 layout={layout}
                 onSelectFocus={handleSelectFocus}
-                registryEmpty={allFeeds.length === 0}
+                registryEmpty={feeds.length === 0}
                 mode={playAllMode ? 'playAll' : 'hoverOnly'}
                 activeIds={new Set(Array.from(activeCameraIds).map(String))}
                 onHoverStart={handleHoverStart}
