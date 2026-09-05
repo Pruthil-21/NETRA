@@ -68,6 +68,19 @@ export function DistrictCircleTree({ districts, circles, cameras, selected, onSe
     setExpandedDistricts((prev) => new Set([...prev, ...newlySeen]));
   }, [districts]);
 
+  // Same auto-open treatment for Areas, one level down: an officer's whole
+  // point of opening this tree is to reach a camera, so the full
+  // City -> Area -> Camera chain should be visible without a click the
+  // first time an area's data arrives -- not just the city level.
+  const seenCircles = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    const ids = circles.map((c) => c.id);
+    const newlySeen = ids.filter((id) => !seenCircles.current.has(id));
+    if (newlySeen.length === 0) return;
+    newlySeen.forEach((id) => seenCircles.current.add(id));
+    setExpandedCircles((prev) => new Set([...prev, ...newlySeen]));
+  }, [circles]);
+
   const toggleDistrict = (district: string) => {
     setExpandedDistricts((prev) => {
       const next = new Set(prev);

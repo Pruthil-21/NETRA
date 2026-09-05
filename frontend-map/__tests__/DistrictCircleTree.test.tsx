@@ -50,24 +50,27 @@ describe('DistrictCircleTree', () => {
     expect(screen.getByText('No areas yet')).toBeInTheDocument();
   });
 
-  it('clicking an area name both selects it and expands its cameras as leaves', () => {
+  it('auto-expands an area the first time it appears, showing its cameras as leaves with no click needed', () => {
+    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
+    expect(screen.getByText('Camera 01')).toBeInTheDocument();
+    expect(screen.getByText('Camera 02')).toBeInTheDocument();
+    expect(screen.getByText('Camera 03')).toBeInTheDocument();
+  });
+
+  it('clicking an area name both selects it and toggles its cameras', () => {
     const onSelect = vi.fn();
     render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={onSelect} />);
+    expect(screen.getByText('Camera 01')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('APC Circle'));
     expect(onSelect).toHaveBeenCalledWith({ type: 'circle', value: 1 });
+    expect(screen.queryByText('Camera 01')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('APC Circle'));
     expect(screen.getByText('Camera 01')).toBeInTheDocument();
-    expect(screen.getByText('Camera 02')).toBeInTheDocument();
-    expect(screen.queryByText('Camera 03')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Camera 01'));
     expect(onSelect).toHaveBeenCalledWith({ type: 'camera', value: 101 });
-  });
-
-  it('also expands a circle via its chevron toggle without needing to select it', () => {
-    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
-    fireEvent.click(screen.getByLabelText('Expand APC Circle'));
-    expect(screen.getByText('Camera 01')).toBeInTheDocument();
   });
 
   it('shows cameras with no circle_id under an "Unassigned" bucket instead of hiding them', () => {
