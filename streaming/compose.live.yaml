@@ -54,6 +54,35 @@ services:
       retries: 5
       start_period: 30s
 
+  demo-replay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.demo-replay
+    container_name: netra-demo-replay
+    restart: unless-stopped
+    cpus: "${DEMO_REPLAY_CPUS:-4.0}"
+    mem_limit: "${DEMO_REPLAY_MEMORY_LIMIT:-2g}"
+    memswap_limit: "${DEMO_REPLAY_MEMORY_LIMIT:-2g}"
+    init: true
+    stop_grace_period: 20s
+    depends_on:
+      - mediamtx
+    environment:
+      FOOTAGE_DIR: /demo-footage
+      MEDIAMTX_HOST: mediamtx
+      MEDIAMTX_PORT: "8554"
+      RETRY_SECONDS: "5"
+    volumes:
+      - "${HOME}/Downloads/Demo_Footage:/demo-footage:ro"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -T 5 -O /dev/null "http://mediamtx:8888/stream/demo-cam67/index.m3u8?cookieCheck=1"
+      interval: 15s
+      timeout: 7s
+      retries: 8
+      start_period: 60s
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: netra-cloudflared
