@@ -286,3 +286,4 @@ class AuditLogOut(BaseModel):
 class AuditLogsPage(BaseModel):
     logs: list[AuditLogOut]
     next_cursor: Optional[int] = None
+
