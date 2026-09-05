@@ -11,9 +11,11 @@ interface CameraGridProps {
   onSelectFocus?: (id: string) => void;
   /** True when the registry itself returned zero cameras (vs. filters excluding all of them). */
   registryEmpty?: boolean;
+  /** Present only when tiles can be dragged into a new order -- see FeedCard. */
+  onReorder?: (draggedId: string, targetId: string) => void;
 }
 
-export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectFocus, registryEmpty }) => {
+export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectFocus, registryEmpty, onReorder }) => {
   const getGridClass = () => {
     switch (layout) {
       case "focus":
@@ -44,6 +46,7 @@ export const CameraGrid: React.FC<CameraGridProps> = ({ feeds, layout, onSelectF
           feed={feed}
           onFocus={layout !== "focus" ? onSelectFocus : undefined}
           startPlaying={layout === "focus"}
+          onReorder={layout !== "focus" ? onReorder : undefined}
         />
       ))}
     </div>

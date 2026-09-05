@@ -3,7 +3,7 @@ import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
 import { useInView } from "@/hooks/useInView";
 import { createHoverGraceController, HoverGraceController } from "@/lib/hoverGrace";
-import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, LucideIcon } from "lucide-react";
+import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, GripVertical, LucideIcon } from "lucide-react";
 
 // hls.js is a large dependency only needed once a tile actually starts playing
 // (hover-hold or click) -- code-split it out of the Dashboard's initial bundle
@@ -32,6 +32,10 @@ interface FeedCardProps {
   /** True when this card is the single camera an officer explicitly selected (focus
    * layout) -- that click already is the "play this" action, so skip the hover gate. */
   startPlaying?: boolean;
+  /** Present only when tiles in this grid can be dragged into a new order --
+   * absent in focus layout, where there's only one tile. Called with the
+   * dragged feed's id and this card's own id (the drop target). */
+  onReorder?: (draggedId: string, targetId: string) => void;
 }
 
 const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: string; icon: LucideIcon }> = {
@@ -41,7 +45,7 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
   OFFLINE: { label: "OFFLINE", className: "bg-gray-900 border-gray-700 text-gray-400", icon: VideoOff },
 };
 
-const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false }) => {
+const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = false, onReorder }) => {
   // UNKNOWN cameras aren't confirmed dead — still worth attempting playback; useHls's
   // own error handling covers the case where there's genuinely nothing there.
   const isPlayable = feed.status !== "OFFLINE";
@@ -101,32 +105,77 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({ feed, onFocus, startPlaying = f
 
   useEffect(() => hoverController.cancel, [hoverController]);
 
+  // Native HTML5 DnD -- reordering happens within a single grid, so there's no
+  // need for a full drag-and-drop library. dataTransfer carries only the
+  // dragged feed's own id; onReorder (from useTileOrder, via CameraGrid) does
+  // the actual splice-and-persist.
+  const [isDragOver, setIsDragOver] = useState(false);
+  const handleDragStart = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      e.dataTransfer.setData("text/plain", feed.id);
+      e.dataTransfer.effectAllowed = "move";
+    },
+    [feed.id]
+  );
+  const handleDragOver = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (!onReorder) return;
+      e.preventDefault();
+      setIsDragOver(true);
+    },
+    [onReorder]
+  );
+  const handleDragLeave = useCallback(() => setIsDragOver(false), []);
+  const handleDrop = useCallback(
+    (e: React.DragEvent<HTMLDivElement>) => {
+      if (!onReorder) return;
+      e.preventDefault();
+      setIsDragOver(false);
+      const draggedId = e.dataTransfer.getData("text/plain");
+      if (draggedId) onReorder(draggedId, feed.id);
+    },
+    [onReorder, feed.id]
+  );
+
   return (
     <div
-      className={`bg-brand-card border border-brand-border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
-        isPlaying ? 'scale-[1.06] shadow-2xl relative z-10' : 'scale-100'
-      }`}
+      draggable={!!onReorder}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`bg-brand-card border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
+        isDragOver ? 'border-blue-500 border-2' : 'border-brand-border'
+      } ${isPlaying ? 'scale-[1.06] shadow-2xl relative z-10' : 'scale-100'}`}
     >
       <div className="p-3 border-b border-brand-border flex items-center justify-between bg-gray-900/40">
-        <div>
-          <h3 className="font-semibold text-sm text-gray-100">{feed.name}</h3>
-          <p className="text-xs text-gray-400 flex items-center gap-1.5">
-            <span>{feed.department} • {feed.location}</span>
-            {/* (0, 0) means "no real location yet" (e.g. a manually-added test feed
-                pending a proper registry entry) — a maps link there would be misleading. */}
-            {(feed.lat !== 0 || feed.long !== 0) && (
-              <a
-                href={`https://www.google.com/maps?q=${feed.lat},${feed.long}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 text-blue-400 hover:underline"
-                title="Open this camera's location in Google Maps"
-              >
-                <MapPin className="w-3 h-3" />
-                Map
-              </a>
-            )}
-          </p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {onReorder && (
+            <GripVertical
+              className="w-3.5 h-3.5 text-gray-600 shrink-0 cursor-grab active:cursor-grabbing"
+              aria-hidden="true"
+            />
+          )}
+          <div className="min-w-0">
+            <h3 className="font-semibold text-sm text-gray-100">{feed.name}</h3>
+            <p className="text-xs text-gray-400 flex items-center gap-1.5">
+              <span>{feed.department} • {feed.location}</span>
+              {/* (0, 0) means "no real location yet" (e.g. a manually-added test feed
+                  pending a proper registry entry) — a maps link there would be misleading. */}
+              {(feed.lat !== 0 || feed.long !== 0) && (
+                <a
+                  href={`https://www.google.com/maps?q=${feed.lat},${feed.long}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-0.5 text-blue-400 hover:underline"
+                  title="Open this camera's location in Google Maps"
+                >
+                  <MapPin className="w-3 h-3" />
+                  Map
+                </a>
+              )}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <div className={`flex items-center space-x-1.5 border text-[10px] font-bold px-2 py-0.5 rounded ${badge.className}`}>

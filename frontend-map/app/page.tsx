@@ -7,6 +7,7 @@ import { AlertLog } from "@/components/dashboard/AlertLog";
 import { AlertBanner, Alert } from "@/components/AlertBanner";
 import { StaleIndicator, useStaleness } from "@/components/common/StaleIndicator";
 import { useCameraFeeds, FEED_STALE_THRESHOLD_MS } from "@/hooks/useCameraFeeds";
+import { useTileOrder } from "@/hooks/useTileOrder";
 import { CameraFeed } from "@/types/stream";
 import { TEST_FEEDS } from "@/config/streams";
 
@@ -53,14 +54,24 @@ export default function DashboardPage() {
     });
   }, [allFeeds, searchTerm, departmentFilter, statusFilter]);
 
+  // An officer's drag-to-reorder preference, applied on top of the filtered set --
+  // reordering is meaningless in focus mode (exactly one tile), so that layout skips
+  // straight to filteredFeeds instead of going through the ordered list.
+  const filteredFeedIds = useMemo(() => filteredFeeds.map((f) => f.id), [filteredFeeds]);
+  const { orderedIds, moveTile } = useTileOrder(filteredFeedIds);
+  const orderedFeeds = useMemo(() => {
+    const byId = new Map(filteredFeeds.map((f) => [f.id, f]));
+    return orderedIds.map((id) => byId.get(id)).filter((f): f is CameraFeed => f !== undefined);
+  }, [orderedIds, filteredFeeds]);
+
   // Focus mode shows exactly one camera — the one explicitly picked via a FeedCard's
   // "Focus this camera" button, an alert's "View Camera"/plate link, or the first
   // filtered result if none was picked yet.
   const visibleFeeds = useMemo(() => {
-    if (layout !== "focus") return filteredFeeds;
+    if (layout !== "focus") return orderedFeeds;
     const focused = filteredFeeds.find((f) => f.id === focusedId);
     return focused ? [focused] : filteredFeeds.slice(0, 1);
-  }, [layout, filteredFeeds, focusedId]);
+  }, [layout, orderedFeeds, filteredFeeds, focusedId]);
 
   const handleSelectFocus = useCallback((id: string) => {
     setFocusedId(id);
@@ -135,6 +146,7 @@ export default function DashboardPage() {
               layout={layout}
               onSelectFocus={handleSelectFocus}
               registryEmpty={allFeeds.length === 0}
+              onReorder={moveTile}
             />
           </div>
         )}
