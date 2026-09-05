@@ -31,6 +31,11 @@ services:
       - "9996:9996"
     volumes:
       - ./streaming/mediamtx.yml:/mediamtx.yml
+      # recordPath in mediamtx.yml is a relative path (./recordings/...),
+      # which resolves inside the container -- without this mount, every
+      # recorded segment lived only in the container's writable layer and
+      # was silently lost on every restart/recreate.
+      - mediamtx_recordings:/recordings
 
   backend-registry:
     build:
@@ -56,6 +61,27 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Single-node KRaft broker (no Zookeeper) -- backs alert delivery
+  # (backend-watchlist/app/services/kafka_client.py). Entirely optional at
+  # runtime: that service checks reachability itself and falls back to
+  # broadcasting alerts directly when this container isn't up, so it's safe
+  # to `docker compose up` without this or stop it independently.
+  kafka:
+    image: apache/kafka:3.7.0
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://:19092,CONTROLLER://:19093,EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:19092,EXTERNAL://localhost:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:19093"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    restart: unless-stopped
+
   backend-watchlist:
     build:
       context: ./backend-watchlist
@@ -63,11 +89,15 @@ services:
       DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
       JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      # From inside the compose network, not the host-published port above.
+      KAFKA_BROKERS: "kafka:19092"
     ports:
       - "${WATCHLIST_HOST_PORT:-8001}:8001"
     depends_on:
       db:
         condition: service_healthy
+      kafka:
+        condition: service_started
     healthcheck:
       test:
         [
@@ -83,3 +113,4 @@ services:
 
 volumes:
   db_data:
+  mediamtx_recordings:
