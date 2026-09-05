@@ -76,18 +76,18 @@ def test_reassigning_a_posting_ends_the_old_one_not_edits_it(client):
 
 
 def test_district_command_can_only_assign_within_their_own_district(client):
-    dc_token = _seed(client)  # scope_value = "Traffic Police"
+    dc_token = _seed(client)  # scope_value = "Ahmedabad"
 
     sa_token = client.post(
         "/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"}
     ).json()["token"]
     officers = client.get("/admin/officers", headers={"Authorization": f"Bearer {sa_token}"}).json()
-    target = next(o for o in officers if o["badge_number"] == "GJ-SO-001")  # currently "Traffic Police"
+    target = next(o for o in officers if o["badge_number"] == "GJ-SO-001")  # currently "Ahmedabad"
 
     # Allowed: reassigning within their own district
     ok = client.post(
         "/admin/postings",
-        json={"officer_id": target["id"], "role_name": "station_officer", "scope_type": "district", "scope_value": "Traffic Police"},
+        json={"officer_id": target["id"], "role_name": "station_officer", "scope_type": "district", "scope_value": "Ahmedabad"},
         headers={"Authorization": f"Bearer {dc_token}"},
     )
     assert ok.status_code == 201
@@ -103,7 +103,7 @@ def test_district_command_can_only_assign_within_their_own_district(client):
     # Blocked: assigning a role they can't grant (district_command itself)
     blocked_role = client.post(
         "/admin/postings",
-        json={"officer_id": target["id"], "role_name": "district_command", "scope_type": "district", "scope_value": "Traffic Police"},
+        json={"officer_id": target["id"], "role_name": "district_command", "scope_type": "district", "scope_value": "Ahmedabad"},
         headers={"Authorization": f"Bearer {dc_token}"},
     )
     assert blocked_role.status_code == 403

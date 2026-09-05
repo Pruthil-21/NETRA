@@ -13,9 +13,9 @@ from app.services import auth_service
 # badge_number, name, rank, password, role_name, scope_type, scope_value
 OFFICERS = [
     ("GJ-SA-001", "Demo Super Admin", "System/IT Cell", "demo-pass-super-admin", "super_admin", "platform", None),
-    ("GJ-DC-001", "Demo District Command", "SP", "demo-pass-district-command", "district_command", "district", "Traffic Police"),
-    ("GJ-SO-001", "Demo Station Officer", "PI", "demo-pass-station-officer", "station_officer", "district", "Traffic Police"),
-    ("GJ-CR-001", "Demo Control Room Operator", "Civilian Staff", "demo-pass-control-room", "control_room_operator", "district", "Traffic Police"),
+    ("GJ-DC-001", "Demo District Command", "SP", "demo-pass-district-command", "district_command", "district", "Ahmedabad"),
+    ("GJ-SO-001", "Demo Station Officer", "PI", "demo-pass-station-officer", "station_officer", "district", "Ahmedabad"),
+    ("GJ-CR-001", "Demo Control Room Operator", "Civilian Staff", "demo-pass-control-room", "control_room_operator", "district", "Ahmedabad"),
     ("GJ-AU-001", "Demo Auditor", "Home Dept", "demo-pass-auditor", "auditor", "platform", None),
 ]
 
