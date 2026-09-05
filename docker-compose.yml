@@ -26,6 +26,9 @@ services:
       - "8554:8554"
       - "8888:8888"
       - "8889:8889"
+      # Playback API -- backs the recorded-footage timeline (see
+      # streaming/README.md's "Recorded footage / VOD playback" section).
+      - "9996:9996"
     volumes:
       - ./streaming/mediamtx.yml:/mediamtx.yml
 

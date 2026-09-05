@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { Activity, Film, History, Radio, VideoOff } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { getCameraStreamUrl } from '@/lib/stream';
@@ -9,7 +10,6 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { circlesService, Circle } from '@/services/circlesService';
 import { cameraService } from '@/services/cameraService';
 import CameraLivePlayer from './CameraLivePlayer';
-import RecordedFootageModal from './RecordedFootageModal';
 import Badge from '@/components/common/Badge';
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
@@ -27,7 +27,6 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
   const [circles, setCircles] = useState<Circle[]>([]);
   const [circleUpdatePending, setCircleUpdatePending] = useState(false);
   const [circleError, setCircleError] = useState<string | null>(null);
-  const [showRecordings, setShowRecordings] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,14 +98,13 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           <div>
             <p className="font-bold text-white truncate">{camera.name}</p>
             <p className="font-mono text-command">{camera.id}</p>
-            <button
-              type="button"
-              onClick={() => setShowRecordings(true)}
+            <Link
+              href={`/archive?camera=${camera.id}`}
               className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400 hover:text-white"
             >
               <Film size={11} />
               Recorded Footage
-            </button>
+            </Link>
           </div>
           <div className="flex flex-col gap-1.5 items-start">
             <Badge status={isOnline ? 'online' : 'offline'} text={isOnline ? 'Online' : 'Offline'} />
@@ -214,8 +212,6 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           )}
         </div>
       </div>
-
-      {showRecordings && <RecordedFootageModal camera={camera} onClose={() => setShowRecordings(false)} />}
     </div>
   );
 }
