@@ -61,7 +61,22 @@ export default function AdminPage() {
       });
   }, [permissionsLoading, permissions]);
 
-  if (!permissionsLoading && visibleTiles.length === 0) {
+  if (permissionsLoading) {
+    return (
+      <main className="flex-1 overflow-y-auto min-h-0 w-full">
+        <div className="max-w-5xl mx-auto p-4 sm:p-6">
+          <h1 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Admin Console</h1>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 animate-pulse" aria-label="Loading admin console">
+            {[1, 2, 3, 4, 5].map((item) => (
+              <div key={item} className="h-[110px] rounded-lg border border-line bg-panel" />
+            ))}
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (visibleTiles.length === 0) {
     return (
       <main className="flex-1 overflow-y-auto min-h-0 w-full flex items-center justify-center">
         <p className="text-sm text-slate-500">You don&apos;t have access to any admin sections.</p>
