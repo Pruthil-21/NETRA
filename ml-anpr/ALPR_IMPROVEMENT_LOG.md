@@ -3996,3 +3996,45 @@ no crash) -- all re-run after this change, not assumed unaffected.
 - Still greedy per-detection matching within a frame (first sufficiently-
   good IoU wins, no global optimal assignment like Hungarian matching) --
   not revisited here since it wasn't the weakness this fix targeted.
+
+# Session 35 -- actually using fiftyone/mlflow (real gap since Session 32, closed)
+
+Both installed since Session 32, neither actually used until now --
+flagged as a real gap twice. No pipeline code touched this session;
+pure tooling.
+
+## FiftyOne: a real, browsable dataset, not JSON grepping
+
+`netra_anpr_eval_269frame` (persistent local FiftyOne dataset, built
+from `results_lpdetect_statecode.json` -- the current best/final
+results after Sessions 32-34): 269 samples, each with real
+`fo.Detections` (one per vehicle box, label = the actual note string,
+plus `plate_number`/`confidence` fields) and a frame-level `best_note` /
+`has_confirmed_plate` field for fast filtering. Verified via
+`dataset.count_values()`, not just "it ran": `has_confirmed_plate`
+distribution (213 False / 56 True) matches the aggregate eval number
+exactly. Browse with `fiftyone app launch netra_anpr_eval_269frame`.
+
+## MLflow: the real Session 32/33 progression as actual experiment runs
+
+Three runs under experiment `anpr_accuracy_eval` (local tracking URI,
+`./mlruns/`, newly gitignored -- not committed, same as every other
+local eval artifact this project keeps out of git): one per real result
+set already produced (`results_final.json`, `results_lpdetect.json`,
+`results_lpdetect_statecode.json`), each logging the real params that
+changed (crop band, upscale strategy, plate-detector on/off,
+state-code validation on/off) and the real metrics (pattern-match
+reads, fallback reads, frames-with-plate%, etc.) -- not invented,
+computed directly from the same result files used throughout Sessions
+32-34. `cd ml-anpr && mlflow ui` to browse; the metrics already match
+what's in this log's own tables, cross-checked, not just trusted.
+
+## What's not done / open
+
+- Both tools now hold real project data but nothing in the actual
+  pipeline reads from either at runtime -- purely an analysis/reporting
+  layer for this and future sessions, same as this log file itself.
+- Only backfilled the three result sets already on disk from this
+  session's own work -- a genuinely forward-looking workflow would log
+  a new MLflow run automatically at the end of `reeval.py`-style
+  scripts going forward, not done here.

@@ -39,6 +39,7 @@ scripts/start-tunnels.sh
 
 # ml-anpr demo run output (local test artifacts, not source)
 ml-anpr/logs/
+ml-anpr/mlruns/
 ml-anpr/test_images/before/
 ml-anpr/test_images/vehicle_boxes/
 ml-anpr/test_images/plate_boxes/
