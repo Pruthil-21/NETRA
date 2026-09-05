@@ -1,23 +1,36 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { Camera, Radio, ShieldAlert, Fingerprint, Clock, UserX } from 'lucide-react';
 import { fetchReportSummary, ReportSummary } from '@/services/coverageTargetsService';
 import { formatDuration } from '@/hooks/useCameraUptime';
 
-function BreakdownTable({ title, counts }: { title: string; counts: Record<string, number> }) {
+function KpiCard({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
+  return (
+    <div className="bg-panel border border-line rounded-lg p-4">
+      <div className="flex items-center gap-1.5 text-slate-500 mb-2">
+        <Icon size={13} />
+        <span className="text-[10px] font-semibold tracking-wider uppercase">{label}</span>
+      </div>
+      <p className="text-2xl font-semibold text-white font-mono">{value}</p>
+    </div>
+  );
+}
+
+function BreakdownCard({ title, counts }: { title: string; counts: Record<string, number> }) {
   const rows = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   return (
-    <div>
-      <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">{title}</h3>
+    <div className="bg-panel border border-line rounded-lg p-4">
+      <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-3">{title}</h3>
       {rows.length === 0 ? (
         <p className="text-slate-500 text-xs">No data.</p>
       ) : (
         <table className="w-full text-xs">
           <tbody>
             {rows.map(([label, count]) => (
-              <tr key={label} className="border-t border-line">
-                <td className="py-1 text-slate-300 capitalize">{label}</td>
-                <td className="py-1 text-white text-right font-mono">{count}</td>
+              <tr key={label} className="border-t border-line first:border-t-0">
+                <td className="py-1.5 text-slate-300 capitalize">{label}</td>
+                <td className="py-1.5 text-white text-right font-mono">{count}</td>
               </tr>
             ))}
           </tbody>
@@ -40,44 +53,45 @@ export function ReportsSummarySection() {
   if (error) return <p className="text-signal-red text-xs">{error}</p>;
   if (!summary) return <p className="text-slate-500 text-xs">Loading summary…</p>;
 
-  // null fields mean backend-watchlist's schema isn't applied in this
-  // environment yet -- omit the whole row rather than showing a confusing 0.
-  const activityRows: [string, string][] = [
-    ['Alerts (24h)', summary.alerts_last_24h === null ? '—' : String(summary.alerts_last_24h)],
-    ['Detections (24h)', summary.detections_last_24h === null ? '—' : String(summary.detections_last_24h)],
-    ['Blacklist entries (24h)', summary.blacklist_entries_last_24h === null ? '—' : String(summary.blacklist_entries_last_24h)],
-    ['Avg. alert response', summary.avg_alert_response_seconds === null ? '—' : formatDuration(summary.avg_alert_response_seconds)],
-  ];
+  const onlineCount = summary.cameras_by_connectivity_status['online'] ?? 0;
 
   return (
-    <div className="flex flex-col gap-4 mb-6">
+    <div className="flex flex-col gap-6 mb-8">
       <div>
-        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-1">Registry Overview</h3>
-        <p className="text-xs text-slate-400">
-          {summary.total_cameras} camera{summary.total_cameras === 1 ? '' : 's'} across{' '}
-          {Object.keys(summary.cameras_by_department).length} department
-          {Object.keys(summary.cameras_by_department).length === 1 ? '' : 's'}
-        </p>
+        <h2 className="text-xs font-semibold text-white uppercase tracking-wide mb-3">Registry Overview</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <KpiCard icon={Camera} label="Total Cameras" value={String(summary.total_cameras)} />
+          <KpiCard icon={Radio} label="Online Now" value={`${onlineCount} / ${summary.total_cameras}`} />
+          <KpiCard
+            icon={ShieldAlert}
+            label="Alerts (24h)"
+            value={summary.alerts_last_24h === null ? '—' : String(summary.alerts_last_24h)}
+          />
+          <KpiCard
+            icon={Fingerprint}
+            label="Detections (24h)"
+            value={summary.detections_last_24h === null ? '—' : String(summary.detections_last_24h)}
+          />
+          <KpiCard
+            icon={UserX}
+            label="Blacklist Hits (24h)"
+            value={summary.blacklist_entries_last_24h === null ? '—' : String(summary.blacklist_entries_last_24h)}
+          />
+          <KpiCard
+            icon={Clock}
+            label="Avg. Alert Response"
+            value={summary.avg_alert_response_seconds === null ? '—' : formatDuration(summary.avg_alert_response_seconds)}
+          />
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <BreakdownTable title="By Department" counts={summary.cameras_by_department} />
-        <BreakdownTable title="By Connectivity" counts={summary.cameras_by_connectivity_status} />
-        <BreakdownTable title="By Health" counts={summary.cameras_by_health_status} />
-      </div>
-
       <div>
-        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">Activity</h3>
-        <table className="w-full text-xs max-w-sm">
-          <tbody>
-            {activityRows.map(([label, value]) => (
-              <tr key={label} className="border-t border-line">
-                <td className="py-1 text-slate-300">{label}</td>
-                <td className="py-1 text-white text-right font-mono">{value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <h2 className="text-xs font-semibold text-white uppercase tracking-wide mb-3">Registry Breakdown</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <BreakdownCard title="By Department" counts={summary.cameras_by_department} />
+          <BreakdownCard title="By Connectivity" counts={summary.cameras_by_connectivity_status} />
+          <BreakdownCard title="By Health" counts={summary.cameras_by_health_status} />
+        </div>
       </div>
     </div>
   );

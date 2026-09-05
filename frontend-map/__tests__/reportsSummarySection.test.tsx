@@ -23,7 +23,9 @@ describe('ReportsSummarySection', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => SUMMARY }));
     render(<ReportsSummarySection />);
 
-    await waitFor(() => expect(screen.getByText(/30 cameras across 2 departments/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Registry Overview')).toBeInTheDocument());
+    expect(screen.getByText('30')).toBeInTheDocument();
+    expect(screen.getByText('25 / 30')).toBeInTheDocument();
     expect(screen.getByText('Traffic Police')).toBeInTheDocument();
     expect(screen.getByText('online')).toBeInTheDocument();
     expect(screen.getByText('operational')).toBeInTheDocument();
