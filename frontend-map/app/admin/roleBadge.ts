@@ -1,8 +1,8 @@
 // Subtle per-role accent so an officer's role reads at a glance in a long
 // roster -- same pill shape for every role (a full theming system would be
 // overkill for five roles), just a different accent color. Shared between
-// every /admin section that displays a role name (Officers & Postings, Role
-// Permissions, Password Reset Requests) so they never drift out of sync.
+// every /admin section that displays a role name (Users, Security
+// Configuration, Password Reset Requests) so they never drift out of sync.
 const ROLE_BADGE_CLASS: Record<string, string> = {
   super_admin: 'bg-signal-red/10 text-signal-red border-signal-red/30',
   district_command: 'bg-command/10 text-command border-command/30',

@@ -32,37 +32,42 @@ const MOCK_OFFICERS = [
   },
 ];
 
-describe('AdminPage', () => {
+const MOCK_PROFILE = {
+  id: 1, badge_number: 'GJ-SO-001', name: 'Demo Station Officer', rank: 'PI', photo_url: null,
+  status: 'active', last_login_at: '2026-09-01T10:00:00Z', recent_logins: ['2026-09-01T10:00:00Z'],
+  active_postings: [{ id: 10, role: 'station_officer', scope_type: 'district', scope_value: 'Traffic Police' }],
+};
+
+describe('AdminPage — Users section', () => {
   beforeEach(() => {
     sessionStorage.clear();
     sessionStorage.setItem('netra_session_token', 'fake-jwt-token');
     vi.restoreAllMocks();
   });
 
-  it('lists officers with their current posting', async () => {
+  it('lists officers and shows their assigned role under Assign Roles', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn((url: string) => {
         if (url.includes('/auth/me')) {
           return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
         }
-        if (url.includes('/admin/officers')) {
-          return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
-        }
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
+        if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         return Promise.resolve({ ok: true, json: async () => [] });
       })
     );
 
     renderAdminPage();
 
-    await waitFor(() => {
-      expect(screen.getByText('Demo Station Officer')).toBeInTheDocument();
-      expect(screen.getByText('GJ-SO-001')).toBeInTheDocument();
-      expect(screen.getByText(/station_officer/i)).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
+    expect(screen.getAllByText('GJ-SO-001').length).toBeGreaterThan(0);
+
+    fireEvent.click(await screen.findByRole('button', { name: /assign roles/i }));
+    expect(await screen.findAllByText('station_officer')).not.toHaveLength(0);
   });
 
-  it('submits a new posting', async () => {
+  it('adds a new role to the selected officer', async () => {
     const postSpy = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ id: 11, officer_id: 1, role: 'control_room_operator', scope_type: 'district', scope_value: 'Traffic Police', is_active: true }),
@@ -73,6 +78,7 @@ describe('AdminPage', () => {
         if (url.includes('/auth/me')) {
           return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
         }
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
         if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         if (url.includes('/admin/postings') && opts?.method === 'POST') return postSpy(url, opts);
         return Promise.resolve({ ok: true, json: async () => [] });
@@ -80,16 +86,39 @@ describe('AdminPage', () => {
     );
 
     renderAdminPage();
-    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('button', { name: /assign roles/i }));
 
-    fireEvent.click(screen.getByRole('button', { name: /add posting/i }));
-    fireEvent.change(screen.getByLabelText(/new role/i), { target: { value: 'control_room_operator' } });
-    fireEvent.click(screen.getByRole('button', { name: /confirm posting/i }));
+    fireEvent.change(await screen.findByLabelText(/new role/i), { target: { value: 'control_room_operator' } });
+    fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
     await waitFor(() => expect(postSpy).toHaveBeenCalled());
   });
 
-  it('lets a super admin reset an officer\'s password', async () => {
+  it('removes an assigned posting', async () => {
+    const deleteSpy = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (url.includes('/auth/me')) {
+          return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
+        }
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
+        if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
+        if (url.includes('/admin/postings/10') && opts?.method === 'DELETE') return deleteSpy(url, opts);
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    renderAdminPage();
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
+    fireEvent.click(await screen.findByRole('button', { name: /assign roles/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /remove/i }));
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalled());
+  });
+
+  it("lets a super admin reset an officer's password", async () => {
     const resetSpy = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal(
       'fetch',
@@ -98,15 +127,16 @@ describe('AdminPage', () => {
           return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles', 'reset_officer_passwords'] }) });
         }
         if (url.includes('/reset-password')) return resetSpy(url, opts);
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
         if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         return Promise.resolve({ ok: true, json: async () => [] });
       })
     );
 
     renderAdminPage();
-    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /reset password/i }));
     fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'new-secure-password-1' } });
     fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'new-secure-password-1' } });
     fireEvent.click(screen.getByRole('button', { name: /confirm reset/i }));
@@ -126,15 +156,16 @@ describe('AdminPage', () => {
           return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles', 'reset_officer_passwords'] }) });
         }
         if (url.includes('/reset-password')) return resetSpy();
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
         if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         return Promise.resolve({ ok: true, json: async () => [] });
       })
     );
 
     renderAdminPage();
-    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
 
-    fireEvent.click(screen.getByRole('button', { name: /reset password/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /reset password/i }));
     fireEvent.change(screen.getByLabelText(/^new password$/i), { target: { value: 'password-one-here' } });
     fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: 'password-two-here' } });
     fireEvent.click(screen.getByRole('button', { name: /confirm reset/i }));
@@ -150,13 +181,14 @@ describe('AdminPage', () => {
         if (url.includes('/auth/me')) {
           return Promise.resolve({ ok: true, json: async () => ({ permissions: ['manage_users_roles'] }) });
         }
+        if (url.includes('/admin/officers/1')) return Promise.resolve({ ok: true, json: async () => MOCK_PROFILE });
         if (url.includes('/admin/officers')) return Promise.resolve({ ok: true, json: async () => MOCK_OFFICERS });
         return Promise.resolve({ ok: true, json: async () => [] });
       })
     );
 
     renderAdminPage();
-    await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText('Demo Station Officer').length).toBeGreaterThan(0));
     expect(screen.queryByRole('button', { name: /reset password/i })).not.toBeInTheDocument();
   });
 
@@ -186,7 +218,7 @@ describe('AdminPage', () => {
 
     expect(await screen.findByText('Audit Log')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('GJ-AUD-001')).toBeInTheDocument());
-    expect(screen.queryByText('Officers & Postings')).not.toBeInTheDocument();
+    expect(screen.queryByText('Users')).not.toBeInTheDocument();
     expect(officersFetch).not.toHaveBeenCalled();
   });
 });

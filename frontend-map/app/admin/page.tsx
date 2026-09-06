@@ -1,16 +1,15 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, UserPlus, Search, GitCompareArrows, LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, UserPlus, Search, LucideIcon } from 'lucide-react';
 import { adminService } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
-import { OfficersPostingsSection } from './OfficersPostingsSection';
-import { RolePermissionsSection } from './RolePermissionsSection';
+import { UsersSection } from './UsersSection';
+import { SecurityConfigurationSection } from './SecurityConfigurationSection';
 import { CircleManagementSection } from './CircleManagementSection';
 import { PasswordResetRequestsSection } from './PasswordResetRequestsSection';
 import { AuditLogSection } from './AuditLogSection';
 import { ApprovalsSection } from './ApprovalsSection';
-import { RoleDutyBuilderSection } from './RoleDutyBuilderSection';
 import { SecurityDiagnosticsSection } from './SecurityDiagnosticsSection';
 import { SodRulesSection } from './SodRulesSection';
 
@@ -20,13 +19,16 @@ interface Tile {
   description: string;
   icon: LucideIcon;
   permission: string;
+  /** Users needs the full width and its own internal scroll panes (a
+   * roster + detail split), unlike every other tile, which is a normal
+   * single-column, page-scrolls form. */
+  fullBleed?: boolean;
 }
 
 const TILES: Tile[] = [
-  { id: 'officers', label: 'Officers & Postings', description: 'Roster, jurisdiction, and credentials', icon: Users, permission: 'manage_users_roles' },
+  { id: 'security', label: 'Security Configuration', description: 'Roles and the permissions they grant', icon: ShieldCheck, permission: 'manage_roles' },
+  { id: 'users', label: 'Users', description: 'Roster, profile, and role assignment', icon: Users, permission: 'manage_users_roles', fullBleed: true },
   { id: 'approvals', label: 'Pending Approvals', description: 'Self-registered officers awaiting a posting', icon: UserPlus, permission: 'manage_users_roles' },
-  { id: 'roles', label: 'Role Permissions', description: 'Platform-wide role definitions', icon: ShieldCheck, permission: 'manage_roles' },
-  { id: 'role-builder', label: 'Role & Duty Builder', description: 'Create, clone, and compose roles from duties', icon: GitCompareArrows, permission: 'manage_roles' },
   { id: 'diagnostics', label: 'Security Diagnostics', description: 'Why does/doesn’t this user have this access', icon: Search, permission: 'manage_roles' },
   { id: 'sod-rules', label: 'SoD Rules', description: 'Role pairs that can never both be held at once', icon: ShieldCheck, permission: 'manage_roles' },
   { id: 'circles', label: 'Areas', description: 'Manage Areas within districts', icon: MapIcon, permission: 'manage_circles' },
@@ -34,13 +36,16 @@ const TILES: Tile[] = [
   { id: 'audit-log', label: 'Audit Log', description: 'Every sensitive action, who and where', icon: ScrollText, permission: 'view_audit_logs' },
 ];
 
-/** Admin console -- a tile per concern (officers, roles, areas, password
- * requests, audit log), one shown at a time. Previously every section was
- * stacked on one page regardless of which the admin actually came here for;
- * this tile switcher is the whole fix for that. Nav, auth, and the global
- * header live in the shared AppShell; the backend is the actual authority
- * on every permission boundary here -- this UI's job is to make the common
- * case pleasant, not to be the security boundary itself. */
+/** Admin console -- a tile per concern, one shown at a time. "Security
+ * Configuration" (roles + the permissions each grants) and "Users" (roster
+ * + role assignment) are the two an admin reaches for constantly, so they
+ * come first and each got its own dedicated, focused page instead of being
+ * split across several overlapping tiles ("Role Permissions", "Role & Duty
+ * Builder", "Officers & Postings") that made it unclear what lived where.
+ * Nav, auth, and the global header live in the shared AppShell; the backend
+ * is the actual authority on every permission boundary here -- this UI's
+ * job is to make the common case pleasant, not to be the security boundary
+ * itself. */
 export default function AdminPage() {
   const { permissions, role, scopeValue, loading: permissionsLoading } = usePermissions();
   const [pendingRequestCount, setPendingRequestCount] = useState<number | null>(null);
@@ -74,8 +79,8 @@ export default function AdminPage() {
       <main className="flex-1 overflow-y-auto min-h-0 w-full">
         <div className="max-w-5xl mx-auto p-4 sm:p-6">
           <h1 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Admin Console</h1>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 animate-pulse" aria-label="Loading admin console">
-            {[1, 2, 3, 4, 5].map((item) => (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 animate-pulse" aria-label="Loading admin console">
+            {[1, 2, 3, 4].map((item) => (
               <div key={item} className="h-[110px] rounded-lg border border-line bg-panel" />
             ))}
           </div>
@@ -92,12 +97,29 @@ export default function AdminPage() {
     );
   }
 
+  const activeTile = visibleTiles.find((t) => t.id === activeTileId);
+
+  const activeContent = (
+    <>
+      {activeTileId === 'security' && <SecurityConfigurationSection />}
+      {activeTileId === 'users' && <UsersSection canResetPasswords={permissions.includes('reset_officer_passwords')} />}
+      {activeTileId === 'approvals' && <ApprovalsSection />}
+      {activeTileId === 'diagnostics' && <SecurityDiagnosticsSection />}
+      {activeTileId === 'sod-rules' && <SodRulesSection />}
+      {activeTileId === 'circles' && (
+        <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
+      )}
+      {activeTileId === 'password-requests' && <PasswordResetRequestsSection />}
+      {activeTileId === 'audit-log' && <AuditLogSection />}
+    </>
+  );
+
   return (
-    <main className="flex-1 overflow-y-auto min-h-0 w-full">
-      <div className="max-w-5xl mx-auto p-4 sm:p-6">
+    <main className="flex-1 flex flex-col overflow-hidden min-h-0 w-full">
+      <div className="max-w-5xl mx-auto w-full p-4 sm:p-6 pb-0 shrink-0">
         <h1 className="text-sm font-semibold text-white uppercase tracking-wide mb-4">Admin Console</h1>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2.5 mb-6">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 pb-6 border-b border-line">
           {visibleTiles.map((tile) => {
             const Icon = tile.icon;
             const isActive = activeTileId === tile.id;
@@ -125,22 +147,16 @@ export default function AdminPage() {
             );
           })}
         </div>
+      </div>
 
-        <div className="border-t border-line pt-6">
-          {activeTileId === 'officers' && (
-            <OfficersPostingsSection canResetPasswords={permissions.includes('reset_officer_passwords')} />
-          )}
-          {activeTileId === 'approvals' && <ApprovalsSection />}
-          {activeTileId === 'roles' && <RolePermissionsSection />}
-          {activeTileId === 'role-builder' && <RoleDutyBuilderSection />}
-          {activeTileId === 'diagnostics' && <SecurityDiagnosticsSection />}
-          {activeTileId === 'sod-rules' && <SodRulesSection />}
-          {activeTileId === 'circles' && (
-            <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
-          )}
-          {activeTileId === 'password-requests' && <PasswordResetRequestsSection />}
-          {activeTileId === 'audit-log' && <AuditLogSection />}
-        </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {activeTile?.fullBleed ? (
+          <div className="h-full">{activeContent}</div>
+        ) : (
+          <div className="h-full overflow-y-auto">
+            <div className="max-w-5xl mx-auto p-4 sm:p-6">{activeContent}</div>
+          </div>
+        )}
       </div>
     </main>
   );
