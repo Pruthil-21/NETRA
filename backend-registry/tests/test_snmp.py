@@ -1,6 +1,4 @@
 import httpx
-import pytest
-
 from app.services import snmp_service
 
 

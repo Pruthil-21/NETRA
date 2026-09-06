@@ -155,7 +155,6 @@ def test_deactivating_a_role_blocks_new_assignment_but_keeps_existing_holders(cl
 def test_deleting_a_system_seeded_role_is_rejected(client):
     sa_token = _seed_and_login(client)
     headers = {"Authorization": f"Bearer {sa_token}"}
-    role = client.get("/admin/roles", headers=headers).json()
     auditor_id_resp = client.post(
         "/admin/roles", json={"name": "test_role_for_delete_check", "display_name": "X"}, headers=headers,
     ).json()

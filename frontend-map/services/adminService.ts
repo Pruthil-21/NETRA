@@ -396,6 +396,14 @@ export const adminService = {
     return res.json();
   },
 
+  async reactivateRole(roleId: number): Promise<RoleOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/roles/${roleId}/reactivate`, {
+      method: 'POST', headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to reactivate role: HTTP ${res.status}`);
+    return res.json();
+  },
+
   async deleteRole(roleId: number): Promise<void> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/roles/${roleId}`, {
       method: 'DELETE', headers: authHeaders(),

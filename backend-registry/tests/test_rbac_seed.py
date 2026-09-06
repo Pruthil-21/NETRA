@@ -69,9 +69,8 @@ def test_valid_permissions_covers_every_seeded_permission():
     already has in the seeded database."""
     import sys
     sys.path.insert(0, "scripts")
-    from seed_rbac import PERMISSIONS
-
     from app.services.rbac_service import VALID_PERMISSIONS
+    from seed_rbac import PERMISSIONS
 
     all_seeded = {perm for perms in PERMISSIONS.values() for perm in perms}
     missing = all_seeded - VALID_PERMISSIONS
