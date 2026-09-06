@@ -9,11 +9,12 @@ import { isLoggedIn } from '@/lib/session';
 interface MeResponse {
   badge_number: string;
   name: string;
-  role: string;
+  role: string | null;
   rank: string | null;
   photo_url: string | null;
   last_login: string | null;
-  scope_type: string;
+  status: string;
+  scope_type: string | null;
   scope_value: string | null;
   permissions: string[];
 }
@@ -25,6 +26,7 @@ interface UsePermissionsResult {
   rank: string | null;
   photoUrl: string | null;
   lastLogin: string | null;
+  status: string | null;
   scopeValue: string | null;
   permissions: string[];
   loading: boolean;
@@ -76,6 +78,7 @@ export function usePermissions(): UsePermissionsResult {
     rank: me?.rank ?? null,
     photoUrl: me?.photo_url ?? null,
     lastLogin: me?.last_login ?? null,
+    status: me?.status ?? null,
     scopeValue: me?.scope_value ?? null,
     permissions,
     loading,

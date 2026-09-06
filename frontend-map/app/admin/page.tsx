@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, LucideIcon } from 'lucide-react';
+import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, UserPlus, Search, GitCompareArrows, LucideIcon } from 'lucide-react';
 import { adminService } from '@/services/adminService';
 import { usePermissions } from '@/hooks/usePermissions';
 import { OfficersPostingsSection } from './OfficersPostingsSection';
@@ -9,6 +9,10 @@ import { RolePermissionsSection } from './RolePermissionsSection';
 import { CircleManagementSection } from './CircleManagementSection';
 import { PasswordResetRequestsSection } from './PasswordResetRequestsSection';
 import { AuditLogSection } from './AuditLogSection';
+import { ApprovalsSection } from './ApprovalsSection';
+import { RoleDutyBuilderSection } from './RoleDutyBuilderSection';
+import { SecurityDiagnosticsSection } from './SecurityDiagnosticsSection';
+import { SodRulesSection } from './SodRulesSection';
 
 interface Tile {
   id: string;
@@ -20,7 +24,11 @@ interface Tile {
 
 const TILES: Tile[] = [
   { id: 'officers', label: 'Officers & Postings', description: 'Roster, jurisdiction, and credentials', icon: Users, permission: 'manage_users_roles' },
+  { id: 'approvals', label: 'Pending Approvals', description: 'Self-registered officers awaiting a posting', icon: UserPlus, permission: 'manage_users_roles' },
   { id: 'roles', label: 'Role Permissions', description: 'Platform-wide role definitions', icon: ShieldCheck, permission: 'manage_roles' },
+  { id: 'role-builder', label: 'Role & Duty Builder', description: 'Create, clone, and compose roles from duties', icon: GitCompareArrows, permission: 'manage_roles' },
+  { id: 'diagnostics', label: 'Security Diagnostics', description: 'Why does/doesn’t this user have this access', icon: Search, permission: 'manage_roles' },
+  { id: 'sod-rules', label: 'SoD Rules', description: 'Role pairs that can never both be held at once', icon: ShieldCheck, permission: 'manage_roles' },
   { id: 'circles', label: 'Areas', description: 'Manage Areas within districts', icon: MapIcon, permission: 'manage_circles' },
   { id: 'password-requests', label: 'Password Reset Requests', description: 'Review and action officer requests', icon: KeyRound, permission: 'reset_officer_passwords' },
   { id: 'audit-log', label: 'Audit Log', description: 'Every sensitive action, who and where', icon: ScrollText, permission: 'view_audit_logs' },
@@ -122,7 +130,11 @@ export default function AdminPage() {
           {activeTileId === 'officers' && (
             <OfficersPostingsSection canResetPasswords={permissions.includes('reset_officer_passwords')} />
           )}
+          {activeTileId === 'approvals' && <ApprovalsSection />}
           {activeTileId === 'roles' && <RolePermissionsSection />}
+          {activeTileId === 'role-builder' && <RoleDutyBuilderSection />}
+          {activeTileId === 'diagnostics' && <SecurityDiagnosticsSection />}
+          {activeTileId === 'sod-rules' && <SodRulesSection />}
           {activeTileId === 'circles' && (
             <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
           )}

@@ -28,6 +28,7 @@ const MOCK_OFFICERS = [
   {
     id: 1, badge_number: 'GJ-SO-001', name: 'Demo Station Officer', rank: 'PI',
     active_posting: { id: 10, role: 'station_officer', scope_type: 'district', scope_value: 'Traffic Police' },
+    active_postings: [{ id: 10, role: 'station_officer', scope_type: 'district', scope_value: 'Traffic Police' }],
   },
 ];
 
@@ -61,7 +62,7 @@ describe('AdminPage', () => {
     });
   });
 
-  it('submits a posting reassignment', async () => {
+  it('submits a new posting', async () => {
     const postSpy = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ id: 11, officer_id: 1, role: 'control_room_operator', scope_type: 'district', scope_value: 'Traffic Police', is_active: true }),
@@ -81,9 +82,9 @@ describe('AdminPage', () => {
     renderAdminPage();
     await waitFor(() => expect(screen.getByText('Demo Station Officer')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /reassign/i }));
+    fireEvent.click(screen.getByRole('button', { name: /add posting/i }));
     fireEvent.change(screen.getByLabelText(/new role/i), { target: { value: 'control_room_operator' } });
-    fireEvent.click(screen.getByRole('button', { name: /confirm reassignment/i }));
+    fireEvent.click(screen.getByRole('button', { name: /confirm posting/i }));
 
     await waitFor(() => expect(postSpy).toHaveBeenCalled());
   });

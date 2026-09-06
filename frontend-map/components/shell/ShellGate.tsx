@@ -5,6 +5,8 @@ import { usePathname } from 'next/navigation';
 import { useAuthGuard } from '@/lib/useAuthGuard';
 import { AppShell } from '@/components/shell/AppShell';
 import { LoadingScreen } from '@/components/common/LoadingScreen';
+import { PendingApprovalScreen } from '@/components/shell/PendingApprovalScreen';
+import { usePermissions } from '@/hooks/usePermissions';
 
 /** The one place that decides "does this route get the nav shell + auth
  * gate" -- /login is the sole exception (nothing to navigate to before
@@ -21,11 +23,13 @@ import { LoadingScreen } from '@/components/common/LoadingScreen';
  * to show the dashboard or bounce to /login. */
 export function ShellGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isLoginPage = pathname === '/login';
-  const authChecked = useAuthGuard(isLoginPage);
+  const isPublicPage = pathname === '/login' || pathname === '/register';
+  const authChecked = useAuthGuard(isPublicPage);
+  const { status, loading: permissionsLoading } = usePermissions();
 
-  if (isLoginPage) return <>{children}</>;
+  if (isPublicPage) return <>{children}</>;
   if (!authChecked) return <LoadingScreen />;
+  if (!permissionsLoading && status === 'pending') return <PendingApprovalScreen />;
 
   return <AppShell>{children}</AppShell>;
 }

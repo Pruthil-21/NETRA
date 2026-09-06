@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { AlertTriangle, ArrowLeftRight, CheckCircle2, KeyRound, Loader2, MapPin, Users, UserCog, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeftRight, Ban, CheckCircle2, KeyRound, Loader2, LogOut, MapPin, Users, UserCog, Unlock, X } from 'lucide-react';
 import { adminService, OfficerOut } from '@/services/adminService';
 import { roleBadgeClass } from './roleBadge';
 
@@ -28,6 +28,10 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
   const [resetSubmitting, setResetSubmitting] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
   const [resetConfirmedFor, setResetConfirmedFor] = useState<number | null>(null);
+
+  const [lifecycleBusyId, setLifecycleBusyId] = useState<number | null>(null);
+  const [lifecycleMessage, setLifecycleMessage] = useState<{ id: number; text: string } | null>(null);
+  const [lifecycleError, setLifecycleError] = useState<{ id: number; text: string } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -115,6 +119,74 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
     }
   };
 
+  const handleSuspend = async (officerId: number) => {
+    setLifecycleBusyId(officerId);
+    setLifecycleError(null);
+    try {
+      await adminService.suspendOfficer(officerId);
+      setLifecycleMessage({ id: officerId, text: 'Account suspended.' });
+      load();
+    } catch (err) {
+      setLifecycleError({ id: officerId, text: err instanceof Error ? err.message : 'Failed to suspend' });
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
+  const handleReactivate = async (officerId: number) => {
+    setLifecycleBusyId(officerId);
+    setLifecycleError(null);
+    try {
+      await adminService.reactivateOfficer(officerId);
+      setLifecycleMessage({ id: officerId, text: 'Account reactivated.' });
+      load();
+    } catch (err) {
+      setLifecycleError({ id: officerId, text: err instanceof Error ? err.message : 'Failed to reactivate' });
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
+  const handleForceLogout = async (officerId: number) => {
+    setLifecycleBusyId(officerId);
+    setLifecycleError(null);
+    try {
+      await adminService.forceLogoutOfficer(officerId);
+      setLifecycleMessage({ id: officerId, text: 'Active session(s) revoked.' });
+    } catch (err) {
+      setLifecycleError({ id: officerId, text: err instanceof Error ? err.message : 'Failed to force-logout' });
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
+  const handleUnlock = async (officerId: number) => {
+    setLifecycleBusyId(officerId);
+    setLifecycleError(null);
+    try {
+      await adminService.unlockOfficer(officerId);
+      setLifecycleMessage({ id: officerId, text: 'Lockout cleared.' });
+    } catch (err) {
+      setLifecycleError({ id: officerId, text: err instanceof Error ? err.message : 'Failed to unlock' });
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
+  const handleRevokePosting = async (officerId: number, postingId: number) => {
+    setLifecycleBusyId(officerId);
+    setLifecycleError(null);
+    try {
+      await adminService.revokePosting(postingId);
+      setLifecycleMessage({ id: officerId, text: 'Posting revoked.' });
+      load();
+    } catch (err) {
+      setLifecycleError({ id: officerId, text: err instanceof Error ? err.message : 'Failed to revoke posting' });
+    } finally {
+      setLifecycleBusyId(null);
+    }
+  };
+
   return (
     <section>
       <div className="flex items-center gap-3 mb-1">
@@ -191,20 +263,35 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
-                    {officer.active_posting ? (
-                      <>
+                    {(officer.active_postings ?? []).length > 0 ? (
+                      officer.active_postings.map((posting) => (
                         <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold uppercase tracking-wider ${roleBadgeClass(
-                            officer.active_posting.role
-                          )}`}
+                          key={posting.id}
+                          className="inline-flex items-center gap-1 rounded-full border border-line bg-panel-raised pl-0.5 pr-1 py-0.5"
                         >
-                          {officer.active_posting.role}
+                          <span
+                            className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${roleBadgeClass(
+                              posting.role
+                            )}`}
+                          >
+                            {posting.role}
+                          </span>
+                          <span className="inline-flex items-center gap-0.5 text-[10px] text-slate-400">
+                            <MapPin size={9} />
+                            {posting.scope_value ?? 'Platform-wide'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleRevokePosting(officer.id, posting.id)}
+                            disabled={lifecycleBusyId === officer.id}
+                            aria-label={`Revoke ${posting.role} posting`}
+                            title="Revoke this posting"
+                            className="text-slate-500 hover:text-signal-red disabled:opacity-50"
+                          >
+                            <X size={10} />
+                          </button>
                         </span>
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-line bg-panel-raised text-[10px] text-slate-400">
-                          <MapPin size={10} />
-                          {officer.active_posting.scope_value ?? 'Platform-wide'}
-                        </span>
-                      </>
+                      ))
                     ) : (
                       <span className="text-[11px] text-slate-600 italic">No active posting</span>
                     )}
@@ -215,7 +302,7 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
                       className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-white hover:border-slate-500 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
                     >
                       <ArrowLeftRight size={12} />
-                      Reassign
+                      Add Posting
                     </button>
                     {canResetPasswords && (
                       <button
@@ -227,13 +314,66 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
                         Reset Password
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => handleSuspend(officer.id)}
+                      disabled={lifecycleBusyId === officer.id}
+                      title="Suspend account"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-signal-red hover:border-signal-red/50 transition-colors disabled:opacity-50"
+                    >
+                      <Ban size={12} />
+                      Suspend
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleReactivate(officer.id)}
+                      disabled={lifecycleBusyId === officer.id}
+                      title="Reactivate account"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-signal-green hover:border-signal-green/50 transition-colors disabled:opacity-50"
+                    >
+                      <CheckCircle2 size={12} />
+                      Reactivate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleForceLogout(officer.id)}
+                      disabled={lifecycleBusyId === officer.id}
+                      title="Force logout (revoke active sessions)"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-white hover:border-slate-500 transition-colors disabled:opacity-50"
+                    >
+                      <LogOut size={12} />
+                      Force Logout
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleUnlock(officer.id)}
+                      disabled={lifecycleBusyId === officer.id}
+                      title="Clear account lockout"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-panel-raised border border-line rounded text-slate-300 hover:text-white hover:border-slate-500 transition-colors disabled:opacity-50"
+                    >
+                      <Unlock size={12} />
+                      Unlock
+                    </button>
                   </div>
                 </div>
+
+                {lifecycleMessage?.id === officer.id && (
+                  <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
+                    <CheckCircle2 size={14} />
+                    {lifecycleMessage.text}
+                  </div>
+                )}
+                {lifecycleError?.id === officer.id && (
+                  <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-red/30 bg-signal-red/10 text-signal-red text-[11px]">
+                    <AlertTriangle size={14} />
+                    {lifecycleError.text}
+                  </div>
+                )}
 
                 {confirmedFor === officer.id && (
                   <div className="mt-3 flex items-center gap-2 px-3 py-2 rounded-md border border-signal-green/30 bg-signal-green/10 text-signal-green text-[11px]">
                     <CheckCircle2 size={14} />
-                    Posting reassigned successfully.
+                    Posting added successfully.
                   </div>
                 )}
 
@@ -399,7 +539,7 @@ export function OfficersPostingsSection({ canResetPasswords }: { canResetPasswor
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-command hover:bg-command-dim text-white rounded-md uppercase tracking-wide transition disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-command"
                         >
                           {submitting && <Loader2 size={12} className="animate-spin" />}
-                          Confirm Reassignment
+                          Confirm Posting
                         </button>
                         <button
                           type="button"
