@@ -4128,3 +4128,64 @@ this change.
   common case early in any track's life) -- this specifically targets
   sustained, long-running streams where confirmed tracks accumulate
   over time, not short clips with mostly-fresh vehicles.
+
+# Session 37 -- caught up with main: cross-team check found a real breaking change, fixed it
+
+User asked to pull main and check what other teams changed while this
+branch was heads-down on accuracy work, and fix our own code if
+necessary. Real find, not just a routine sync.
+
+## Real, breaking issue found: backend-registry renumbered every camera
+
+`backend-registry/scripts/backups/cleanup_and_renumber_cameras.sql`
+(applied ~2026-09-03, per its accompanying dated CSV snapshots) mapped
+the whole `cameras` table down to a clean 30-camera set where the row's
+own id now equals the organizer's own camera number -- id 1 is
+`direct-cam01`, id 30 is `direct-cam30`. Confirmed directly against
+`backend-registry/scripts/backups/cameras_snapshot_2026-09-03.csv`
+(each row's real `stream_id` alongside its post-renumber id), not
+guessed.
+
+`anpr/config.py`'s `CAMERA_ID_MAP` still had the *old* ids (43-52 for
+cam01-10) -- every live detection would have sent a stale, likely
+nonexistent camera_id to backend-watchlist. Fixed: updated to the real
+new ids, and extended to all 30 cameras (cam11-30 was a real, standing
+gap noted in this file's own comments as "needs real values from P6,
+not guessed" -- the renumbering snapshot happened to hand us exactly
+those real values, so closed that gap in the same pass instead of
+leaving it open pending a separate ask).
+
+Also updated the stale comment above the map: it used to say "id 1 is
+a fictional demo camera with no real stream," which was true under the
+old numbering but is actively wrong now that id 1 is a real, current
+camera. Left a note on *why* it changed (found by diffing against
+main), not just what changed, so a future reader isn't confused by
+the same comment going stale a second time.
+
+## What's confirmed unaffected
+
+- `POST /detections`' request/response contract (`DetectionIn`/
+  `DetectionResult`) -- diffed directly, no changes to the fields
+  ml-anpr sends or the shape it expects back. The only backend-watchlist
+  changes are additive (CSV export, district-scoped search, an internal
+  vehicle_daily_sightings rollup, alert WebSocket push) -- none touch
+  what this project calls.
+- `contract/API_CONTRACT.md` -- no diff at all since this branch
+  diverged.
+- Every other `camera_id_map` reference in this codebase
+  (`event_sender.py`, `watchlist_client.py`) already imports from
+  `config.CAMERA_ID_MAP` as the single source of truth -- one fix
+  covers the whole pipeline, no second hardcoded copy found.
+
+## Still open, unrelated to this check
+
+`DETECTION_API_URL`'s Cloudflare tunnel is still dead -- every real
+test this session hit a real connection failure against it, and no
+newer URL exists anywhere in main's history either. Needs a fresh URL
+from P6 directly; nothing in the repo resolves this one.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3) and `tests/test_reconfirm_cooldown.py`
+(OK), re-run after the config change -- doesn't touch detection/tracking
+logic at all, but confirmed no accidental breakage anyway.
