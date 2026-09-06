@@ -27,6 +27,9 @@ from .schemas import (
     CoverageTargetCreate,
     CoverageTargetOut,
     CoverageTargetUpdate,
+    DataJobCreate,
+    DataJobOut,
+    DiagnosticsOut,
     DutyCreate,
     DutyOut,
     DutyUpdate,
@@ -35,7 +38,9 @@ from .schemas import (
     LoginRequest,
     LoginResponse,
     MeResponse,
+    NotificationOut,
     OfficerOut,
+    OfficerProfileOut,
     PoliceStationCreate,
     PoliceStationOut,
     PoliceStationUpdate,
@@ -46,13 +51,22 @@ from .schemas import (
     PostingCreate,
     PostingOut,
     ProfilePhotoUpdate,
+    RegisterRequest,
+    RegistrationApprove,
+    RegistrationRequestOut,
+    RegistrationReject,
     ReportSummary,
     RoleCloneRequest,
     RoleCreate,
+    RoleDiffOut,
+    RoleDraftOut,
+    RoleDraftUpdate,
     RoleDutiesUpdate,
     RoleOut,
     RolePermissionsOut,
     RolePermissionsUpdate,
+    SodRuleCreate,
+    SodRuleOut,
     SyntheticDetectionEventAccepted,
     SyntheticDetectionEventIn,
 )
@@ -65,11 +79,15 @@ from .services import (
     circles_service,
     coverage_targets_service,
     gap_analysis_service,
+    import_export_service,
+    notifications_service,
     password_reset_requests_service,
     police_stations_service,
     rbac_service,
     recordings_service,
+    registration_service,
     reports_service,
+    sessions_service,
     snmp_service,
     synthetic_events_service,
 )
@@ -95,20 +113,81 @@ def health():
     return {"status": "ok"}
 
 
+def _effective_district_scopes(user: dict) -> list[str] | None:
+    """Multi-role jurisdiction (spec Section 3.3): "effective jurisdiction is
+    the union of every active posting's scope." Returns None for
+    platform-wide (no filter -- sees/manages everything), an empty list for
+    "holds no district jurisdiction at all" (a pending officer with zero
+    postings, or a legacy token that somehow carries neither), or the
+    deduplicated list of every district this officer is actively posted to.
+
+    Falls back to the token's single legacy scope_type/scope_value pair
+    when no `scopes` claim is present at all -- every hand-crafted test/demo
+    token, and any token issued before multi-posting existed."""
+    scopes = user.get("scopes")
+    if scopes is None:
+        if user.get("scope_type") == "district":
+            return [user.get("scope_value")]
+        # Platform, or a legacy hand-crafted token with no scope_type claim
+        # at all -- both are unrestricted, matching this codebase's original
+        # single-scope behavior before multi-posting existed. Only a real
+        # RBAC-issued token's *explicit*, empty `scopes` list (an officer
+        # who genuinely holds zero active postings) means "no jurisdiction".
+        return None
+    if not scopes:
+        return []
+    if any(s.get("scope_type") == "platform" for s in scopes):
+        return None
+    return sorted({s["scope_value"] for s in scopes if s.get("scope_type") == "district" and s.get("scope_value")})
+
+
+def _resolve_district_scoped(dept_scopes: list[str] | None, fetch_all, fetch_by_district):
+    """Applies _effective_district_scopes' result to a single-district-filter
+    fetch function: None -> no filter (fetch_all), [] -> no jurisdiction at
+    all (empty, never fetch_all), one district -> the existing single-value
+    path unchanged, several -> merge each district's rows, deduped by id."""
+    if dept_scopes is None:
+        return fetch_all()
+    if not dept_scopes:
+        return []
+    if len(dept_scopes) == 1:
+        return fetch_by_district(dept_scopes[0])
+    merged: dict[int, dict] = {}
+    for district in dept_scopes:
+        for row in fetch_by_district(district):
+            merged[row["id"]] = row
+    return list(merged.values())
+
+
 @app.post("/auth/login", response_model=LoginResponse)
 def login(body: LoginRequest):
     with get_conn() as conn:
         officer = auth_service.get_officer_by_badge(conn, body.badge_number)
         password_hash = officer["password_hash"] if officer else auth_service.DUMMY_PASSWORD_HASH
         password_ok = auth_service.verify_password(body.password, password_hash)
+
+        # Locked-out is checked before the password itself: a locked account
+        # rejects every attempt (right password included) until the cooldown
+        # passes or an admin unlocks it early -- otherwise lockout would be
+        # trivially bypassable by anyone who already knows the real password.
+        if officer is not None and auth_service.is_locked(officer):
+            raise HTTPException(status_code=423, detail="Account is locked due to too many failed login attempts")
+
         if officer is None or not password_ok:
+            if officer is not None:
+                auth_service.record_failed_login(conn, officer["id"])
             raise HTTPException(status_code=401, detail="Invalid badge number or password")
 
-        posting = auth_service.get_active_posting(conn, officer["id"])
-        if posting is None:
-            raise HTTPException(status_code=401, detail="Officer has no active posting")
+        if officer["status"] in ("suspended", "deactivated"):
+            raise HTTPException(status_code=403, detail=f"Account is {officer['status']}")
 
-        token = auth_service.issue_token(conn, officer, posting)
+        # 'pending' (a freshly self-registered officer, spec Section 3.2) and
+        # 'active' both reach here -- a pending officer still gets a token,
+        # just one carrying zero postings/permissions, so the frontend can
+        # show the "awaiting approval" empty shell instead of a login error.
+        postings = auth_service.get_active_postings(conn, officer["id"])
+        token = auth_service.issue_token(conn, officer, postings)
+        auth_service.record_successful_login(conn, officer["id"])
         audit_service.log(conn, officer["badge_number"], "login", "officer", officer["id"], badge_number=officer["badge_number"])
         return {"token": token}
 
@@ -122,6 +201,7 @@ def me(user=Depends(get_current_user)):
         "rank": None,
         "photo_url": None,
         "last_login": None,
+        "status": "active",
         "scope_type": user.get("scope_type", "platform"),
         "scope_value": user.get("scope_value"),
         "permissions": user.get("permissions", []),
@@ -139,7 +219,156 @@ def me(user=Depends(get_current_user)):
                 response["rank"] = officer["rank"]
                 response["photo_url"] = officer["photo_url"]
                 response["last_login"] = auth_service.get_last_login(conn, officer["id"])
+                # 'pending' is the only status that ever reaches here with a
+                # valid token (suspended/deactivated are rejected at login) --
+                # this is the frontend's signal to show the "awaiting
+                # approval" empty shell instead of the normal dashboard.
+                response["status"] = officer["status"]
     return response
+
+
+@app.post("/auth/register", response_model=RegistrationRequestOut, status_code=201)
+def register(body: RegisterRequest):
+    """Public self-registration (spec Section 3.2). Creates the officer row
+    immediately, status='pending', with zero postings -- matches D365's "no
+    role, no privileges" rule: the account exists and can log in, it just
+    sees an empty shell until a Super Admin/District Command approves it
+    with an initial posting. No permission gate -- this is the one endpoint
+    meant for someone who isn't an officer yet."""
+    with get_conn() as conn:
+        if auth_service.get_officer_by_badge(conn, body.badge_number) is not None:
+            raise HTTPException(status_code=409, detail="Badge number already registered")
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO officers (badge_number, name, rank, password_hash, status) "
+                "VALUES (%s, %s, %s, %s, 'pending') RETURNING id",
+                (body.badge_number, body.name, body.rank, auth_service.hash_password(body.password)),
+            )
+            officer_id = cur.fetchone()[0]
+        conn.commit()
+        created = registration_service.create_request(conn, officer_id, body.department, body.contact_info)
+        audit_service.log(conn, body.badge_number, "self_register", "officer", officer_id, badge_number=body.badge_number)
+        return created
+
+
+@app.get("/admin/approvals", response_model=list[RegistrationRequestOut])
+def list_approvals(status: str | None = None, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        return registration_service.list_requests(conn, status)
+
+
+@app.post("/admin/approvals/{request_id}/approve", response_model=RegistrationRequestOut)
+def approve_registration(
+    request_id: int, body: RegistrationApprove, user=Depends(require_permission("manage_users_roles"))
+):
+    """Approve = assign an initial posting (role + scope) in the same
+    action (spec Section 3.2) -- this is really just admin_service.add_posting
+    plus flipping the officer's status to 'active' and the request's own
+    status to 'approved', all in one call."""
+    with get_conn() as conn:
+        request = registration_service.get_request(conn, request_id)
+        if request is None or request["status"] != "pending":
+            raise HTTPException(status_code=404, detail="Registration request not found or already reviewed")
+        role = rbac_service.get_role_by_name(conn, body.role_name)
+        if role is None:
+            raise HTTPException(status_code=404, detail=f"Unknown role '{body.role_name}'")
+        if not role["is_active"]:
+            raise HTTPException(status_code=400, detail=f"Role '{body.role_name}' is deactivated and cannot be newly assigned")
+
+        _guard_delegated_posting_assignment(conn, user, role, body.scope_type, body.scope_value)
+
+        conflict = rbac_service.find_sod_conflict(conn, request["officer_id"], role["id"])
+        if conflict is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Separation of duty: cannot hold both '{conflict['role_a_name']}' and '{conflict['role_b_name']}' at once",
+            )
+
+        admin_service.add_posting(
+            conn, request["officer_id"], role["id"], body.scope_type, body.scope_value,
+            assigned_by=user.get("badge_number", user.get("sub", "")),
+        )
+        admin_service.set_officer_status(conn, request["officer_id"], "active")
+        updated = registration_service.mark_approved(conn, request_id, user.get("badge_number", user.get("sub")))
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "approve_registration", "officer", request["officer_id"]
+        )
+        notifications_service.notify(
+            conn, request["officer_id"], "registration_approved",
+            f"Your registration was approved as '{role['name']}'.",
+        )
+        return updated
+
+
+@app.post("/admin/approvals/{request_id}/reject", response_model=RegistrationRequestOut)
+def reject_registration(
+    request_id: int, body: RegistrationReject, user=Depends(require_permission("manage_users_roles"))
+):
+    """Reject: records a reason, and the account is deactivated outright
+    (spec Section 3.2 leaves this admin's choice between "stays access-
+    less" and "gets deactivated" -- deactivated is the deterministic,
+    unambiguous default; a Super Admin can always reactivate + approve
+    properly later if it was a mistake)."""
+    with get_conn() as conn:
+        request = registration_service.get_request(conn, request_id)
+        if request is None or request["status"] != "pending":
+            raise HTTPException(status_code=404, detail="Registration request not found or already reviewed")
+        admin_service.set_officer_status(conn, request["officer_id"], "deactivated")
+        updated = registration_service.mark_rejected(conn, request_id, user.get("badge_number", user.get("sub")), body.reason)
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "reject_registration", "officer", request["officer_id"],
+            reason_code=body.reason,
+        )
+        notifications_service.notify(
+            conn, request["officer_id"], "registration_rejected",
+            f"Your registration was rejected.{f' Reason: {body.reason}' if body.reason else ''}",
+        )
+        return updated
+
+
+@app.get("/admin/officers/{officer_id}", response_model=OfficerProfileOut)
+def get_officer_profile(officer_id: int, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        profile = admin_service.get_officer_profile(conn, officer_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        return profile
+
+
+@app.post("/admin/officers/{officer_id}/suspend", status_code=204)
+def suspend_officer(officer_id: int, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        if not admin_service.set_officer_status(conn, officer_id, "suspended"):
+            raise HTTPException(status_code=404, detail="Officer not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "suspend_officer", "officer", officer_id)
+
+
+@app.post("/admin/officers/{officer_id}/reactivate", status_code=204)
+def reactivate_officer(officer_id: int, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        if not admin_service.set_officer_status(conn, officer_id, "active"):
+            raise HTTPException(status_code=404, detail="Officer not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reactivate_officer", "officer", officer_id)
+
+
+@app.post("/admin/officers/{officer_id}/force-logout", status_code=204)
+def force_logout(officer_id: int, user=Depends(require_permission("manage_users_roles"))):
+    with get_conn() as conn:
+        if auth_service.get_officer_by_id(conn, officer_id) is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        sessions_service.revoke_all_sessions(conn, officer_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "force_logout", "officer", officer_id)
+
+
+@app.post("/admin/officers/{officer_id}/unlock", status_code=204)
+def unlock_officer(officer_id: int, user=Depends(require_permission("manage_users_roles"))):
+    """Admin override to clear an account lockout before its cooldown
+    naturally expires (spec Section 3.6)."""
+    with get_conn() as conn:
+        if auth_service.get_officer_by_id(conn, officer_id) is None:
+            raise HTTPException(status_code=404, detail="Officer not found")
+        auth_service.unlock_officer(conn, officer_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "unlock_officer", "officer", officer_id)
 
 
 @app.post("/auth/change-password", status_code=204)
@@ -243,6 +472,34 @@ def list_postings(user=Depends(require_permission("manage_users_roles"))):
         return admin_service.list_postings(conn)
 
 
+def _guard_delegated_posting_assignment(conn, user: dict, role: dict, scope_type: str, scope_value: str | None) -> None:
+    """Delegated admin (spec Section 6/3.8): a platform-wide actor (Super
+    Admin) can assign anything. A district-scoped actor with
+    can_delegate_admin (District Command) can only assign within one of
+    their own effective jurisdictions -- the union of every active
+    posting's district scope (spec Section 3.3), never a district outside
+    all of them -- and, now that roles are dynamic (data, not a fixed
+    5-name list), only roles whose hierarchy_level is strictly junior to
+    their own: a role's numeric level increases the more junior it is
+    (super_admin=1 is senior-most), and NULL means "outside the
+    operational hierarchy" (e.g. auditor), always assignable by a delegate.
+    An actor whose own role can't be resolved, or carries no
+    hierarchy_level itself, can't safely compare levels at all and is
+    denied by default. Shared by both direct posting assignment
+    (create_posting) and approving a registration (which is really just
+    "assign this person's first posting")."""
+    actor_district_scopes = _effective_district_scopes(user)
+    if actor_district_scopes is None:
+        return
+    if scope_type != "district" or scope_value not in actor_district_scopes:
+        raise HTTPException(status_code=403, detail="Cannot assign outside your own jurisdiction")
+    actor_role = rbac_service.get_role_by_name(conn, user.get("role", ""))
+    actor_level = actor_role["hierarchy_level"] if actor_role else None
+    target_level = role["hierarchy_level"]
+    if actor_level is None or (target_level is not None and target_level <= actor_level):
+        raise HTTPException(status_code=403, detail="Cannot assign a role at or above your own")
+
+
 @app.post("/admin/postings", response_model=PostingOut, status_code=201)
 def create_posting(body: PostingCreate, user=Depends(require_permission("manage_users_roles"))):
     with get_conn() as conn:
@@ -252,33 +509,27 @@ def create_posting(body: PostingCreate, user=Depends(require_permission("manage_
         if not role["is_active"]:
             raise HTTPException(status_code=400, detail=f"Role '{body.role_name}' is deactivated and cannot be newly assigned")
 
-        # Delegated admin (spec Section 6/3.8): a platform-wide actor (Super
-        # Admin) can assign anything. A district-scoped actor with
-        # can_delegate_admin (District Command) can only assign within their
-        # own scope_value -- never another district's -- and, now that roles
-        # are dynamic (data, not a fixed 5-name list), only roles whose
-        # hierarchy_level is strictly junior to their own: a role's numeric
-        # level increases the more junior it is (super_admin=1 is senior-most),
-        # and NULL means "outside the operational hierarchy" (e.g. auditor),
-        # always assignable by a delegate. An actor whose own role can't be
-        # resolved, or carries no hierarchy_level itself, can't safely compare
-        # levels at all and is denied by default.
-        actor_scope_type = user.get("scope_type")
-        actor_scope_value = user.get("scope_value")
-        if actor_scope_type != "platform":
-            if body.scope_type != "district" or body.scope_value != actor_scope_value:
-                raise HTTPException(status_code=403, detail="Cannot assign outside your own jurisdiction")
-            actor_role = rbac_service.get_role_by_name(conn, user.get("role", ""))
-            actor_level = actor_role["hierarchy_level"] if actor_role else None
-            target_level = role["hierarchy_level"]
-            if actor_level is None or (target_level is not None and target_level <= actor_level):
-                raise HTTPException(status_code=403, detail="Cannot assign a role at or above your own")
+        _guard_delegated_posting_assignment(conn, user, role, body.scope_type, body.scope_value)
+
+        conflict = rbac_service.find_sod_conflict(conn, body.officer_id, role["id"])
+        if conflict is not None:
+            audit_service.log(
+                conn, user.get("badge_number", user.get("sub")), "sod_conflict_blocked", "officer", body.officer_id,
+                reason_code=f"{conflict['role_a_name']}+{conflict['role_b_name']}",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=f"Separation of duty: cannot hold both '{conflict['role_a_name']}' and '{conflict['role_b_name']}' at once",
+            )
 
         posting = admin_service.add_posting(
             conn, body.officer_id, role["id"], body.scope_type, body.scope_value,
             assigned_by=user.get("badge_number", user.get("sub", "")), expires_at=body.expires_at,
         )
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "add_posting", "posting", posting["id"])
+        notifications_service.notify(
+            conn, body.officer_id, "role_granted", f"You were granted the '{role['name']}' role."
+        )
         return posting
 
 
@@ -291,6 +542,55 @@ def delete_posting(posting_id: int, user=Depends(require_permission("manage_user
         if revoked is None:
             raise HTTPException(status_code=404, detail="Posting not found or already inactive")
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "revoke_posting", "posting", posting_id)
+        notifications_service.notify(
+            conn, revoked["officer_id"], "role_revoked", f"Your '{revoked['role']}' posting was revoked."
+        )
+
+
+@app.get("/notifications", response_model=list[NotificationOut])
+def list_my_notifications(unread_only: bool = False, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        return []
+    with get_conn() as conn:
+        return notifications_service.list_for_officer(conn, int(officer_id), unread_only)
+
+
+@app.post("/notifications/{notification_id}/read", status_code=204)
+def mark_notification_read(notification_id: int, user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account")
+    with get_conn() as conn:
+        if not notifications_service.mark_read(conn, int(officer_id), notification_id):
+            raise HTTPException(status_code=404, detail="Notification not found")
+
+
+@app.get("/admin/sod-rules", response_model=list[SodRuleOut])
+def list_sod_rules(user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        return rbac_service.list_sod_rules(conn)
+
+
+@app.post("/admin/sod-rules", response_model=SodRuleOut, status_code=201)
+def create_sod_rule(body: SodRuleCreate, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, body.role_a_id) is None or rbac_service.get_role(conn, body.role_b_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        try:
+            rule = rbac_service.create_sod_rule(conn, body.role_a_id, body.role_b_id, body.description)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create_sod_rule", "sod_rule", rule["id"])
+        return rule
+
+
+@app.delete("/admin/sod-rules/{rule_id}", status_code=204)
+def delete_sod_rule(rule_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if not rbac_service.delete_sod_rule(conn, rule_id):
+            raise HTTPException(status_code=404, detail="Rule not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete_sod_rule", "sod_rule", rule_id)
 
 
 @app.get("/admin/roles", response_model=list[RolePermissionsOut])
@@ -395,6 +695,46 @@ def update_role_duties(role_id: int, body: RoleDutiesUpdate, user=Depends(requir
         return _role_to_out(conn, rbac_service.get_role(conn, role_id))
 
 
+@app.put("/admin/roles/{role_id}/draft", response_model=RoleDraftOut)
+def save_role_draft(role_id: int, body: RoleDraftUpdate, user=Depends(require_permission("manage_roles"))):
+    """Draft/Publish (spec Sections 2.4/3.1): stages this role's next duty/
+    permission composition without touching what's live -- distinct from
+    PUT /admin/roles/{id}/duties above, which applies immediately. Review
+    the diff (GET .../diff) before POST .../publish makes it live."""
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        unknown = set(body.permissions) - rbac_service.VALID_PERMISSIONS
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown permission(s): {', '.join(sorted(unknown))}")
+        for duty_id in body.duty_ids:
+            if rbac_service.get_duty(conn, duty_id) is None:
+                raise HTTPException(status_code=404, detail=f"Duty {duty_id} not found")
+        return rbac_service.save_role_draft(
+            conn, role_id, body.duty_ids, body.permissions, user.get("badge_number", user.get("sub"))
+        )
+
+
+@app.get("/admin/roles/{role_id}/diff", response_model=RoleDiffOut)
+def get_role_diff(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        return rbac_service.diff_role_draft(conn, role_id)
+
+
+@app.post("/admin/roles/{role_id}/publish", response_model=RoleOut)
+def publish_role(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        published = rbac_service.publish_role_draft(conn, role_id)
+        if published is None:
+            raise HTTPException(status_code=400, detail="No pending draft to publish")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "publish_role", "role", role_id)
+        return _role_to_out(conn, published)
+
+
 @app.post("/admin/roles/{role_id}/deactivate", response_model=RoleOut)
 def deactivate_role(role_id: int, user=Depends(require_permission("manage_roles"))):
     with get_conn() as conn:
@@ -462,6 +802,88 @@ def update_duty(duty_id: int, body: DutyUpdate, user=Depends(require_permission(
         return duty
 
 
+@app.get("/admin/diagnostics", response_model=DiagnosticsOut)
+def get_diagnostics(
+    permission: str, officer_id: int | None = None, role_id: int | None = None,
+    user=Depends(require_permission("manage_roles")),
+):
+    """"Why does/doesn't this user have this access" (spec Section 3.5) --
+    pick an officer (every role from their current active postings) or a
+    role directly, and a permission; see exactly which role/duty grants it,
+    or that nothing does."""
+    if officer_id is None and role_id is None:
+        raise HTTPException(status_code=400, detail="Provide officer_id or role_id")
+    with get_conn() as conn:
+        try:
+            return admin_service.diagnose_permission(conn, permission, officer_id, role_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+
+# Which permission gates import/export for a given entity_type (spec
+# Section 3.7) -- generic across entity types, but each one still respects
+# its own existing write permission rather than a single blanket import/
+# export permission.
+_DATA_JOB_ENTITY_PERMISSIONS = {
+    "cameras": "manage_cameras", "officers": "manage_users_roles", "audit_logs": "view_audit_logs",
+}
+
+
+def _require_data_job_permission(user: dict, entity_type: str) -> None:
+    required = _DATA_JOB_ENTITY_PERMISSIONS.get(entity_type)
+    if required is None:
+        raise HTTPException(status_code=400, detail=f"Unknown entity_type '{entity_type}'")
+    if not has_permission(user, required):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+
+@app.post("/admin/data-jobs", response_model=DataJobOut, status_code=201)
+def create_data_job(
+    body: DataJobCreate, direction: str = Query(..., pattern="^(import|export)$"),
+    user=Depends(get_current_user),
+):
+    _require_data_job_permission(user, body.entity_type)
+    run_by = user.get("badge_number", user.get("sub", ""))
+    with get_conn() as conn:
+        try:
+            if direction == "import":
+                job = import_export_service.create_import_job(conn, body.entity_type, body.format, body.rows, run_by)
+            else:
+                job = import_export_service.export_entity(conn, body.entity_type, body.format, run_by)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        audit_service.log(
+            conn, run_by, f"data_job_{direction}", "import_export_job", job["id"], reason_code=body.entity_type
+        )
+        return job
+
+
+@app.get("/admin/data-jobs/{job_id}", response_model=DataJobOut)
+def get_data_job(job_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        job = import_export_service.get_job(conn, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        _require_data_job_permission(user, job["entity_type"])
+        return job
+
+
+@app.post("/admin/data-jobs/{job_id}/resubmit-failed", response_model=DataJobOut)
+def resubmit_data_job(job_id: int, user=Depends(get_current_user)):
+    with get_conn() as conn:
+        existing = import_export_service.get_job(conn, job_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        _require_data_job_permission(user, existing["entity_type"])
+        job = import_export_service.resubmit_failed_rows(
+            conn, job_id, user.get("badge_number", user.get("sub", ""))
+        )
+        audit_service.log(
+            conn, user.get("badge_number", user.get("sub")), "data_job_resubmit", "import_export_job", job_id
+        )
+        return job
+
+
 @app.get("/cameras")
 def list_cameras(
     user=Depends(get_current_user),
@@ -487,25 +909,44 @@ def list_cameras(
     with get_conn() as conn:
         # scope_type is only present on RBAC-issued tokens; legacy hand-crafted
         # tokens have no such claim and see every (real) camera, matching this
-        # endpoint's behavior before pagination was added.
-        dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+        # endpoint's behavior before pagination was added. A multi-posted
+        # officer's effective jurisdiction is the union of every active
+        # posting's district (spec Section 3.3) -- _effective_district_scopes
+        # resolves that; _resolve_district_scoped applies it to the
+        # single-district-filter cameras_service functions below.
+        dept_scopes = _effective_district_scopes(user)
 
         # No pagination/synthetic params at all -> today's exact legacy behavior:
         # every real camera, as a bare list, no envelope. This is the path
         # CameraRegistryContext.tsx's fetchRegistryCameras() always takes.
         if cursor is None and limit is None and not include_synthetic:
-            return cameras_service.list_cameras(conn, dept)
+            return _resolve_district_scoped(
+                dept_scopes,
+                lambda: cameras_service.list_cameras(conn, None),
+                lambda d: cameras_service.list_cameras(conn, d),
+            )
 
         bbox = None
         if None not in (min_lat, max_lat, min_long, max_long):
             bbox = (min_lat, max_lat, min_long, max_long)
+
+        # Cursor pagination (the scale-demo surface) doesn't compose across
+        # several districts' independent cursors -- a genuinely multi-posted
+        # officer gets their first/primary district here rather than a true
+        # cross-district merge; [] (no jurisdiction at all) short-circuits
+        # to an empty page instead of silently falling back to unfiltered.
+        # Every path past this point always returns list_cameras_page's
+        # {"cameras": [...], "next_cursor": ...} envelope.
+        if dept_scopes == []:
+            return {"cameras": [], "next_cursor": None}
+        page_dept = dept_scopes[0] if dept_scopes else None
 
         return cameras_service.list_cameras_page(
             conn,
             cursor=cursor,
             limit=limit or 100,
             include_synthetic=include_synthetic,
-            dept=dept,
+            dept=page_dept,
             bbox=bbox,
         )
 
@@ -676,7 +1117,15 @@ def list_audit_logs(
     limit: int = Query(50, ge=1, le=200),
     user=Depends(require_permission("view_audit_logs")),
 ):
-    district = user.get("scope_value") if user.get("scope_type") == "district" else None
+    # Same multi-posting jurisdiction union as list_cameras (spec Section
+    # 3.3); cursor pagination doesn't compose across several districts, so a
+    # genuinely multi-posted officer's primary district is used here rather
+    # than a true cross-district merge -- [] (no jurisdiction) returns an
+    # empty page instead of silently falling back to unfiltered.
+    dept_scopes = _effective_district_scopes(user)
+    if dept_scopes == []:
+        return {"logs": [], "next_cursor": None}
+    district = dept_scopes[0] if dept_scopes else None
     with get_conn() as conn:
         logs, next_cursor = audit_logs_service.list_logs(
             conn, badge_number, resource_type, category, camera_id, camera_district, camera_circle_id,
@@ -736,18 +1185,23 @@ def delete_police_station(station_id: int, user=Depends(require_permission("mana
 
 
 def _guard_circle_district(user: dict, district: str):
-    """District-scoped users may only create/edit/delete circles in their
-    own district -- same cross-district guard create_posting already
-    applies for postings."""
-    if user.get("scope_type") == "district" and district != user.get("scope_value"):
+    """District-scoped users may only create/edit/delete circles in one of
+    their own effective jurisdictions -- the union of every active
+    posting's district (spec Section 3.3) -- same guard create_posting
+    already applies for postings."""
+    scopes = _effective_district_scopes(user)
+    if scopes is not None and district not in scopes:
         raise HTTPException(status_code=403, detail="Cannot manage circles outside your own district")
 
 
 @app.get("/circles", response_model=list[CircleOut])
 def list_circles(user=Depends(get_current_user)):
     with get_conn() as conn:
-        district = user.get("scope_value") if user.get("scope_type") == "district" else None
-        return circles_service.list_circles(conn, district)
+        return _resolve_district_scoped(
+            _effective_district_scopes(user),
+            lambda: circles_service.list_circles(conn, None),
+            lambda d: circles_service.list_circles(conn, d),
+        )
 
 
 @app.get("/circles/{circle_id}", response_model=CircleOut)

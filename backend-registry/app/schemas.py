@@ -96,11 +96,12 @@ class LoginResponse(BaseModel):
 class MeResponse(BaseModel):
     badge_number: str
     name: str
-    role: str
+    role: Optional[str] = None
     rank: Optional[str] = None
     photo_url: Optional[str] = None
     last_login: Optional[datetime] = None
-    scope_type: str
+    status: str = "active"
+    scope_type: Optional[str] = None
     scope_value: Optional[str] = None
     permissions: list[str]
 
@@ -184,10 +185,15 @@ class PostingCreate(BaseModel):
 
 
 class RolePermissionsOut(BaseModel):
+    id: int
     name: str
     display_name: str
     hierarchy_level: Optional[int] = None
     permissions: list[str]
+    parent_role_id: Optional[int] = None
+    is_active: bool = True
+    is_system: bool = False
+    duty_ids: list[int] = []
 
 
 class RolePermissionsUpdate(BaseModel):
@@ -251,9 +257,133 @@ class RoleDutiesUpdate(BaseModel):
     duty_ids: list[int]
 
 
+class RoleDraftUpdate(BaseModel):
+    duty_ids: list[int] = []
+    permissions: list[str] = []
+
+
+class RoleDraftOut(BaseModel):
+    role_id: int
+    draft_duty_ids: list[int]
+    draft_permissions: list[str]
+    created_by: Optional[str] = None
+    created_at: datetime
+
+
+class RoleDiffOut(BaseModel):
+    role_id: int
+    has_draft: bool
+    added_permissions: list[str] = []
+    removed_permissions: list[str] = []
+    affected_active_holders: int
+
+
 class EffectivePermissionsOut(BaseModel):
     role_id: int
     permissions: list[str]
+
+
+class DiagnosticsOut(BaseModel):
+    officer_id: Optional[int] = None
+    role_id: Optional[int] = None
+    permission: Optional[str] = None
+    has_permission: Optional[bool] = None
+    granting_roles: list[str] = []
+    granting_duties: dict[str, list[str]] = {}
+
+
+class RegisterRequest(BaseModel):
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    department: Optional[str] = None
+    contact_info: Optional[str] = None
+    password: str
+
+
+class RegistrationRequestOut(BaseModel):
+    id: int
+    officer_id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    department: Optional[str] = None
+    contact_info: Optional[str] = None
+    status: str
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+
+
+class RegistrationApprove(BaseModel):
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class RegistrationReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class DataJobCreate(BaseModel):
+    entity_type: str
+    format: Literal["csv", "json"] = "json"
+    # Pre-parsed rows for an import job (a raw CSV/XLSX file is parsed into
+    # this shape before it reaches this endpoint) -- absent/ignored for an
+    # export job, which reads the entity's current rows instead.
+    rows: list[dict] = []
+
+
+class DataJobOut(BaseModel):
+    id: int
+    entity_type: str
+    direction: str
+    format: str
+    status: str
+    total_rows: int
+    success_rows: int
+    failed_rows: int
+    row_results: Optional[list[dict]] = None
+    run_by: Optional[str] = None
+    created_at: datetime
+
+
+class NotificationOut(BaseModel):
+    id: int
+    officer_id: int
+    type: str
+    message: str
+    read: bool
+    created_at: datetime
+
+
+class SodRuleCreate(BaseModel):
+    role_a_id: int
+    role_b_id: int
+    description: Optional[str] = None
+
+
+class SodRuleOut(BaseModel):
+    id: int
+    role_a_id: int
+    role_a_name: str
+    role_b_id: int
+    role_b_name: str
+    description: Optional[str] = None
+    created_at: datetime
+
+
+class OfficerProfileOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    photo_url: Optional[str] = None
+    status: str
+    last_login_at: Optional[datetime] = None
+    recent_logins: list[datetime] = []
+    active_postings: list[PostingSummary] = []
 
 
 class PaginatedCamerasOut(BaseModel):

@@ -1,4 +1,5 @@
 """Business logic for roles, permissions, officers, and postings -- raw SQL via psycopg."""
+import json
 
 
 def list_roles(conn) -> list[dict]:
@@ -45,12 +46,15 @@ VALID_PERMISSIONS = {
 def list_roles_with_permissions(conn) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, name, display_name, hierarchy_level, can_delegate_admin "
-            "FROM roles ORDER BY hierarchy_level NULLS LAST, name"
+            "SELECT id, name, display_name, hierarchy_level, can_delegate_admin, "
+            "parent_role_id, is_active, is_system FROM roles ORDER BY hierarchy_level NULLS LAST, name"
         )
         cols = [c.name for c in cur.description]
         roles = [dict(zip(cols, row)) for row in cur.fetchall()]
-    return [{**role, "permissions": role_permissions(conn, role["id"])} for role in roles]
+    return [
+        {**role, "duty_ids": get_role_duty_ids(conn, role["id"]), "permissions": role_permissions(conn, role["id"])}
+        for role in roles
+    ]
 
 
 def set_role_permissions(conn, role_id: int, permissions: list[str]) -> list[str]:
@@ -261,6 +265,156 @@ def deactivate_role(conn, role_id: int) -> dict | None:
 def reactivate_role(conn, role_id: int) -> dict | None:
     with conn.cursor() as cur:
         cur.execute("UPDATE roles SET is_active = true WHERE id = %s", (role_id,))
+    conn.commit()
+    return get_role(conn, role_id)
+
+
+# --- Separation-of-Duty rule engine (v2 spec, Phase D, Section 3.8) --------
+# Generalizes Task 6's single hardcoded alert-escalation rule (which stays
+# exactly as-is in backend-watchlist -- an activity-level check, "can't
+# escalate what you already acted on") to role-pair conflicts checked at
+# posting-assignment time instead: two roles that must never both be
+# actively held by the same officer at once.
+
+
+def list_sod_rules(conn) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT sr.id, sr.role_a_id, ra.name AS role_a_name, sr.role_b_id, rb.name AS role_b_name,
+                   sr.description, sr.created_at
+            FROM sod_rules sr
+            JOIN roles ra ON ra.id = sr.role_a_id
+            JOIN roles rb ON rb.id = sr.role_b_id
+            ORDER BY sr.created_at
+            """
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def create_sod_rule(conn, role_id_1: int, role_id_2: int, description: str | None) -> dict:
+    if role_id_1 == role_id_2:
+        raise ValueError("A role cannot conflict with itself")
+    role_a_id, role_b_id = sorted((role_id_1, role_id_2))
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO sod_rules (role_a_id, role_b_id, description) VALUES (%s, %s, %s) RETURNING id",
+            (role_a_id, role_b_id, description),
+        )
+        rule_id = cur.fetchone()[0]
+    conn.commit()
+    return next(r for r in list_sod_rules(conn) if r["id"] == rule_id)
+
+
+def delete_sod_rule(conn, rule_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM sod_rules WHERE id = %s RETURNING id", (rule_id,))
+        found = cur.fetchone() is not None
+    conn.commit()
+    return found
+
+
+def find_sod_conflict(conn, officer_id: int, candidate_role_id: int) -> dict | None:
+    """Checked before adding a new posting (spec Section 3.8): would this
+    role, combined with any of the officer's OTHER currently-active
+    postings' roles, form a configured conflicting pair? Returns the
+    conflicting rule (with both role names) if so, else None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT role_id FROM postings WHERE officer_id = %s AND is_active "
+            "AND (expires_at IS NULL OR expires_at > now())",
+            (officer_id,),
+        )
+        held_role_ids = {row[0] for row in cur.fetchall()}
+    if not held_role_ids:
+        return None
+    for rule in list_sod_rules(conn):
+        pair = {rule["role_a_id"], rule["role_b_id"]}
+        if candidate_role_id in pair:
+            other = (pair - {candidate_role_id}).pop()
+            if other in held_role_ids:
+                return rule
+    return None
+
+
+# --- Draft/Publish for role edits (v2 spec, Phase D, Section 2.4/3.1) -----
+
+
+def save_role_draft(conn, role_id: int, duty_ids: list[int], permissions: list[str], created_by: str | None) -> dict:
+    """Stages a role's next duty/permission composition without touching
+    what's actually live. One draft per role -- a second call replaces the
+    first outright (ON CONFLICT), it never stacks multiple pending edits."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO role_drafts (role_id, draft_duty_ids, draft_permissions, created_by)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (role_id) DO UPDATE SET
+                draft_duty_ids = EXCLUDED.draft_duty_ids,
+                draft_permissions = EXCLUDED.draft_permissions,
+                created_by = EXCLUDED.created_by,
+                created_at = now()
+            """,
+            (role_id, json.dumps(duty_ids), json.dumps(permissions), created_by),
+        )
+    conn.commit()
+    return get_role_draft(conn, role_id)
+
+
+def get_role_draft(conn, role_id: int) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT role_id, draft_duty_ids, draft_permissions, created_by, created_at "
+            "FROM role_drafts WHERE role_id = %s",
+            (role_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, row))
+
+
+def diff_role_draft(conn, role_id: int) -> dict:
+    """The "effective permissions diff" a Super Admin reviews before
+    publishing (spec Sections 2.4/3.1/3.8): which permissions the draft
+    would add/remove versus what's currently live, and how many currently-
+    active officers hold this role right now (the blast radius of hitting
+    publish). Diffing effective permissions (duties included), not just
+    the raw duty_id list, is what makes this meaningful -- two different
+    duty sets can still resolve to the same permissions, or vice versa."""
+    draft = get_role_draft(conn, role_id)
+    current_effective = set(effective_role_permissions(conn, role_id))
+    if draft is None:
+        return {
+            "role_id": role_id, "has_draft": False, "added_permissions": [], "removed_permissions": [],
+            "affected_active_holders": count_active_holders(conn, role_id),
+        }
+
+    draft_effective: set[str] = set(draft["draft_permissions"])
+    for duty_id in draft["draft_duty_ids"]:
+        draft_effective.update(duty_permissions(conn, duty_id))
+
+    return {
+        "role_id": role_id,
+        "has_draft": True,
+        "added_permissions": sorted(draft_effective - current_effective),
+        "removed_permissions": sorted(current_effective - draft_effective),
+        "affected_active_holders": count_active_holders(conn, role_id),
+    }
+
+
+def publish_role_draft(conn, role_id: int) -> dict | None:
+    """Applies a pending draft to the live role, then clears it. Returns
+    None (no-op) when there's no pending draft to publish."""
+    draft = get_role_draft(conn, role_id)
+    if draft is None:
+        return None
+    set_role_duties(conn, role_id, draft["draft_duty_ids"])
+    set_role_permissions(conn, role_id, draft["draft_permissions"])
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM role_drafts WHERE role_id = %s", (role_id,))
     conn.commit()
     return get_role(conn, role_id)
 

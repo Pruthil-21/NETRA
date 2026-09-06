@@ -16,9 +16,25 @@ security = HTTPBearer()
 
 def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     try:
-        return jwt.decode(creds.credentials, settings.jwt_secret, algorithms=["HS256"])
+        payload = jwt.decode(creds.credentials, settings.jwt_secret, algorithms=["HS256"])
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Force-logout (spec Section 3.6): a real RBAC-issued token carries a
+    # `sid` claim tying it to one sessions row. No claim at all (every
+    # hand-crafted test/demo token, and any token issued before this
+    # feature existed) means "not session-tracked" -- always valid, same as
+    # today. Local import: avoids a module-load-time circular import
+    # between auth.py and db.py/main.py.
+    sid = payload.get("sid")
+    if sid:
+        from .db import get_conn
+        from .services import sessions_service
+
+        with get_conn() as conn:
+            if sessions_service.is_session_revoked(conn, sid):
+                raise HTTPException(status_code=401, detail="Session has been revoked")
+    return payload
 
 
 _RBAC_ROLES = ("super_admin", "district_command", "station_officer", "control_room_operator", "auditor")
