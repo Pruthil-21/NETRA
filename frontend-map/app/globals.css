@@ -127,3 +127,14 @@
     opacity: 0;
   }
 }
+
+/* components/common/LoadingScreen.tsx's progress bar -- an indeterminate
+   sweep (no real percentage to report during an auth check/chunk fetch). */
+@keyframes loading-bar {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
