@@ -27,6 +27,10 @@ from .schemas import (
     CoverageTargetCreate,
     CoverageTargetOut,
     CoverageTargetUpdate,
+    DutyCreate,
+    DutyOut,
+    DutyUpdate,
+    EffectivePermissionsOut,
     GapAnalysisReport,
     LoginRequest,
     LoginResponse,
@@ -43,6 +47,10 @@ from .schemas import (
     PostingOut,
     ProfilePhotoUpdate,
     ReportSummary,
+    RoleCloneRequest,
+    RoleCreate,
+    RoleDutiesUpdate,
+    RoleOut,
     RolePermissionsOut,
     RolePermissionsUpdate,
     SyntheticDetectionEventAccepted,
@@ -241,26 +249,48 @@ def create_posting(body: PostingCreate, user=Depends(require_permission("manage_
         role = rbac_service.get_role_by_name(conn, body.role_name)
         if role is None:
             raise HTTPException(status_code=404, detail=f"Unknown role '{body.role_name}'")
+        if not role["is_active"]:
+            raise HTTPException(status_code=400, detail=f"Role '{body.role_name}' is deactivated and cannot be newly assigned")
 
-        # Delegated admin (spec Section 6): a platform-wide actor (Super Admin)
-        # can assign anything. A district-scoped actor with can_delegate_admin
-        # (District Command) can only assign roles below their own level, and
-        # only within their own scope_value -- never Super Admin's platform-wide
-        # reach, and never another district's.
+        # Delegated admin (spec Section 6/3.8): a platform-wide actor (Super
+        # Admin) can assign anything. A district-scoped actor with
+        # can_delegate_admin (District Command) can only assign within their
+        # own scope_value -- never another district's -- and, now that roles
+        # are dynamic (data, not a fixed 5-name list), only roles whose
+        # hierarchy_level is strictly junior to their own: a role's numeric
+        # level increases the more junior it is (super_admin=1 is senior-most),
+        # and NULL means "outside the operational hierarchy" (e.g. auditor),
+        # always assignable by a delegate. An actor whose own role can't be
+        # resolved, or carries no hierarchy_level itself, can't safely compare
+        # levels at all and is denied by default.
         actor_scope_type = user.get("scope_type")
         actor_scope_value = user.get("scope_value")
         if actor_scope_type != "platform":
             if body.scope_type != "district" or body.scope_value != actor_scope_value:
                 raise HTTPException(status_code=403, detail="Cannot assign outside your own jurisdiction")
-            if role["name"] in ("super_admin", "district_command"):
+            actor_role = rbac_service.get_role_by_name(conn, user.get("role", ""))
+            actor_level = actor_role["hierarchy_level"] if actor_role else None
+            target_level = role["hierarchy_level"]
+            if actor_level is None or (target_level is not None and target_level <= actor_level):
                 raise HTTPException(status_code=403, detail="Cannot assign a role at or above your own")
 
-        posting = admin_service.reassign_posting(
+        posting = admin_service.add_posting(
             conn, body.officer_id, role["id"], body.scope_type, body.scope_value,
-            assigned_by=user.get("badge_number", user.get("sub", "")),
+            assigned_by=user.get("badge_number", user.get("sub", "")), expires_at=body.expires_at,
         )
-        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reassign_posting", "posting", posting["id"])
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "add_posting", "posting", posting["id"])
         return posting
+
+
+@app.delete("/admin/postings/{posting_id}", status_code=204)
+def delete_posting(posting_id: int, user=Depends(require_permission("manage_users_roles"))):
+    """Revokes exactly this one posting -- an officer's other active
+    postings are untouched (spec Section 3.3)."""
+    with get_conn() as conn:
+        revoked = admin_service.revoke_posting(conn, posting_id)
+        if revoked is None:
+            raise HTTPException(status_code=404, detail="Posting not found or already inactive")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "revoke_posting", "posting", posting_id)
 
 
 @app.get("/admin/roles", response_model=list[RolePermissionsOut])
@@ -291,6 +321,145 @@ def update_role_permissions(
             "role", role["id"], reason_code=body.reason_code,
         )
         return {**role, "permissions": permissions}
+
+
+# --- Dynamic role/duty management (v2 spec, Phase A) -------------------
+# Distinct from the name-keyed pair above (list_roles/update_role_permissions),
+# which stays for the existing "edit an existing role's permission list" UI.
+# These operate by numeric id and cover the newer capability: creating a
+# brand-new role, composing it from duties, cloning, and deactivate-vs-delete.
+
+
+def _role_to_out(conn, role: dict) -> dict:
+    return {
+        **role,
+        "duty_ids": rbac_service.get_role_duty_ids(conn, role["id"]),
+        "permissions": rbac_service.role_permissions(conn, role["id"]),
+    }
+
+
+@app.get("/admin/roles/{role_id}/effective-permissions", response_model=EffectivePermissionsOut)
+def get_effective_role_permissions(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        role = rbac_service.get_role(conn, role_id)
+        if role is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        return {"role_id": role_id, "permissions": rbac_service.effective_role_permissions(conn, role_id)}
+
+
+@app.post("/admin/roles", response_model=RoleOut, status_code=201)
+def create_role_v2(body: RoleCreate, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role_by_name(conn, body.name) is not None:
+            raise HTTPException(status_code=409, detail=f"Role '{body.name}' already exists")
+        unknown = set(body.permissions) - rbac_service.VALID_PERMISSIONS
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"Unknown permission(s): {', '.join(sorted(unknown))}")
+        if body.parent_role_id is not None and rbac_service.get_role(conn, body.parent_role_id) is None:
+            raise HTTPException(status_code=404, detail="Parent role not found")
+        for duty_id in body.duty_ids:
+            if rbac_service.get_duty(conn, duty_id) is None:
+                raise HTTPException(status_code=404, detail=f"Duty {duty_id} not found")
+
+        role = rbac_service.create_role(
+            conn, body.name, body.display_name, body.hierarchy_level, body.can_delegate_admin,
+            parent_role_id=body.parent_role_id, duty_ids=body.duty_ids, permissions=body.permissions,
+        )
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create_role", "role", role["id"])
+        return _role_to_out(conn, role)
+
+
+@app.post("/admin/roles/{role_id}/clone", response_model=RoleOut, status_code=201)
+def clone_role(role_id: int, body: RoleCloneRequest, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        if rbac_service.get_role_by_name(conn, body.name) is not None:
+            raise HTTPException(status_code=409, detail=f"Role '{body.name}' already exists")
+        clone = rbac_service.clone_role(conn, role_id, body.name, body.display_name)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "clone_role", "role", clone["id"])
+        return _role_to_out(conn, clone)
+
+
+@app.put("/admin/roles/{role_id}/duties", response_model=RoleOut)
+def update_role_duties(role_id: int, body: RoleDutiesUpdate, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        role = rbac_service.get_role(conn, role_id)
+        if role is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        for duty_id in body.duty_ids:
+            if rbac_service.get_duty(conn, duty_id) is None:
+                raise HTTPException(status_code=404, detail=f"Duty {duty_id} not found")
+        rbac_service.set_role_duties(conn, role_id, body.duty_ids)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "edit_role_duties", "role", role_id)
+        return _role_to_out(conn, rbac_service.get_role(conn, role_id))
+
+
+@app.post("/admin/roles/{role_id}/deactivate", response_model=RoleOut)
+def deactivate_role(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        role = rbac_service.deactivate_role(conn, role_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "deactivate_role", "role", role_id)
+        return _role_to_out(conn, role)
+
+
+@app.post("/admin/roles/{role_id}/reactivate", response_model=RoleOut)
+def reactivate_role(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_role(conn, role_id) is None:
+            raise HTTPException(status_code=404, detail="Role not found")
+        role = rbac_service.reactivate_role(conn, role_id)
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "reactivate_role", "role", role_id)
+        return _role_to_out(conn, role)
+
+
+@app.delete("/admin/roles/{role_id}", status_code=204)
+def delete_role_v2(role_id: int, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        try:
+            deleted = rbac_service.delete_role(conn, role_id)
+        except rbac_service.RoleInUseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Role not found")
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "delete_role", "role", role_id)
+
+
+@app.get("/admin/duties", response_model=list[DutyOut])
+def list_duties(user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        return rbac_service.list_duties(conn)
+
+
+@app.post("/admin/duties", response_model=DutyOut, status_code=201)
+def create_duty(body: DutyCreate, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_duty_by_name(conn, body.name) is not None:
+            raise HTTPException(status_code=409, detail=f"Duty '{body.name}' already exists")
+        try:
+            duty = rbac_service.create_duty(conn, body.name, body.display_name, body.description, body.permissions)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "create_duty", "duty", duty["id"])
+        return duty
+
+
+@app.put("/admin/duties/{duty_id}", response_model=DutyOut)
+def update_duty(duty_id: int, body: DutyUpdate, user=Depends(require_permission("manage_roles"))):
+    with get_conn() as conn:
+        if rbac_service.get_duty(conn, duty_id) is None:
+            raise HTTPException(status_code=404, detail="Duty not found")
+        try:
+            duty = rbac_service.update_duty(
+                conn, duty_id, display_name=body.display_name, description=body.description,
+                permissions=body.permissions,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        audit_service.log(conn, user.get("badge_number", user.get("sub")), "edit_duty", "duty", duty_id)
+        return duty
 
 
 @app.get("/cameras")

@@ -160,6 +160,10 @@ class OfficerOut(BaseModel):
     name: str
     rank: Optional[str] = None
     active_posting: Optional[PostingSummary] = None
+    # An officer can hold several simultaneously-active postings (spec
+    # Section 3.3) -- active_posting (singular) is kept for callers that
+    # only ever showed one; this is the full set.
+    active_postings: list[PostingSummary] = []
 
 
 class PostingOut(BaseModel):
@@ -176,6 +180,7 @@ class PostingCreate(BaseModel):
     role_name: str
     scope_type: str
     scope_value: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 class RolePermissionsOut(BaseModel):
@@ -188,6 +193,67 @@ class RolePermissionsOut(BaseModel):
 class RolePermissionsUpdate(BaseModel):
     permissions: list[str]
     reason_code: Optional[str] = None
+
+
+class DutyCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    permissions: list[str] = []
+
+
+class DutyUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    permissions: Optional[list[str]] = None
+
+
+class DutyOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    permissions: list[str]
+
+
+class RoleOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    can_delegate_admin: bool
+    parent_role_id: Optional[int] = None
+    is_active: bool
+    is_system: bool
+    duty_ids: list[int] = []
+    # Direct role_permissions only (the rare/advanced path) -- callers that
+    # need the full effective set (duties included) use
+    # GET /admin/roles/{id}/effective-permissions.
+    permissions: list[str] = []
+
+
+class RoleCreate(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    can_delegate_admin: bool = False
+    parent_role_id: Optional[int] = None
+    duty_ids: list[int] = []
+    permissions: list[str] = []
+
+
+class RoleCloneRequest(BaseModel):
+    name: str
+    display_name: str
+
+
+class RoleDutiesUpdate(BaseModel):
+    duty_ids: list[int]
+
+
+class EffectivePermissionsOut(BaseModel):
+    role_id: int
+    permissions: list[str]
 
 
 class PaginatedCamerasOut(BaseModel):

@@ -42,12 +42,13 @@ def seed():
             for name, display_name, level, can_delegate in ROLES:
                 cur.execute(
                     """
-                    INSERT INTO roles (name, display_name, hierarchy_level, can_delegate_admin)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO roles (name, display_name, hierarchy_level, can_delegate_admin, is_system)
+                    VALUES (%s, %s, %s, %s, true)
                     ON CONFLICT (name) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         hierarchy_level = EXCLUDED.hierarchy_level,
-                        can_delegate_admin = EXCLUDED.can_delegate_admin
+                        can_delegate_admin = EXCLUDED.can_delegate_admin,
+                        is_system = true
                     RETURNING id
                     """,
                     (name, display_name, level, can_delegate),

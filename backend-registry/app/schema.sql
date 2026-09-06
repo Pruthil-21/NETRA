@@ -236,3 +236,50 @@ CREATE TABLE IF NOT EXISTS police_stations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_police_stations_location ON police_stations USING GIST (location);
+
+-- Dynamic RBAC (v2 spec, Phase A): roles/duties become admin-manageable data
+-- instead of a fixed 5-row seed. parent_role_id lets a new role inherit an
+-- existing one's duties as a starting point (Section 2.2); is_system flags
+-- the 5 originally-seeded roles so they're never hard-deletable, only
+-- editable/deactivatable (protects the demo baseline); is_active supports
+-- "deactivate, don't delete" for a role still held by anyone.
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS parent_role_id INTEGER REFERENCES roles(id);
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;
+
+-- A duty bundles permissions into one named, reusable unit (D365's "assign
+-- only duties to roles" guidance -- Section 2.1). NETRA has no separate
+-- Privilege layer, so a duty's permissions are plain VALID_PERMISSIONS
+-- strings, validated in rbac_service, not a DB-level FK/CHECK.
+CREATE TABLE IF NOT EXISTS duties (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    description  TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS duty_permissions (
+    duty_id    INTEGER NOT NULL REFERENCES duties(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL,
+    PRIMARY KEY (duty_id, permission)
+);
+
+-- A role's primary composition path -- role_permissions (existing table)
+-- stays for the rare "assign a permission directly to a role" edge case,
+-- mirroring D365 allowing (but discouraging) direct privilege assignment.
+-- A role's effective permission set is the union of both.
+CREATE TABLE IF NOT EXISTS role_duties (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    duty_id INTEGER NOT NULL REFERENCES duties(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, duty_id)
+);
+
+-- Multi-role support (Section 3.3): an officer can hold several
+-- simultaneously-active postings ("Station Officer at Station A *and*
+-- Traffic Officer for a highway corridor"), matching D365's "sum total
+-- access" rule. Removes the one-active-posting-per-officer constraint the
+-- original plan's own Self-Review flagged as a gap. expires_at supports
+-- genuinely temporary duty attachments that auto-expire.
+DROP INDEX IF EXISTS idx_postings_one_active_per_officer;
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;

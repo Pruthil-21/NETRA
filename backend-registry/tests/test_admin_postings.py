@@ -50,7 +50,11 @@ def test_super_admin_can_create_any_posting(client):
     assert body["scope_value"] == "Home / Police"
 
 
-def test_reassigning_a_posting_ends_the_old_one_not_edits_it(client):
+def test_creating_a_new_posting_does_not_end_existing_active_postings(client):
+    """Multi-role support (spec Section 3.3): an officer can hold several
+    simultaneously-active postings. POST /admin/postings only ever adds --
+    ending a specific one is a separate, explicit action (DELETE
+    /admin/postings/{id}, see below)."""
     _run("scripts/seed_rbac.py")
     _run("scripts/seed_demo_officers.py")
     sa_token = client.post(
@@ -61,18 +65,62 @@ def test_reassigning_a_posting_ends_the_old_one_not_edits_it(client):
     target = next(o for o in officers if o["badge_number"] == "GJ-SO-001")
     original_posting_id = target["active_posting"]["id"]
 
-    client.post(
+    resp = client.post(
         "/admin/postings",
         json={"officer_id": target["id"], "role_name": "station_officer", "scope_type": "district", "scope_value": "Home / Police"},
         headers={"Authorization": f"Bearer {sa_token}"},
     )
+    assert resp.status_code == 201
+    new_posting_id = resp.json()["id"]
 
     postings = client.get("/admin/postings", headers={"Authorization": f"Bearer {sa_token}"}).json()
     old = next(p for p in postings if p["id"] == original_posting_id)
-    assert old["is_active"] is False
+    new = next(p for p in postings if p["id"] == new_posting_id)
+    assert old["is_active"] is True
+    assert new["is_active"] is True
     active_for_officer = [p for p in postings if p["officer_id"] == target["id"] and p["is_active"]]
-    assert len(active_for_officer) == 1
-    assert active_for_officer[0]["scope_value"] == "Home / Police"
+    assert len(active_for_officer) == 2
+
+    officers_after = client.get("/admin/officers", headers={"Authorization": f"Bearer {sa_token}"}).json()
+    target_after = next(o for o in officers_after if o["id"] == target["id"])
+    assert len(target_after["active_postings"]) == 2
+
+
+def test_revoking_one_posting_leaves_the_officers_other_postings_active(client):
+    _run("scripts/seed_rbac.py")
+    _run("scripts/seed_demo_officers.py")
+    sa_token = client.post(
+        "/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"}
+    ).json()["token"]
+
+    officers = client.get("/admin/officers", headers={"Authorization": f"Bearer {sa_token}"}).json()
+    target = next(o for o in officers if o["badge_number"] == "GJ-SO-001")
+    original_posting_id = target["active_posting"]["id"]
+
+    second = client.post(
+        "/admin/postings",
+        json={"officer_id": target["id"], "role_name": "station_officer", "scope_type": "district", "scope_value": "Home / Police"},
+        headers={"Authorization": f"Bearer {sa_token}"},
+    ).json()
+
+    resp = client.delete(f"/admin/postings/{original_posting_id}", headers={"Authorization": f"Bearer {sa_token}"})
+    assert resp.status_code == 204
+
+    postings = client.get("/admin/postings", headers={"Authorization": f"Bearer {sa_token}"}).json()
+    old = next(p for p in postings if p["id"] == original_posting_id)
+    still_active = next(p for p in postings if p["id"] == second["id"])
+    assert old["is_active"] is False
+    assert still_active["is_active"] is True
+
+
+def test_revoking_an_already_inactive_posting_returns_404(client):
+    _run("scripts/seed_rbac.py")
+    _run("scripts/seed_demo_officers.py")
+    sa_token = client.post(
+        "/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"}
+    ).json()["token"]
+    resp = client.delete("/admin/postings/999999", headers={"Authorization": f"Bearer {sa_token}"})
+    assert resp.status_code == 404
 
 
 def test_district_command_can_only_assign_within_their_own_district(client):
