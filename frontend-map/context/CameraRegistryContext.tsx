@@ -12,6 +12,7 @@ import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manual
 import { getCameraStreamUrl } from '@/lib/stream';
 import { getWebRtcWhepUrl } from '@/lib/webrtc';
 import { authHeaders } from '@/lib/apiAuth';
+import { SESSION_CHANGED_EVENT } from '@/lib/session';
 
 // backend-registry is the only live camera source now — the organizer's direct
 // live.corp8.cloud API (previously fetched via /api/organizer-cameras) has been
@@ -226,6 +227,20 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   useEffect(() => {
     if (isScaleRoute) return;
     refreshCameras();
+  }, [refreshCameras, isScaleRoute]);
+
+  // This provider mounts once at the app root -- if that first mount
+  // happens before anyone has logged in (e.g. landing on /login), the
+  // fetch above 401s with no token and never gets a second try, since
+  // login() navigates client-side afterward rather than reloading the
+  // page. Without this, every camera tree/area shows zero cameras until a
+  // hard refresh remounts the provider fresh with the token already in
+  // place -- see lib/session.ts's SESSION_CHANGED_EVENT.
+  useEffect(() => {
+    if (isScaleRoute) return;
+    const onSessionChanged = () => refreshCameras();
+    window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged);
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged);
   }, [refreshCameras, isScaleRoute]);
 
   const filteredCameras = useMemo(() => {
