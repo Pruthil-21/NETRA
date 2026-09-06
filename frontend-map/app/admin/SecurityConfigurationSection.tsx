@@ -221,101 +221,96 @@ export function SecurityConfigurationSection() {
             ))}
           </div>
         ) : tab === 'roles' ? (
-          <div className="border border-line rounded-lg bg-panel overflow-hidden">
-            <div className="hidden sm:grid grid-cols-[2fr_1fr_110px_260px] px-4 py-2.5 bg-panel-raised border-b border-line text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
-              <span>Role</span>
-              <span>Status</span>
-              <span className="text-center">Permissions</span>
-              <span>Actions</span>
-            </div>
-
+          <div className="flex flex-col gap-3">
             {filteredRoles.length === 0 && (
-              <div className="p-9 text-center text-xs text-slate-500">No roles match your search.</div>
+              <div className="border border-line rounded-lg bg-panel p-9 text-center text-xs text-slate-500">No roles match your search.</div>
             )}
 
             {filteredRoles.map((role) => (
-              <div key={role.id}>
-                <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr_110px_260px] gap-2 px-4 py-3 border-b border-line last:border-0 items-center">
-                  <div className="flex items-center gap-2 min-w-0">
+              <div key={role.id} className="border border-line rounded-lg bg-panel overflow-hidden">
+                <div className="px-4 sm:px-5 py-3.5">
+                  {/* Line 1: identity + status + permission count */}
+                  <div className="flex items-center gap-2.5 flex-wrap">
                     <button
                       type="button"
                       onClick={() => setExpandedRoleId(expandedRoleId === role.id ? null : role.id)}
                       aria-label={expandedRoleId === role.id ? `Collapse ${role.display_name}` : `Expand ${role.display_name}`}
                       className="text-command shrink-0"
                     >
-                      {expandedRoleId === role.id ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                      {expandedRoleId === role.id ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     </button>
-                    <Lock size={13} className="text-command shrink-0" />
+                    <Lock size={14} className="text-command shrink-0" />
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-white truncate">{role.display_name}</p>
-                      <p className="text-[10px] font-mono text-slate-500">{role.name}</p>
+                      <p className="text-[11px] font-mono text-slate-500">{role.name}</p>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {role.is_system && (
-                      <span className="px-1.5 py-0.5 rounded-full border border-line bg-panel-raised text-[9px] text-slate-500 uppercase">System</span>
-                    )}
-                    <span
-                      className={`px-1.5 py-0.5 rounded-full border text-[9px] uppercase ${
-                        role.is_active
-                          ? 'border-signal-green/30 bg-signal-green/10 text-signal-green'
-                          : 'border-signal-amber/30 bg-signal-amber/10 text-signal-amber'
-                      }`}
-                    >
-                      {role.is_active ? 'Active' : 'Deactivated'}
+                    <div className="flex items-center gap-1.5 flex-wrap ml-1">
+                      {role.is_system && (
+                        <span className="px-2 py-0.5 rounded-full border border-line bg-panel-raised text-[10px] text-slate-500 uppercase">System</span>
+                      )}
+                      <span
+                        className={`px-2 py-0.5 rounded-full border text-[10px] uppercase ${
+                          role.is_active
+                            ? 'border-signal-green/30 bg-signal-green/10 text-signal-green'
+                            : 'border-signal-amber/30 bg-signal-amber/10 text-signal-amber'
+                        }`}
+                      >
+                        {role.is_active ? 'Active' : 'Deactivated'}
+                      </span>
+                    </div>
+
+                    <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-semibold text-command bg-command/10 px-3 py-1 rounded-full shrink-0">
+                      {role.permissions.length} permission{role.permissions.length === 1 ? '' : 's'}
                     </span>
                   </div>
 
-                  <div className="sm:text-center">
-                    <span className="inline-flex text-xs font-semibold text-command bg-command/10 px-2.5 py-0.5 rounded-full">
-                      {role.permissions.length}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* Line 2: labeled actions -- icon-only buttons here were exactly
+                      what made the old console impossible to read at a glance. */}
+                  <div className="flex items-center gap-2 flex-wrap mt-3">
                     <button
                       type="button"
                       onClick={() => setAssigningRole(role)}
-                      className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium border border-command/40 text-command rounded hover:bg-command/10 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium border border-command/40 text-command rounded hover:bg-command/10 transition-colors"
                     >
-                      <Plus size={11} />
+                      <Plus size={12} />
                       Assign Permissions
                     </button>
                     <button
                       type="button"
                       onClick={() => setCloningRole(role)}
-                      title="Clone role"
-                      className="p-1.5 rounded border border-line bg-panel-raised text-slate-400 hover:text-white"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded border border-line bg-panel-raised text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
                     >
                       <Copy size={12} />
+                      Clone
                     </button>
                     {!role.is_system && (
                       <button
                         type="button"
                         onClick={() => handleDeactivate(role)}
-                        title={role.is_active ? 'Deactivate role' : 'Reactivate role'}
-                        className="p-1.5 rounded border border-line bg-panel-raised text-slate-400 hover:text-signal-amber"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded border border-line bg-panel-raised text-slate-300 hover:text-signal-amber hover:border-signal-amber/40 transition-colors"
                       >
                         {role.is_active ? <ShieldOff size={12} /> : <ShieldCheck size={12} />}
+                        {role.is_active ? 'Deactivate' : 'Reactivate'}
                       </button>
                     )}
                     {!role.is_system && (
                       <button
                         type="button"
                         onClick={() => handleDelete(role)}
-                        title="Delete role (only if unheld)"
-                        className="p-1.5 rounded border border-line bg-panel-raised text-slate-400 hover:text-signal-red"
+                        title="Only possible when nobody currently holds this role"
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded border border-line bg-panel-raised text-slate-300 hover:text-signal-red hover:border-signal-red/40 transition-colors"
                       >
                         <Trash2 size={12} />
+                        Delete
                       </button>
                     )}
                   </div>
                 </div>
 
                 {expandedRoleId === role.id && (
-                  <div className="bg-panel-raised/60 border-b border-line px-5 sm:pl-12 py-3.5">
-                    <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-2.5">Assigned Permissions</p>
+                  <div className="bg-panel-raised/60 border-t border-line px-5 py-3.5">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2.5">Assigned Permissions</p>
                     {role.permissions.length === 0 ? (
                       <p className="text-xs text-slate-500 italic">No permissions assigned yet. Use &quot;Assign Permissions&quot; to add some.</p>
                     ) : (
@@ -323,7 +318,7 @@ export function SecurityConfigurationSection() {
                         {role.permissions.map((perm) => (
                           <span
                             key={perm}
-                            className="inline-flex items-center gap-1.5 bg-panel border border-line rounded-md pl-2.5 pr-1 py-1 text-[11px] text-slate-200"
+                            className="inline-flex items-center gap-1.5 bg-panel border border-line rounded-md pl-2.5 pr-1 py-1.5 text-xs text-slate-200"
                           >
                             {permissionLabel(perm)}
                             <button
@@ -332,7 +327,7 @@ export function SecurityConfigurationSection() {
                               aria-label={`Remove ${permissionLabel(perm)} from ${role.display_name}`}
                               className="text-slate-500 hover:text-signal-red"
                             >
-                              <X size={11} />
+                              <X size={12} />
                             </button>
                           </span>
                         ))}
@@ -345,7 +340,7 @@ export function SecurityConfigurationSection() {
           </div>
         ) : (
           <div className="border border-line rounded-lg bg-panel overflow-hidden">
-            <div className="hidden sm:grid grid-cols-[2fr_120px_2fr_90px] px-4 py-2.5 bg-panel-raised border-b border-line text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+            <div className="hidden sm:grid grid-cols-[2fr_130px_2fr_100px] px-5 py-3 bg-panel-raised border-b border-line text-xs font-semibold text-slate-400 uppercase tracking-wide">
               <span>Permission</span>
               <span>Module</span>
               <span>Description</span>
@@ -354,20 +349,20 @@ export function SecurityConfigurationSection() {
             {filteredPermissions.map((perm) => (
               <div
                 key={perm}
-                className="grid grid-cols-1 sm:grid-cols-[2fr_120px_2fr_90px] gap-1.5 px-4 py-3 border-b border-line last:border-0 items-center"
+                className="grid grid-cols-1 sm:grid-cols-[2fr_130px_2fr_100px] gap-2 px-5 py-3.5 border-b border-line last:border-0 items-center"
               >
-                <div className="flex items-center gap-2 min-w-0">
-                  <Key size={13} className="text-slate-500 shrink-0" />
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Key size={14} className="text-slate-500 shrink-0" />
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-white truncate">{PERMISSION_META[perm].label}</p>
-                    <p className="text-[10px] font-mono text-slate-500">{perm}</p>
+                    <p className="text-[11px] font-mono text-slate-500">{perm}</p>
                   </div>
                 </div>
-                <span className="text-[11px] text-slate-400 bg-panel-raised border border-line px-2 py-0.5 rounded self-start sm:self-center inline-block w-fit">
+                <span className="text-xs text-slate-400 bg-panel-raised border border-line px-2 py-0.5 rounded self-start sm:self-center inline-block w-fit">
                   {PERMISSION_META[perm].module}
                 </span>
-                <p className="text-[11px] text-slate-500">{PERMISSION_META[perm].description}</p>
-                <span className="sm:text-center text-[11px] text-slate-400">{usageCount(perm)} role(s)</span>
+                <p className="text-xs text-slate-500">{PERMISSION_META[perm].description}</p>
+                <span className="sm:text-center text-xs text-slate-400">{usageCount(perm)} role(s)</span>
               </div>
             ))}
           </div>
