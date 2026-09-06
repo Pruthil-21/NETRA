@@ -20,12 +20,13 @@ PERMISSIONS = {
     "super_admin": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
-        "acknowledge_alerts", "manage_roles", "manage_stations",
+        "acknowledge_alerts", "manage_roles", "manage_stations", "manage_circles",
+        "reset_officer_passwords",
     ],
     "district_command": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "acknowledge_alerts",
-        "view_audit_logs", "manage_stations",
+        "view_audit_logs", "manage_stations", "manage_circles",
     ],
     "station_officer": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "acknowledge_alerts",
@@ -41,12 +42,13 @@ def seed():
             for name, display_name, level, can_delegate in ROLES:
                 cur.execute(
                     """
-                    INSERT INTO roles (name, display_name, hierarchy_level, can_delegate_admin)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO roles (name, display_name, hierarchy_level, can_delegate_admin, is_system)
+                    VALUES (%s, %s, %s, %s, true)
                     ON CONFLICT (name) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         hierarchy_level = EXCLUDED.hierarchy_level,
-                        can_delegate_admin = EXCLUDED.can_delegate_admin
+                        can_delegate_admin = EXCLUDED.can_delegate_admin,
+                        is_system = true
                     RETURNING id
                     """,
                     (name, display_name, level, can_delegate),

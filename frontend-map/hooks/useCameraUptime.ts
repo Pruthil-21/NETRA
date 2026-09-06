@@ -75,3 +75,18 @@ export function formatDuration(seconds: number): string {
   if (mins > 0) return `${mins}m ${secs}s`;
   return `${secs}s`;
 }
+
+/** "Sep 5, 08:12 -> Sep 5, 10:26" (or "-> now" for the window still open) --
+ * formatDuration answers "how long," this answers "when," which matters just
+ * as much when an officer is reconstructing what happened around a specific
+ * incident time rather than just judging overall reliability. */
+export function formatTimeRange(from: string, to: string | null): string {
+  const fmt = (iso: string) =>
+    new Date(iso).toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  return `${fmt(from)} → ${to === null ? 'now' : fmt(to)}`;
+}

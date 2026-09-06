@@ -78,7 +78,7 @@ export default function MapPopupPreviewPlayer({ src }: { src: string | null }) {
 
   return (
     <div className="relative w-full h-full bg-ink overflow-hidden">
-      <video ref={videoRef} muted playsInline autoPlay className="w-full h-full object-cover" />
+      <video ref={videoRef} muted playsInline autoPlay className="w-full h-full object-contain" />
       {!isLive && (
         <div className="absolute inset-0 flex items-center justify-center bg-ink/90 text-slate-500 gap-1.5 text-[10px]">
           <Radio size={12} className="animate-pulse" />

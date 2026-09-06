@@ -23,6 +23,7 @@ class CameraCreate(BaseModel):
     # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraUpdate(BaseModel):
@@ -39,6 +40,7 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
+    circle_id: Optional[int] = None
 
 
 class CameraOut(CameraCreate):
@@ -94,10 +96,56 @@ class LoginResponse(BaseModel):
 class MeResponse(BaseModel):
     badge_number: str
     name: str
-    role: str
-    scope_type: str
+    role: Optional[str] = None
+    rank: Optional[str] = None
+    photo_url: Optional[str] = None
+    last_login: Optional[datetime] = None
+    status: str = "active"
+    scope_type: Optional[str] = None
     scope_value: Optional[str] = None
     permissions: list[str]
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class PasswordResetBody(BaseModel):
+    new_password: str
+    # When this reset fulfills a pending password_reset_requests row, pass its
+    # id so the request is atomically marked approved in the same call --
+    # otherwise an admin could set the password but leave the request stuck
+    # "pending" forever.
+    request_id: Optional[int] = None
+
+
+class PasswordResetRequestCreate(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class PasswordResetRequestOut(BaseModel):
+    id: int
+    officer_id: int
+    badge_number: str
+    officer_name: str
+    rank: Optional[str] = None
+    role_name: Optional[str] = None
+    scope_type: Optional[str] = None
+    scope_value: Optional[str] = None
+    reason: Optional[str] = None
+    status: str
+    requested_at: datetime
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+
+
+class ProfilePhotoUpdate(BaseModel):
+    photo_url: Optional[str] = None
 
 
 class PostingSummary(BaseModel):
@@ -113,6 +161,10 @@ class OfficerOut(BaseModel):
     name: str
     rank: Optional[str] = None
     active_posting: Optional[PostingSummary] = None
+    # An officer can hold several simultaneously-active postings (spec
+    # Section 3.3) -- active_posting (singular) is kept for callers that
+    # only ever showed one; this is the full set.
+    active_postings: list[PostingSummary] = []
 
 
 class PostingOut(BaseModel):
@@ -129,18 +181,209 @@ class PostingCreate(BaseModel):
     role_name: str
     scope_type: str
     scope_value: Optional[str] = None
+    expires_at: Optional[datetime] = None
 
 
 class RolePermissionsOut(BaseModel):
+    id: int
     name: str
     display_name: str
     hierarchy_level: Optional[int] = None
     permissions: list[str]
+    parent_role_id: Optional[int] = None
+    is_active: bool = True
+    is_system: bool = False
+    duty_ids: list[int] = []
 
 
 class RolePermissionsUpdate(BaseModel):
     permissions: list[str]
     reason_code: Optional[str] = None
+
+
+class DutyCreate(BaseModel):
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    permissions: list[str] = []
+
+
+class DutyUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    permissions: Optional[list[str]] = None
+
+
+class DutyOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    description: Optional[str] = None
+    permissions: list[str]
+
+
+class RoleOut(BaseModel):
+    id: int
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    can_delegate_admin: bool
+    parent_role_id: Optional[int] = None
+    is_active: bool
+    is_system: bool
+    duty_ids: list[int] = []
+    # Direct role_permissions only (the rare/advanced path) -- callers that
+    # need the full effective set (duties included) use
+    # GET /admin/roles/{id}/effective-permissions.
+    permissions: list[str] = []
+
+
+class RoleCreate(BaseModel):
+    name: str
+    display_name: str
+    hierarchy_level: Optional[int] = None
+    can_delegate_admin: bool = False
+    parent_role_id: Optional[int] = None
+    duty_ids: list[int] = []
+    permissions: list[str] = []
+
+
+class RoleCloneRequest(BaseModel):
+    name: str
+    display_name: str
+
+
+class RoleDutiesUpdate(BaseModel):
+    duty_ids: list[int]
+
+
+class RoleDraftUpdate(BaseModel):
+    duty_ids: list[int] = []
+    permissions: list[str] = []
+
+
+class RoleDraftOut(BaseModel):
+    role_id: int
+    draft_duty_ids: list[int]
+    draft_permissions: list[str]
+    created_by: Optional[str] = None
+    created_at: datetime
+
+
+class RoleDiffOut(BaseModel):
+    role_id: int
+    has_draft: bool
+    added_permissions: list[str] = []
+    removed_permissions: list[str] = []
+    affected_active_holders: int
+
+
+class EffectivePermissionsOut(BaseModel):
+    role_id: int
+    permissions: list[str]
+
+
+class DiagnosticsOut(BaseModel):
+    officer_id: Optional[int] = None
+    role_id: Optional[int] = None
+    permission: Optional[str] = None
+    has_permission: Optional[bool] = None
+    granting_roles: list[str] = []
+    granting_duties: dict[str, list[str]] = {}
+
+
+class RegisterRequest(BaseModel):
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    department: Optional[str] = None
+    contact_info: Optional[str] = None
+    password: str
+
+
+class RegistrationRequestOut(BaseModel):
+    id: int
+    officer_id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    department: Optional[str] = None
+    contact_info: Optional[str] = None
+    status: str
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime
+
+
+class RegistrationApprove(BaseModel):
+    role_name: str
+    scope_type: str
+    scope_value: Optional[str] = None
+
+
+class RegistrationReject(BaseModel):
+    reason: Optional[str] = None
+
+
+class DataJobCreate(BaseModel):
+    entity_type: str
+    format: Literal["csv", "json"] = "json"
+    # Pre-parsed rows for an import job (a raw CSV/XLSX file is parsed into
+    # this shape before it reaches this endpoint) -- absent/ignored for an
+    # export job, which reads the entity's current rows instead.
+    rows: list[dict] = []
+
+
+class DataJobOut(BaseModel):
+    id: int
+    entity_type: str
+    direction: str
+    format: str
+    status: str
+    total_rows: int
+    success_rows: int
+    failed_rows: int
+    row_results: Optional[list[dict]] = None
+    run_by: Optional[str] = None
+    created_at: datetime
+
+
+class NotificationOut(BaseModel):
+    id: int
+    officer_id: int
+    type: str
+    message: str
+    read: bool
+    created_at: datetime
+
+
+class SodRuleCreate(BaseModel):
+    role_a_id: int
+    role_b_id: int
+    description: Optional[str] = None
+
+
+class SodRuleOut(BaseModel):
+    id: int
+    role_a_id: int
+    role_a_name: str
+    role_b_id: int
+    role_b_name: str
+    description: Optional[str] = None
+    created_at: datetime
+
+
+class OfficerProfileOut(BaseModel):
+    id: int
+    badge_number: str
+    name: str
+    rank: Optional[str] = None
+    photo_url: Optional[str] = None
+    status: str
+    last_login_at: Optional[datetime] = None
+    recent_logins: list[datetime] = []
+    active_postings: list[PostingSummary] = []
 
 
 class PaginatedCamerasOut(BaseModel):
@@ -223,6 +466,21 @@ class PoliceStationOut(PoliceStationCreate):
     id: int
 
 
+class CircleCreate(BaseModel):
+    name: str
+    district: str
+
+
+class CircleUpdate(BaseModel):
+    name: Optional[str] = None
+    district: Optional[str] = None
+
+
+class CircleOut(CircleCreate):
+    id: int
+    created_at: datetime
+
+
 class UncoveredZone(BaseModel):
     target_id: int
     name: str
@@ -252,8 +510,14 @@ class AuditLogOut(BaseModel):
     resource_id: Optional[int] = None
     reason_code: Optional[str] = None
     timestamp: datetime
+    category: str
+    actor_name: Optional[str] = None
+    camera_name: Optional[str] = None
+    camera_district: Optional[str] = None
+    camera_area: Optional[str] = None
 
 
 class AuditLogsPage(BaseModel):
     logs: list[AuditLogOut]
     next_cursor: Optional[int] = None
+

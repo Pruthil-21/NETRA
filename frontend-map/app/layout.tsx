@@ -3,6 +3,7 @@ import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google';
 import { CameraRegistryProvider } from '@/context/CameraRegistryContext';
 import { ShellGate } from '@/components/shell/ShellGate';
 import { ServiceWorkerRegistration } from '@/components/common/ServiceWorkerRegistration';
+import { THEME_INIT_SCRIPT } from '@/lib/theme';
 import './globals.css';
 
 // Two roles, one contract: Plex Sans carries every label a dispatcher reads
@@ -37,6 +38,8 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${plexSans.variable} ${plexMono.variable}`}>
       <body className="bg-ink text-slate-100 antialiased font-sans">
+        {/* eslint-disable-next-line @next/next/no-sync-scripts, react/no-danger */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <ServiceWorkerRegistration />
         <CameraRegistryProvider>
           <ShellGate>{children}</ShellGate>

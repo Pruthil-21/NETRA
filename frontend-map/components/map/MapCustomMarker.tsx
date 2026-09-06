@@ -1,7 +1,12 @@
 import L from 'leaflet';
 import { Camera } from '../../types/camera';
 
-export const createCustomMarkerIcon = (camera: Camera, isSelected: boolean, isOnRoute: boolean = false) => {
+export const createCustomMarkerIcon = (
+  camera: Camera,
+  isSelected: boolean,
+  isOnRoute: boolean = false,
+  isHighlighted: boolean = false
+) => {
   const status = (camera.connectivity_status || 'offline').toLowerCase();
   const isOnline = status === 'online';
   const color = isOnline ? '#22C55E' : '#EF4444';
@@ -17,13 +22,19 @@ export const createCustomMarkerIcon = (camera: Camera, isSelected: boolean, isOn
   // isOnRoute (a vehicle-search sighting camera) gets a static blue ring —
   // no ping, since up to several of these render at once and a shared pulse
   // would be visual noise. isSelected (the one open in the detail drawer)
-  // still gets the louder ping ring and wins if both apply.
+  // still gets the louder ping ring and wins if both apply. isHighlighted (a
+  // camera under the tree's currently selected district/circle) gets a static
+  // amber ring, lowest priority of the three -- it's a coarse "this is the
+  // selected group" cue, not something that should compete visually with an
+  // actual selection or an active sighting route.
   const highlightRing = isSelected
     ? `<div class="absolute -inset-1.5 rounded-full border-2 border-command bg-command/20 animate-ping"></div>
        <div class="absolute -inset-1 rounded-full border-2 border-command"></div>`
     : isOnRoute
       ? `<div class="absolute -inset-1 rounded-full border-2 border-blue-400 bg-blue-400/10"></div>`
-      : '';
+      : isHighlighted
+        ? `<div class="absolute -inset-1 rounded-full border-2 border-amber-400 bg-amber-400/10"></div>`
+        : '';
 
   const html = `
     <div class="relative flex items-center justify-center w-8 h-8 ${isOnline ? 'radar-sweep' : ''}">

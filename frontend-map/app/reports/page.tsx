@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { GapAnalysisSection } from '@/components/reports/GapAnalysisSection';
+import { ReportsSummarySection } from '@/components/reports/ReportsSummarySection';
 import AddCoverageTargetModal from '@/components/registry/AddCoverageTargetModal';
 import { usePermissions } from '@/hooks/usePermissions';
 
@@ -14,7 +15,7 @@ export default function ReportsPage() {
   return (
     <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-0 w-full">
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h1 className="text-sm font-semibold text-white uppercase tracking-wide">Reports</h1>
+        <h1 className="text-lg font-semibold text-white">Reports</h1>
         {has('manage_cameras') && (
           <button
             type="button"
@@ -27,6 +28,7 @@ export default function ReportsPage() {
         )}
       </div>
 
+      <ReportsSummarySection />
       <GapAnalysisSection key={refreshKey} />
 
       {showAddModal && (

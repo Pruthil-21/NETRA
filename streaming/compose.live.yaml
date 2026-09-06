@@ -92,15 +92,18 @@ services:
     memswap_limit: "${CLOUDFLARED_MEMORY_LIMIT:-256m}"
     depends_on:
       - mediamtx
+    secrets:
+      - cloudflare_tunnel_token
     command:
       - tunnel
       - --no-autoupdate
-      - --protocol
-      - http2
-      - --url
-      - http://mediamtx:8888
+      - run
+      - --token-file
+      - /run/secrets/cloudflare_tunnel_token
 
 secrets:
+  cloudflare_tunnel_token:
+    file: "${HOME}/.config/netra/cloudflare-tunnel-token"
   organizer_email:
     file: ./.organizer-email
   organizer_password:

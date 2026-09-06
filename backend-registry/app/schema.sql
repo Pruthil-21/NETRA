@@ -26,6 +26,16 @@ CREATE TABLE cameras (
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 
+CREATE TABLE circles (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    district    TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (district, name)
+);
+
+ALTER TABLE cameras ADD COLUMN circle_id INTEGER REFERENCES circles(id);
+
 -- Mirrors backend-watchlist's alert_status_history: append-only, one row per
 -- real connectivity transition. Written by cameras_service.update_camera()
 -- only when the new status differs from the current one -- repeated PUTs
@@ -106,10 +116,35 @@ CREATE TABLE IF NOT EXISTS postings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_postings_one_active_per_officer
     ON postings (officer_id) WHERE is_active;
 
+-- An officer's self-service request for a Super Admin to reset their
+-- password (e.g. forgotten password) -- deliberately carries no password
+-- value at all, in either direction. The admin reviews the requesting
+-- officer's identity (name, badge, rank, posting) and reason, then either
+-- rejects it or approves it by setting a brand-new password through the
+-- existing POST /admin/officers/{id}/reset-password flow -- this table only
+-- tracks the request's lifecycle, never a credential.
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+    id           SERIAL PRIMARY KEY,
+    officer_id   INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    reason       TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_by  TEXT,
+    reviewed_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status ON password_reset_requests (status, requested_at);
+
 CREATE INDEX IF NOT EXISTS idx_postings_officer ON postings (officer_id);
 
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS badge_number TEXT;
 ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS reason_code TEXT;
+
+-- Self-service profile photo -- a URL, not an upload: this codebase has no
+-- file-storage/upload pipeline anywhere (camera rtsp_url/hls_url are also
+-- plain URL strings), so an officer sets/pastes a URL rather than the app
+-- hosting the image itself.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS photo_url TEXT;
 
 -- Scale demo: edge nodes + synthetic-camera flag + an isolated detection-events
 -- table for load-testing ingestion throughput. Additive only -- every
@@ -201,3 +236,173 @@ CREATE TABLE IF NOT EXISTS police_stations (
 );
 
 CREATE INDEX IF NOT EXISTS idx_police_stations_location ON police_stations USING GIST (location);
+
+-- Dynamic RBAC (v2 spec, Phase A): roles/duties become admin-manageable data
+-- instead of a fixed 5-row seed. parent_role_id lets a new role inherit an
+-- existing one's duties as a starting point (Section 2.2); is_system flags
+-- the 5 originally-seeded roles so they're never hard-deletable, only
+-- editable/deactivatable (protects the demo baseline); is_active supports
+-- "deactivate, don't delete" for a role still held by anyone.
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS parent_role_id INTEGER REFERENCES roles(id);
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;
+
+-- A duty bundles permissions into one named, reusable unit (D365's "assign
+-- only duties to roles" guidance -- Section 2.1). NETRA has no separate
+-- Privilege layer, so a duty's permissions are plain VALID_PERMISSIONS
+-- strings, validated in rbac_service, not a DB-level FK/CHECK.
+CREATE TABLE IF NOT EXISTS duties (
+    id           SERIAL PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    description  TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS duty_permissions (
+    duty_id    INTEGER NOT NULL REFERENCES duties(id) ON DELETE CASCADE,
+    permission TEXT NOT NULL,
+    PRIMARY KEY (duty_id, permission)
+);
+
+-- A role's primary composition path -- role_permissions (existing table)
+-- stays for the rare "assign a permission directly to a role" edge case,
+-- mirroring D365 allowing (but discouraging) direct privilege assignment.
+-- A role's effective permission set is the union of both.
+CREATE TABLE IF NOT EXISTS role_duties (
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    duty_id INTEGER NOT NULL REFERENCES duties(id) ON DELETE CASCADE,
+    PRIMARY KEY (role_id, duty_id)
+);
+
+-- Multi-role support (Section 3.3): an officer can hold several
+-- simultaneously-active postings ("Station Officer at Station A *and*
+-- Traffic Officer for a highway corridor"), matching D365's "sum total
+-- access" rule. Removes the one-active-posting-per-officer constraint the
+-- original plan's own Self-Review flagged as a gap. expires_at supports
+-- genuinely temporary duty attachments that auto-expire.
+DROP INDEX IF EXISTS idx_postings_one_active_per_officer;
+ALTER TABLE postings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+
+-- People lifecycle (v2 spec, Phase B). status matches D365's "no role, no
+-- privileges" rule: a freshly-registered officer is 'pending' with zero
+-- postings, not absent -- they can log in and see an empty shell, not an
+-- error. last_login_at is a persisted mirror of what auth_service.get_last_login
+-- already derives from audit_logs (kept for the admin profile endpoint's
+-- convenience -- a single indexed column instead of a MAX() scan);
+-- failed_login_count/locked_until back the account-lockout policy below.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'pending', 'suspended', 'deactivated'));
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS failed_login_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+
+-- One row per public self-registration submission (spec Section 3.2).
+-- officer_id is set at submission time (the officer row itself is created
+-- immediately, status='pending') -- this table is the admin-facing queue
+-- and review trail, not the source of truth for the account itself.
+-- Designed to extend to "request additional access" later (a logged-in
+-- officer requesting a second role) without a schema change: that request
+-- would just be another row here, with officer_id pointing at an existing,
+-- already-active officer instead of a brand-new one.
+CREATE TABLE IF NOT EXISTS registration_requests (
+    id               SERIAL PRIMARY KEY,
+    officer_id       INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    department       TEXT,
+    contact_info     TEXT,
+    status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    reviewed_by      TEXT,
+    reviewed_at      TIMESTAMPTZ,
+    rejection_reason TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_registration_requests_status ON registration_requests (status, created_at);
+
+-- Backs force-logout (spec Section 3.6): JWTs are stateless by default, so
+-- revoking one before its natural expiry needs a server-side record to
+-- check against. id is generated in application code (uuid.uuid4()), not a
+-- DB default -- same pattern synthetic_detection_events.event_id already
+-- uses for a caller-supplied UUID. A session with no matching row (every
+-- token issued before this feature existed) is treated as never-revoked --
+-- see auth.get_current_user.
+CREATE TABLE IF NOT EXISTS sessions (
+    id           UUID PRIMARY KEY,
+    officer_id   INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    issued_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked      BOOLEAN NOT NULL DEFAULT false
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_officer ON sessions (officer_id);
+
+-- Admin power tools (v2 spec, Phase C). Generic import/export engine
+-- (Section 3.7): one job row per staged/executed CSV/XLSX/JSON transfer,
+-- covering any entity_type -- never a one-off table per importer. Staging
+-- (validate every row before committing anything) is why this carries its
+-- own per-row result payload rather than writing straight into the target
+-- table; "re-submit only the failed rows" reads failed_rows_payload back
+-- out rather than requiring the whole original file again.
+CREATE TABLE IF NOT EXISTS import_export_jobs (
+    id                   SERIAL PRIMARY KEY,
+    entity_type          TEXT NOT NULL,
+    direction            TEXT NOT NULL CHECK (direction IN ('import', 'export')),
+    format               TEXT NOT NULL CHECK (format IN ('csv', 'json')),
+    status               TEXT NOT NULL DEFAULT 'staged'
+        CHECK (status IN ('staged', 'committed', 'failed')),
+    total_rows           INTEGER NOT NULL DEFAULT 0,
+    success_rows         INTEGER NOT NULL DEFAULT 0,
+    failed_rows          INTEGER NOT NULL DEFAULT 0,
+    row_results          JSONB,
+    failed_rows_payload  JSONB,
+    run_by               TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_import_export_jobs_entity ON import_export_jobs (entity_type, created_at);
+
+-- Generalized Separation-of-Duty rule engine (v2 spec, Phase D, Section
+-- 3.8): an admin-configurable table of role pairs that must never both be
+-- actively held by the same officer at once, generalizing Task 6's single
+-- hardcoded alert-escalation rule to posting assignment itself. role_a_id
+-- is stored as the lesser of the two ids so a pair is never inserted
+-- twice in reverse order.
+CREATE TABLE IF NOT EXISTS sod_rules (
+    id          SERIAL PRIMARY KEY,
+    role_a_id   INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    role_b_id   INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    description TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (role_a_id < role_b_id),
+    UNIQUE (role_a_id, role_b_id)
+);
+
+-- Minimal in-app notification log (v2 spec, Phase D): role granted/revoked,
+-- registration approved/rejected, an SoD conflict blocked an assignment.
+-- Not email/SMS -- just what makes the approval queue and audit log feel
+-- like one connected system instead of two disconnected features.
+CREATE TABLE IF NOT EXISTS notifications (
+    id         SERIAL PRIMARY KEY,
+    officer_id INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    type       TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    read       BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_officer ON notifications (officer_id, created_at DESC);
+
+-- Draft/Publish for role edits (v2 spec, Phase D, Section 2.4/3.1): a
+-- staged change to a role's duty/permission composition that doesn't take
+-- effect until explicitly published, so a half-finished edit never breaks
+-- live access for everyone currently holding that role. One pending draft
+-- per role -- a second PUT replaces the first, it never stacks. Posting
+-- assignment (Task 4) stays immediate/unstaged; this only ever applies to
+-- editing a role's *definition*.
+CREATE TABLE IF NOT EXISTS role_drafts (
+    role_id           INTEGER PRIMARY KEY REFERENCES roles(id) ON DELETE CASCADE,
+    draft_duty_ids    JSONB NOT NULL DEFAULT '[]',
+    draft_permissions JSONB NOT NULL DEFAULT '[]',
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
