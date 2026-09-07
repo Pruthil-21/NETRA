@@ -1,7 +1,16 @@
 """Sends confirmed plate reads to backend-watchlist."""
+import uuid
+
 import requests
 
 from .config import CAMERA_ID_MAP, INTERNAL_KEY, DETECTION_API_URL
+
+# 10s per the real handoff's own guidance ("10 seconds is generous for
+# this endpoint") -- was 3s, tighter than what P6 documented as normal,
+# which risked this one-shot (no-retry) caller giving up on a request
+# that just needed a bit more time over a real network hop to a
+# production domain, not the old same-network tunnel.
+REQUEST_TIMEOUT_SEC = 10
 
 
 def send_detection_to_watchlist(plate_number, camera_id_str, confidence=None):
@@ -11,6 +20,12 @@ def send_detection_to_watchlist(plate_number, camera_id_str, confidence=None):
     comment). Unlike the retired POST /alerts, this always returns 201
     with {detection, alert}; alert is null when the plate isn't on the
     watchlist, which is the normal/expected case for most detections.
+
+    Sends a fresh event_id even though this function never retries --
+    "strongly recommended" per the handoff, and a caller elsewhere might
+    reasonably re-invoke this same function for the same real sighting
+    after a failure (e.g. a higher-level retry loop this function itself
+    doesn't have); giving that retry real idempotency costs one line here.
     """
     camera_id_int = CAMERA_ID_MAP.get(camera_id_str)
     if camera_id_int is None:
@@ -22,13 +37,18 @@ def send_detection_to_watchlist(plate_number, camera_id_str, confidence=None):
         "camera_id": camera_id_int,
         "plate_number": plate_number,
         "confidence": confidence,
+        "event_id": str(uuid.uuid4()),
     }
     try:
-        response = requests.post(DETECTION_API_URL, json=body, headers=headers, timeout=3)
+        response = requests.post(DETECTION_API_URL, json=body, headers=headers,
+                                  timeout=REQUEST_TIMEOUT_SEC)
         if response.status_code == 201:
             result = response.json()
             if result.get("alert") is not None:
                 print(f"[ALERT] Watchlist match: {result['alert']}")
+        elif response.status_code == 401:
+            print("[WARN] backend-watchlist rejected X-Internal-Key (401) -- "
+                  "check config.INTERNAL_KEY, retrying won't help")
         else:
             print(f"[WARN] Unexpected response {response.status_code}: {response.text}")
     except requests.exceptions.RequestException as e:

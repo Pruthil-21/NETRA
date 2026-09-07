@@ -59,7 +59,7 @@ class EventSender:
 
     def __init__(self, event_queue, metrics, batch_size=10, batch_timeout_sec=1.0,
                  max_retries=3, backoff_base_sec=0.5, detection_api_url=None,
-                 internal_key=None, camera_id_map=None, request_timeout_sec=3,
+                 internal_key=None, camera_id_map=None, request_timeout_sec=10,
                  dry_run=False, mock_send_fn=None):
         self.event_queue = event_queue
         self.metrics = metrics
@@ -164,6 +164,20 @@ class EventSender:
                     ok = response.status_code == 201
                     if not ok:
                         print(f"[WARN] Unexpected response {response.status_code} for event {event.event_id}")
+                    # Per the real backend-watchlist handoff's own retry
+                    # table: 401 means the credential is wrong, not that
+                    # this specific request had bad luck -- every retry
+                    # would fail exactly the same way, so stop immediately
+                    # rather than burning the whole backoff schedule on a
+                    # guaranteed-repeat failure. 409 means this event_id
+                    # already belongs to a *different* detection (a real,
+                    # if rare, collision) -- retrying with the same id just
+                    # repeats the same conflict; the handoff's own guidance
+                    # is to mint a fresh event_id instead, which is a
+                    # decision for whoever generates events (events.py),
+                    # not something to paper over silently in here.
+                    if response.status_code in (401, 409):
+                        break
 
                 if ok:
                     self.metrics.record_event_sent(time.monotonic() - t0)

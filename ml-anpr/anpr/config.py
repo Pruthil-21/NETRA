@@ -74,21 +74,32 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # mapping fails safe (silently skips sending) rather than misreporting
 # to the wrong camera.
 # ---------------------------------------------------------------------------
-# P6's real backend-watchlist gateway, confirmed live and working: bare
-# POST /detections (no prefix needed -- an earlier gateway config gap
-# that made it look like /watchlist/detections was required has been
-# fixed by P6), server-side event_id idempotency verified working,
-# INTERNAL_KEY below verified correct against this same host. This is a
-# Cloudflare quick tunnel, though -- it can change if P6's container
-# restarts, same caveat as any other trycloudflare.com URL in this
-# project; if calls start failing, ask P6 for a fresh URL before
-# assuming anything else broke. STILL OPEN as of this same main-branch
-# check: every real test this session got a real connection failure
-# against this exact URL, and no newer URL exists anywhere in main's
-# history either -- this needs a fresh URL from P6 directly, not
-# something discoverable from the repo.
-DETECTION_API_URL = "https://receiving-intl-mothers-santa.trycloudflare.com/detections"
-INTERNAL_KEY = "3fdcd2e3b5fe0ecacd29d0b011c6cca74caddcbae5196a6b"
+# P6's real, permanent backend-watchlist gateway (handoff doc, 2026-09-07):
+# a named domain behind a persistent Cloudflare tunnel, not a disposable
+# trycloudflare.com quick-tunnel URL that dies whenever P6's container
+# restarts (the old URL here failed with a real connection error on
+# every single test this whole session -- this replaces it). Full
+# contract: POST /detections, 201 with {detection, alert}, alert is
+# non-null only on a real watchlist match. Idempotency: event_id (UUID)
+# is a genuine server-side dedup key -- a retried POST with the same
+# event_id returns the original detection instead of creating a second
+# one; a *different* detection accidentally reusing an event_id gets
+# 409, not silently overwritten. Retry guidance from the handoff: retry
+# timeout/5xx with backoff (same event_id), never retry 401 (bad key,
+# retrying won't fix it) or 409 (retrying with the same ID just repeats
+# the same collision -- see event_sender.py's status-code handling).
+DETECTION_API_URL = "https://api.digdhrishti.me/detections"
+# STILL OPEN: the handoff is explicit that this key is a *new*,
+# ML-ingestion-specific credential -- "don't reuse the tunnel token or
+# anything else" -- and no real value was included in the handoff text.
+# The old key almost certainly won't authenticate against this new
+# gateway (a wrong key fails closed with 401, per the handoff's own
+# retry table -- event_sender.py already won't waste retries on that).
+# Deliberately not carrying the old key forward silently here, since a
+# present-but-wrong key is a real risk of a confusing 401 nobody
+# investigates as "the key is stale," not just "the code is unfinished
+# in an obvious way." Get the real key from P6 directly.
+INTERNAL_KEY = "REQUEST_FROM_P6_FOR_ML_INGESTION"
 CAMERA_ID_MAP = {
     "direct-cam01": 1,
     "direct-cam02": 2,

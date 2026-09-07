@@ -4189,3 +4189,84 @@ from P6 directly; nothing in the repo resolves this one.
 `tests/test_pipeline_smoke.py` (3/3) and `tests/test_reconfirm_cooldown.py`
 (OK), re-run after the config change -- doesn't touch detection/tracking
 logic at all, but confirmed no accidental breakage anyway.
+
+# Session 38 -- real backend-watchlist API handoff from P6: new permanent URL, and 2 real contract bugs found while implementing it
+
+P6 sent a real, written handoff for `POST /detections` (base URL,
+auth, request/response shape, idempotency semantics, retry guidance)
+-- implementing it against the code already here surfaced two genuine
+bugs that predated this handoff, not just a URL swap.
+
+## The URL and key
+
+`DETECTION_API_URL` -> `https://api.digdhrishti.me/detections` -- a
+permanent domain behind a persistent tunnel, not the disposable
+trycloudflare.com quick-tunnel that failed with a real connection error
+on every test this whole session. `INTERNAL_KEY` deliberately set to
+an obvious placeholder (`REQUEST_FROM_P6_FOR_ML_INGESTION`), not
+carried forward from the old value -- the handoff is explicit this is
+a *new*, ML-ingestion-specific credential ("don't reuse the tunnel
+token or anything else"), and no real value was included in the
+handoff text. A present-but-wrong key just fails closed with a 401
+that's easy to misread as "the gateway is down" instead of "the key is
+stale" -- the placeholder makes the real cause obvious instead.
+
+## Real bug #1: `detected_at` was being sent in the wrong format entirely
+
+`events.py`'s `to_backend_payload()` sent `detected_at: self.timestamp`
+-- a raw Unix-epoch float. The handoff documents `detected_at` as ISO
+8601, optional, and explicitly "omit it and we timestamp it server-side
+at receipt time -- only send this if you need to backfill a specific
+capture time." Every detection this pipeline sends is live, never a
+backfill, so the correct fix wasn't reformatting the float to ISO
+8601 -- it was removing the field from the live payload entirely,
+matching the documented behavior for normal use. `self.timestamp`
+stays on the Python object for our own logging; just not put on the wire.
+
+## Real bug #2: 401/409 were silently retried with the same doomed request
+
+`event_sender.py`'s retry loop treated every non-201 response
+identically -- generic warning, then retry with backoff regardless of
+status code. The handoff's own retry table says otherwise: 401 means
+the credential is wrong (retrying repeats the identical failure every
+time, burning the whole backoff schedule for nothing), and 409 means
+this event_id already belongs to a *different* detection (retrying with
+the same ID just repeats the same collision -- the fix is a fresh
+event_id, which is a decision for whoever generates the event, not
+something to paper over inside the sender). Both now break out of the
+retry loop immediately instead of exhausting `max_retries` uselessly.
+
+## Smaller alignment fixes
+
+- `request_timeout_sec` default 3s -> 10s (`event_sender.py`) and
+  `watchlist_client.py`'s hardcoded `timeout=3` -> 10s, matching the
+  handoff's explicit "10 seconds is generous for this endpoint" --  the
+  old 3s was tighter than documented, real risk of a premature timeout-
+  retry on a request that would have succeeded given the time P6 says
+  to expect.
+- `watchlist_client.send_detection_to_watchlist()` (the simpler, no-retry
+  path used elsewhere) now sends a fresh `event_id` too, "strongly
+  recommended" per the handoff even though this specific function never
+  retries itself -- a caller invoking it again after a failure still
+  gets real idempotency for one added line. Also added an explicit 401
+  message here, matching the same "don't bother retrying" signal
+  `event_sender.py` now gives.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3) and `tests/test_reconfirm_cooldown.py`
+(OK). `tests/test_pipeline_mp_smoke.py` re-run end-to-end against the
+*real* new URL: got real HTTP 530 responses (Cloudflare tunnel not
+currently connected on P6's side -- DNS resolves, the domain is real,
+just not live at this exact moment), correctly fell through to the
+generic retry-with-backoff path since 530 isn't 401/409, retried
+`max_retries` times as configured, no crash. Real, live confirmation
+the new status-code branching doesn't misfire on an ordinary 5xx.
+
+## What's not done / open
+
+- The real `INTERNAL_KEY` value is still needed from P6 -- placeholder
+  only, deliberately not guessed.
+- Not yet verified end-to-end against a genuinely live tunnel (530 at
+  test time) -- the code path is exercised and correct, but "a real
+  201 came back" hasn't been observed against this specific new URL.
