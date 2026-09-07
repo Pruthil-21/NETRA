@@ -4270,3 +4270,109 @@ the new status-code branching doesn't misfire on an ordinary 5xx.
 - Not yet verified end-to-end against a genuinely live tunnel (530 at
   test time) -- the code path is exercised and correct, but "a real
   201 came back" hasn't been observed against this specific new URL.
+
+# Session 39 -- pixel enhancement tested and rejected twice more; the real lever was sampling density
+
+User pushed back hard on the two-wheeler resolution-ceiling conclusion
+("I can read it myself, you're not thinking enough") -- fair pushback,
+and it led somewhere real: the conclusion that *enhancement* can't help
+still held up under two more direct tests, but the investigation
+uncovered a different, real, working lever instead.
+
+## CLAHE tested directly, same real failing crops as the earlier sharpening test: 0/25
+
+Same batch-test methodology as the earlier (also negative) unsharp-mask
+test. CLAHE on the L-channel (the exact technique `enhance_low_light()`
+already uses elsewhere in this pipeline, just never applied to these
+specific tiny plate crops before) produced a *different* OCR read on
+several crops but a **correctly plate-shaped one on zero of 25** --
+identical outcome to sharpening. Confirms the earlier finding wasn't a
+fluke of the specific technique tried; contrast redistribution doesn't
+help when the underlying information genuinely isn't there.
+
+## Real, independent, external confirmation found before building anything else
+
+A production LPR team's public writeup (WINK Engineering, "We Tested
+Neural Super-Resolution for License Plate OCR. It Did Nothing.") ran a
+rigorous 2,000-crop benchmark comparing no-SR, a custom-trained 42K-param
+SR model, and pretrained Real-ESRGAN (1.21M params) -- all three scored
+*identically*: 0.0% exact match, 0.4% character accuracy, on crops under
+100px. Their own conclusion: "SR models hallucinate plausible but
+incorrect character shapes rather than enhancing actual detail... no
+amount of upscaling creates information the camera didn't capture" --
+independently reaching the same conclusion this project's own two tests
+did, worth citing rather than re-deriving a third time by building and
+testing a real SR model from scratch.
+
+## What their production system actually does instead: vote across many real frames, not enhance one
+
+Their 98.6% accuracy comes from 15-20 crops per vehicle voting together,
+not from enhancing any single crop -- high-quality crops dominate the
+vote; low-quality ones are just noise that gets outvoted, regardless of
+upscaling. This project already has the identical mechanism
+(`PlateConfirmationTracker`'s confidence-weighted voting across a
+track's whole lifetime) -- the real question became whether it's
+getting *enough* real looks per vehicle, not whether any single look
+could be enhanced.
+
+## Real evidence this matters here specifically: plate size varies enormously frame to frame
+
+Densely sampled *every* frame (not the usual every-Nth) across an
+8-second real window around one known-hard two-wheeler case: the same
+real scene's two-wheeler plates ranged from ~17px tall up to 380px+
+wide within seconds, as vehicles moved through frame. A frame with a
+clearly legible plate can exist just a handful of frames away from the
+one sparse sampling happened to land on.
+
+## Real A/B test: sample_every_n=10 vs 5, same real 3-minute video, full tracked pipeline
+
+| | sample_every_n=10 | sample_every_n=5 |
+|---|---|---|
+| Frames processed | 450 | 900 |
+| Vehicles tracked | 220 | 188 (less fragmented, not more) |
+| Confirmed plates | 29 | **41** |
+
+**+41% more confirmed plates from denser sampling alone, zero new
+detection/OCR code.** Diffed the two plate lists directly: every plate
+from the sparse run appears in the dense run (a couple show minor
+character drift between runs -- different exact frames sampled, not a
+loss), against one single, isolated loss (`GJ23BR5411`) and 12 net new
+real gains. Real, honest cost: this is ~2x the per-frame compute load
+of the old default -- a deliberate accuracy-for-throughput trade, not a
+free win, worth revisiting if a live multi-camera run becomes
+overloaded again (see Session 34-37's throughput/worker-count findings).
+
+## The fix: sample_every_n / process_every_n_frames default 10-30 -> 5, everywhere
+
+`ScalablePipeline` (was 15), `anpr/streaming.py`'s three entry points
+(were 30/15/15), `run_organizer_cameras.py`'s `--sample-rate` CLI
+default (was 15) -- all standardized to 5, all pointing back to
+`ScalablePipeline`'s docstring for the shared reasoning rather than
+repeating it four times.
+
+## Verification
+
+`tests/test_pipeline_smoke.py` (3/3), `tests/test_reconfirm_cooldown.py`
+(OK), `tests/test_pipeline_mp_smoke.py` (real process-based pipeline,
+real confirmed plates, correctly ~3x more frames_processed than a prior
+run at the same wall-clock duration -- matches the denser default
+directly) -- all re-run after the default change.
+
+## What's not done / open
+
+- Only tested on file-based sequential reading (matches how
+  `FrameReader` actually reads, live or file). Not specifically
+  re-validated against a genuinely live RTSP source's own timing
+  characteristics.
+- The ~2x compute cost interacts with the still-open worker-count/
+  throughput findings from Sessions 34-37 -- a live multi-camera demo
+  may need to re-run that sweep at this new default before trusting a
+  specific worker-count recommendation.
+- A real, trained super-resolution model was deliberately NOT built and
+  tested from scratch here, given a rigorous, directly-comparable
+  external benchmark (WINK's) already tested that exact class of
+  solution and found it provides zero measurable benefit on crops this
+  small -- re-deriving the same negative result firsthand wasn't a good
+  use of time once found, but it also wasn't tested on *this exact*
+  dataset, so treat it as strong prior evidence, not absolute proof for
+  this specific footage.

@@ -53,7 +53,10 @@ def main():
     parser.add_argument("--cameras", default="1-30", help="Camera numbers, e.g. '1-30' or '1,3,7' (default: 1-30)")
     parser.add_argument("--num-workers", type=int, default=1,
                          help="Concurrent inference workers -- see module docstring before raising this")
-    parser.add_argument("--sample-rate", type=int, default=15)
+    parser.add_argument("--sample-rate", type=int, default=5,
+                         help="Process every Nth frame -- default matches ScalablePipeline's own "
+                              "(see its docstring: real A/B evidence found denser sampling raises "
+                              "confirmed-plate counts significantly, at roughly 2x the compute cost)")
     args = parser.parse_args()
 
     if not args.hls_base_url:

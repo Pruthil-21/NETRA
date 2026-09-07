@@ -26,9 +26,28 @@ class ScalablePipeline:
         left as an explicit required arg here rather than guessed, since
         the right number depends on real hardware this runs on.
     sample_every_n: passed straight to every FrameReader (item 2).
+        Default 5, not the original 15 -- real A/B evidence (Session 39,
+        same real video, 3-minute window, sample_every_n=10 vs 5):
+        confirmed plates went 29 -> 41 (+41%) from denser sampling alone,
+        no pixel enhancement. Root cause: PlateConfirmationTracker votes
+        across every sample of a track's lifetime, and a moving
+        vehicle's plate can vary hugely in apparent size/legibility
+        frame to frame (measured directly: the same real plate ranged
+        from ~17px to 380px+ across an 8-second window) -- denser
+        sampling gives the vote more chances to catch a frame where it's
+        actually readable, instead of enhancing whichever single frame
+        sparse sampling happened to land on (tested and rejected twice
+        this same session: neither sharpening nor CLAHE moved a single
+        real OCR result on a genuinely-too-small crop -- see
+        ALPR_IMPROVEMENT_LOG.md Session 39 for the full negative
+        results, independently consistent with real production LPR
+        research reaching the same conclusion). Real cost, not hidden:
+        this roughly doubles per-frame compute load versus the old
+        default -- a deliberate accuracy-over-throughput trade, worth
+        revisiting if a live multi-camera run becomes overloaded again.
     """
 
-    def __init__(self, cameras, num_workers, sample_every_n=15,
+    def __init__(self, cameras, num_workers, sample_every_n=5,
                  frame_queue_maxsize=200, event_queue_maxsize=2000,
                  confirm_threshold=2, window_size=10,
                  event_sender_kwargs=None):
