@@ -3,7 +3,39 @@ import pytest
 from app.config import settings
 from app.db import get_conn
 from app.main import app
+from app.services import email_service
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def captured_otps(monkeypatch):
+    """Every real OTP send (login 2FA, self-service password reset,
+    registration-email verification) goes through
+    email_service.send_otp_email -- monkeypatched here, for every test in
+    this suite, to capture (to, code, purpose) instead of calling Resend
+    for real.
+
+    autouse: without this, any test that logs in as an officer whose email
+    happens to be set -- including one left behind by an earlier test
+    sharing this same dev-time Postgres DB -- 503s trying to reach Resend
+    (email_service.EmailSendError, converted to a hard 503 in auth.py by
+    design: a caller mid-2FA needs to know a code never actually reached
+    the officer). In CI, where RESEND_API_KEY is never set at all, that
+    503 fires unconditionally on every such login. Neither is a real bug
+    in the app; it's tests making a real network call they were never
+    meant to.
+
+    A test that needs the actual code back (to drive a verify-otp call)
+    requests this fixture directly and reads its returned list, the same
+    way test_email_2fa.py and test_registration_approval.py already did
+    with their own now-removed local copies of this exact fixture."""
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_send_otp_email(to, code, purpose):
+        sent.append((to, code, purpose))
+
+    monkeypatch.setattr(email_service, "send_otp_email", fake_send_otp_email)
+    return sent
 
 
 @pytest.fixture

@@ -17,7 +17,6 @@ import jwt as pyjwt
 import pytest
 from app.config import settings
 from app.db import get_conn
-from app.services import email_service
 
 BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -31,17 +30,8 @@ def _clean_registered_test_officers():
         conn.commit()
 
 
-@pytest.fixture
-def captured_otps(monkeypatch):
-    """Replaces the real Resend call with one that records (to, code,
-    purpose) -- same pattern as test_email_2fa.py."""
-    sent: list[tuple[str, str, str]] = []
-
-    def fake_send_otp_email(to, code, purpose):
-        sent.append((to, code, purpose))
-
-    monkeypatch.setattr(email_service, "send_otp_email", fake_send_otp_email)
-    return sent
+# captured_otps (autouse) comes from conftest.py -- requested by name below
+# wherever a test needs to read the actual code back out.
 
 
 def _run(script):

@@ -1,8 +1,9 @@
 """Email 2FA on login, self-service password reset via email OTP, and
 "remember this device" -- all opt-in on officers.email being set (see
 schema.sql). Every real send goes through email_service.send_otp_email,
-monkeypatched here to capture the code instead of calling Resend -- these
-tests never make a real network call."""
+monkeypatched by conftest.py's autouse captured_otps fixture to capture the
+code instead of calling Resend -- these tests never make a real network
+call."""
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import jwt as pyjwt
 import pytest
 from app.config import settings
 from app.db import get_conn
-from app.services import auth_service, email_service
+from app.services import auth_service
 
 BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,20 +25,6 @@ def _run(script):
 def _seed():
     _run("scripts/seed_rbac.py")
     _run("scripts/seed_demo_officers.py")
-
-
-@pytest.fixture
-def captured_otps(monkeypatch):
-    """Replaces the real Resend call with one that records (to, code,
-    purpose) -- the test reads the code back out to drive verify calls,
-    exactly as an officer would read it out of their inbox."""
-    sent: list[tuple[str, str, str]] = []
-
-    def fake_send_otp_email(to, code, purpose):
-        sent.append((to, code, purpose))
-
-    monkeypatch.setattr(email_service, "send_otp_email", fake_send_otp_email)
-    return sent
 
 
 def _set_officer_email(badge_number: str, email: str | None):
