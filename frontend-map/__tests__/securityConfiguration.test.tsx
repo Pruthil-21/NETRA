@@ -19,6 +19,7 @@ describe('Security Configuration (super_admin)', () => {
   beforeEach(() => {
     (adminService.listOfficers as any).mockResolvedValue([]);
     (adminService.getRoles as any).mockResolvedValue([STATION_OFFICER_ROLE]);
+    (adminService.listDuties as any).mockResolvedValue([]);
     (adminService.updateRolePermissions as any).mockResolvedValue({
       ...STATION_OFFICER_ROLE,
       permissions: ['view_live_feeds', 'search_vehicles', 'manage_cameras'],

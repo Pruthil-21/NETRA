@@ -2,7 +2,6 @@
 """Business logic for the admin console: listing officers/postings and
 reassigning postings (the only mutation -- role_name/scope on a posting
 are never edited in place, see plan Global Constraints)."""
-from . import rbac_service
 
 
 def list_officers(conn) -> list[dict]:
@@ -146,57 +145,14 @@ def get_officer_profile(conn, officer_id: int) -> dict | None:
     return officer
 
 
-def diagnose_permission(conn, permission: str, officer_id: int | None, role_id: int | None) -> dict:
-    """Security diagnostics (spec Section 3.5): "why does/doesn't this user
-    have this access" -- resolves which role(s) an officer currently holds
-    (via their active, non-expired postings) or a single named role, then
-    walks each role's direct permissions and every assigned duty's, to show
-    exactly which one is granting (or would grant) the permission in
-    question. Never guesses -- reflects the same effective_role_permissions
-    union issue_token actually uses."""
-    if role_id is not None:
-        role_ids = [role_id]
-    elif officer_id is not None:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT role_id FROM postings WHERE officer_id = %s AND is_active "
-                "AND (expires_at IS NULL OR expires_at > now())",
-                (officer_id,),
-            )
-            role_ids = [row[0] for row in cur.fetchall()]
-    else:
-        raise ValueError("Must provide officer_id or role_id")
-
-    granting_roles: list[str] = []
-    granting_duties: dict[str, list[str]] = {}
-    has_perm = False
-    for rid in role_ids:
-        role = rbac_service.get_role(conn, rid)
-        if role is None:
-            continue
-        if permission in rbac_service.role_permissions(conn, rid):
-            granting_roles.append(role["name"])
-            has_perm = True
-        for duty_id in rbac_service.get_role_duty_ids(conn, rid):
-            if permission in rbac_service.duty_permissions(conn, duty_id):
-                duty = rbac_service.get_duty(conn, duty_id)
-                granting_duties.setdefault(role["name"], []).append(duty["name"])
-                has_perm = True
-
-    return {
-        "officer_id": officer_id, "role_id": role_id, "permission": permission,
-        "has_permission": has_perm, "granting_roles": granting_roles, "granting_duties": granting_duties,
-    }
-
-
 def expire_stale_postings(conn) -> int:
     """Time-bound postings (spec Section 3.8): a posting with an
     expires_at in the past auto-expires instead of staying is_active
     forever until someone remembers to revoke it. Auth-critical read paths
-    (auth_service.get_active_postings, rbac_service.find_sod_conflict/
-    diagnose_permission) already filter on expires_at defensively -- this
-    is what keeps is_active itself (and everything that lists postings
-    without re-checking expires_at, like GET /admin/postings) honest too.
+    (auth_service.get_active_postings) already filter on expires_at
+    defensively -- this is what keeps is_active itself (and everything
+    that lists postings without re-checking expires_at, like GET
+    /admin/postings) honest too.
     Run by hand or on a schedule -- scripts/expire_postings.py is the unit
     either would call, same pattern as archive_synthetic_events.py."""
     with conn.cursor() as cur:

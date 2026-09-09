@@ -90,6 +90,7 @@ describe('AdminPage — Users section', () => {
     fireEvent.click(await screen.findByRole('button', { name: /assign roles/i }));
 
     fireEvent.change(await screen.findByLabelText(/new role/i), { target: { value: 'control_room_operator' } });
+    fireEvent.change(screen.getByLabelText(/district \/ department/i), { target: { value: 'Traffic Police' } });
     fireEvent.click(screen.getByRole('button', { name: /^add$/i }));
 
     await waitFor(() => expect(postSpy).toHaveBeenCalled());

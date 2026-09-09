@@ -1,17 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Users, ShieldCheck, Map as MapIcon, KeyRound, ScrollText, UserPlus, Search, LucideIcon } from 'lucide-react';
-import { adminService } from '@/services/adminService';
+import { Users, ShieldCheck, Map as MapIcon, ScrollText, UserPlus, Radio, LucideIcon } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { UsersSection } from './UsersSection';
 import { SecurityConfigurationSection } from './SecurityConfigurationSection';
 import { CircleManagementSection } from './CircleManagementSection';
-import { PasswordResetRequestsSection } from './PasswordResetRequestsSection';
 import { AuditLogSection } from './AuditLogSection';
 import { ApprovalsSection } from './ApprovalsSection';
-import { SecurityDiagnosticsSection } from './SecurityDiagnosticsSection';
-import { SodRulesSection } from './SodRulesSection';
+import { FederationSection } from './FederationSection';
 
 interface NavItem {
   id: string;
@@ -28,10 +25,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'security', label: 'Security Configuration', icon: ShieldCheck, permission: 'manage_roles' },
   { id: 'users', label: 'Users', icon: Users, permission: 'manage_users_roles', fullBleed: true },
   { id: 'approvals', label: 'Pending Approvals', icon: UserPlus, permission: 'manage_users_roles' },
-  { id: 'diagnostics', label: 'Security Diagnostics', icon: Search, permission: 'manage_roles' },
-  { id: 'sod-rules', label: 'SoD Rules', icon: ShieldCheck, permission: 'manage_roles' },
   { id: 'circles', label: 'Areas', icon: MapIcon, permission: 'manage_circles' },
-  { id: 'password-requests', label: 'Password Reset Requests', icon: KeyRound, permission: 'reset_officer_passwords' },
+  { id: 'federation', label: 'Federation', icon: Radio, permission: 'manage_cameras' },
   { id: 'audit-log', label: 'Audit Log', icon: ScrollText, permission: 'view_audit_logs' },
 ];
 
@@ -52,7 +47,6 @@ const NAV_ITEMS: NavItem[] = [
  * itself. */
 export default function AdminPage() {
   const { permissions, role, scopeValue, loading: permissionsLoading } = usePermissions();
-  const [pendingRequestCount, setPendingRequestCount] = useState<number | null>(null);
 
   const visibleItems = useMemo(
     () => NAV_ITEMS.filter((item) => permissions.includes(item.permission)),
@@ -67,16 +61,6 @@ export default function AdminPage() {
     setActiveId(visibleItems[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [permissionsLoading, visibleItems]);
-
-  useEffect(() => {
-    if (permissionsLoading || !permissions.includes('reset_officer_passwords')) return;
-    adminService
-      .listPasswordResetRequests('pending')
-      .then((rows) => setPendingRequestCount(rows.length))
-      .catch(() => {
-        // Non-fatal: the nav item just shows without a count badge.
-      });
-  }, [permissionsLoading, permissions]);
 
   if (permissionsLoading) {
     return (
@@ -108,12 +92,10 @@ export default function AdminPage() {
       {activeId === 'security' && <SecurityConfigurationSection />}
       {activeId === 'users' && <UsersSection canResetPasswords={permissions.includes('reset_officer_passwords')} />}
       {activeId === 'approvals' && <ApprovalsSection />}
-      {activeId === 'diagnostics' && <SecurityDiagnosticsSection />}
-      {activeId === 'sod-rules' && <SodRulesSection />}
       {activeId === 'circles' && (
         <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
       )}
-      {activeId === 'password-requests' && <PasswordResetRequestsSection />}
+      {activeId === 'federation' && <FederationSection />}
       {activeId === 'audit-log' && <AuditLogSection />}
     </>
   );
@@ -128,7 +110,6 @@ export default function AdminPage() {
           {visibleItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeId === item.id;
-            const badgeCount = item.id === 'password-requests' ? pendingRequestCount : null;
             return (
               <button
                 key={item.id}
@@ -142,11 +123,6 @@ export default function AdminPage() {
               >
                 <Icon size={15} className={isActive ? 'text-command shrink-0' : 'text-slate-500 shrink-0'} />
                 <span className="flex-1 truncate">{item.label}</span>
-                {!!badgeCount && (
-                  <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-signal-red text-white text-[10px] font-bold flex items-center justify-center">
-                    {badgeCount}
-                  </span>
-                )}
               </button>
             );
           })}

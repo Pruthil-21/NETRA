@@ -7,6 +7,7 @@ import sys
 import uuid
 
 from app.db import get_conn
+from app.services import auth_service
 
 BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,15 +70,21 @@ def test_officer_with_two_district_postings_sees_cameras_from_both(client):
 
 
 def test_a_pending_officer_with_zero_postings_sees_no_cameras(client):
+    # A zero-postings officer (self-registration's own auto-verify flow
+    # always assigns one, so this constructs the state directly rather than
+    # through POST /auth/register -- see test_registration_approval.py for
+    # coverage of that flow itself) must see nothing, regardless of how they
+    # got into that state.
     _seed()
     badge = f"GJ-REG-{uuid.uuid4().hex[:8]}"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO officers (badge_number, name, password_hash, status) VALUES (%s, %s, %s, 'active')",
+                (badge, "Zero Jurisdiction", auth_service.hash_password("zero-jur-pass-1")),
+            )
+        conn.commit()
     try:
-        reg_resp = client.post(
-            "/auth/register",
-            json={"badge_number": badge, "name": "Zero Jurisdiction", "password": "zero-jur-pass-1"},
-        )
-        assert reg_resp.status_code == 201
-
         login_resp = client.post("/auth/login", json={"badge_number": badge, "password": "zero-jur-pass-1"})
         headers = {"Authorization": f"Bearer {login_resp.json()['token']}"}
 

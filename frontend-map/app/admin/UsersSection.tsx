@@ -8,7 +8,12 @@ import {
 import { adminService, OfficerOut, OfficerProfileOut } from '@/services/adminService';
 import { roleBadgeClass } from './roleBadge';
 
-const ASSIGNABLE_ROLES = ['district_command', 'station_officer', 'control_room_operator', 'auditor'];
+// super_admin is deliberately last, not filtered out -- the backend
+// (main.py's posting-authorization check) already rejects anyone whose own
+// role isn't strictly above the one they're trying to grant, so a
+// district_command/etc. actor sees this option but gets a 403 attempting to
+// use it. Hiding it here as well would just be a second, redundant gate.
+const ASSIGNABLE_ROLES = ['district_command', 'station_officer', 'control_room_operator', 'auditor', 'super_admin'];
 
 function initialsFor(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -193,8 +198,17 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
 
   const handleAddPosting = async () => {
     if (selectedId == null) return;
-    setPostingSubmitting(true);
     setPostingError(null);
+    // Client-side guard mirroring the backend's own check (main.py's
+    // _guard_delegated_posting_assignment) -- not a replacement for it, just
+    // catches the mistake before a round-trip. This isn't inside a <form>,
+    // so an HTML `required` attribute on the input below wouldn't be
+    // enforced at all.
+    if (newRole !== 'super_admin' && !newScopeValue.trim()) {
+      setPostingError('A district-scoped role requires a district');
+      return;
+    }
+    setPostingSubmitting(true);
     try {
       await adminService.reassignPosting({
         officer_id: selectedId,
@@ -509,6 +523,7 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
                           value={newScopeValue}
                           onChange={(e) => setNewScopeValue(e.target.value)}
                           placeholder="District / Department"
+                          aria-label="District / Department"
                           className="bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white flex-1 focus:outline-none focus:ring-1 focus:ring-command"
                         />
                       )}
