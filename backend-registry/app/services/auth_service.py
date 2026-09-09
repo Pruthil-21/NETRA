@@ -16,6 +16,24 @@ DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"dummy-password-for-constant-time-login", b
 
 TOKEN_LIFETIME = timedelta(hours=12)
 
+# Deliberately much shorter than TOKEN_LIFETIME -- this token proves nothing
+# except "badge_number+password already checked out for officer N," and only
+# to POST /auth/verify-login-otp, in the narrow window while that officer is
+# expected to be reading the code out of their inbox. It is NOT a session
+# token (get_current_user never accepts one -- see PENDING_LOGIN_PURPOSE
+# below) and carries no permissions/scopes at all.
+PENDING_LOGIN_TOKEN_LIFETIME = timedelta(minutes=10)
+PENDING_LOGIN_PURPOSE = "pending_login_otp"
+
+# Same shape as the pending-login token above, for the other place this
+# codebase needs "prove you did step 1, before I'll act on step 2 without
+# asking again": verifying a NEW email address before it's actually written
+# to officers.email. The candidate email travels inside the token itself
+# (not written to the database yet) so an abandoned/expired verification
+# never leaves a half-changed email on the officer row.
+PENDING_EMAIL_VERIFICATION_TOKEN_LIFETIME = timedelta(minutes=10)
+PENDING_EMAIL_VERIFICATION_PURPOSE = "pending_email_verification"
+
 # Account lockout policy (spec Section 3.6): N consecutive failed logins
 # locks the account for a fixed cooldown. An admin can also unlock it early
 # (see unlock_officer) rather than waiting out the cooldown.
@@ -32,7 +50,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 _OFFICER_COLUMNS = (
-    "id, badge_number, name, rank, password_hash, photo_url, "
+    "id, badge_number, name, rank, password_hash, photo_url, email, "
     "status, last_login_at, failed_login_count, locked_until"
 )
 
@@ -124,6 +142,16 @@ def set_password(conn, officer_id: int, new_password_hash: str) -> None:
         conn.commit()
 
 
+def set_email(conn, officer_id: int, email: str | None) -> None:
+    """Setting/clearing officers.email is what turns login 2FA and
+    self-service password reset on/off for this officer -- both are inert
+    for any officer whose email is NULL (see login()'s and
+    request_password_reset()'s own checks in main.py)."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE officers SET email = %s WHERE id = %s", (email, officer_id))
+        conn.commit()
+
+
 def set_photo_url(conn, officer_id: int, photo_url: str | None) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -131,15 +159,6 @@ def set_photo_url(conn, officer_id: int, photo_url: str | None) -> None:
             (photo_url, officer_id),
         )
         conn.commit()
-
-
-def get_active_posting(conn, officer_id: int) -> dict | None:
-    """The officer's first active posting (by creation order), or None if
-    they hold none. Kept for callers that only need "do they have any
-    posting at all" -- issue_token itself now uses get_active_postings
-    (plural) to build a token covering every simultaneously-active one."""
-    postings = get_active_postings(conn, officer_id)
-    return postings[0] if postings else None
 
 
 def get_active_postings(conn, officer_id: int) -> list[dict]:
@@ -208,3 +227,51 @@ def issue_token(conn, officer: dict, postings: list[dict]) -> str:
         "exp": datetime.now(timezone.utc) + TOKEN_LIFETIME,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def issue_pending_login_token(officer_id: int) -> str:
+    """Handed back to the client from POST /auth/login when 2FA is required
+    -- proves badge_number+password already passed, for the sole purpose of
+    letting POST /auth/verify-login-otp trust the officer_id it's verifying
+    a code against, without asking for the password a second time."""
+    payload = {
+        "purpose": PENDING_LOGIN_PURPOSE,
+        "officer_id": officer_id,
+        "exp": datetime.now(timezone.utc) + PENDING_LOGIN_TOKEN_LIFETIME,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def decode_pending_login_token(token: str) -> int:
+    """Returns the officer_id it was issued for. Raises jwt.InvalidTokenError
+    (expired, tampered, or simply not one of these tokens at all -- e.g. a
+    real session JWT passed here by mistake) -- callers let that propagate
+    into a 401, same as every other invalid-token case in this codebase."""
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+    if payload.get("purpose") != PENDING_LOGIN_PURPOSE:
+        raise jwt.InvalidTokenError("Not a pending-login token")
+    return int(payload["officer_id"])
+
+
+def issue_pending_email_verification_token(officer_id: int, candidate_email: str) -> str:
+    """Handed back to the client from PUT /auth/me/email (and POST
+    /auth/register) when the submitted email still needs proving -- carries
+    the candidate address itself, since nothing is written to officers.email
+    until POST /auth/me/email/verify (or /auth/register/verify) succeeds."""
+    payload = {
+        "purpose": PENDING_EMAIL_VERIFICATION_PURPOSE,
+        "officer_id": officer_id,
+        "candidate_email": candidate_email,
+        "exp": datetime.now(timezone.utc) + PENDING_EMAIL_VERIFICATION_TOKEN_LIFETIME,
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def decode_pending_email_verification_token(token: str) -> tuple[int, str]:
+    """Returns (officer_id, candidate_email). Raises jwt.InvalidTokenError
+    on anything wrong with the token -- same handling as
+    decode_pending_login_token."""
+    payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+    if payload.get("purpose") != PENDING_EMAIL_VERIFICATION_PURPOSE:
+        raise jwt.InvalidTokenError("Not a pending-email-verification token")
+    return int(payload["officer_id"]), payload["candidate_email"]

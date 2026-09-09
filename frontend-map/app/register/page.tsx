@@ -2,25 +2,32 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, UserPlus } from 'lucide-react';
-import { REGISTRY_API_URL } from '@/config/streams';
+import { Shield, UserPlus, Mail } from 'lucide-react';
+import { registerOfficer, verifyRegistrationOtp } from '@/lib/session';
 
-/** Public self-registration (v2 spec Section 3.2). Submitting creates the
- * officer immediately with zero roles/postings, status='pending' -- they
- * can log in right after, but PendingApprovalScreen is all they'll see
- * until a District Command/Super Admin approves the request. */
+/** Public self-registration. Submitting creates the officer immediately
+ * with zero postings, status='pending' -- but there's no admin approval
+ * step left to wait through: entering the code just emailed activates the
+ * account with a baseline posting (station_officer, scoped to the
+ * department given below) and logs the officer straight in. */
 export default function RegisterPage() {
   const router = useRouter();
   const [badgeNumber, setBadgeNumber] = useState('');
   const [name, setName] = useState('');
   const [rank, setRank] = useState('');
   const [department, setDepartment] = useState('');
+  const [email, setEmail] = useState('');
   const [contactInfo, setContactInfo] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+
+  // Set once POST /auth/register returns a pendingToken -- its presence
+  // switches the form below from registration details to the OTP step,
+  // same pattern as the login page's OTP step.
+  const [pendingToken, setPendingToken] = useState<string | null>(null);
+  const [code, setCode] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,23 +42,11 @@ export default function RegisterPage() {
     }
     setSubmitting(true);
     try {
-      const res = await fetch(`${REGISTRY_API_URL}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          badge_number: badgeNumber,
-          name,
-          rank: rank || null,
-          department: department || null,
-          contact_info: contactInfo || null,
-          password,
-        }),
+      const result = await registerOfficer({
+        badgeNumber, name, rank: rank || undefined, department, email,
+        contactInfo: contactInfo || undefined, password,
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.detail || `Registration failed: HTTP ${res.status}`);
-      }
-      setSubmitted(true);
+      setPendingToken(result.pendingToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
@@ -59,25 +54,75 @@ export default function RegisterPage() {
     }
   };
 
-  if (submitted) {
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingToken) return;
+    setError(null);
+    setSubmitting(true);
+    try {
+      await verifyRegistrationOtp(pendingToken, code);
+      router.push('/');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Verification failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (pendingToken) {
     return (
       <main className="min-h-screen bg-ink flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-panel border border-line rounded-lg p-8 text-center shadow-2xl">
-          <div className="inline-flex p-3 bg-signal-green/10 border border-signal-green/30 text-signal-green rounded-lg mb-3">
-            <UserPlus size={28} />
+        <div className="w-full max-w-md bg-panel border border-line rounded-lg p-8 shadow-2xl">
+          <div className="text-center mb-8">
+            <div className="inline-flex p-3 bg-command/10 border border-command/30 text-command rounded-lg mb-3">
+              <UserPlus size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-white tracking-wider">Verify Your Email</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              We emailed a 6-digit code to <span className="font-mono">{email}</span>
+            </p>
           </div>
-          <h1 className="text-lg font-bold text-white mb-2">Registration Submitted</h1>
-          <p className="text-xs text-slate-400 leading-relaxed mb-6">
-            Your request is now in the Pending Approvals queue. You can log in with your badge number and
-            password, but your account will show as pending until a District Command or Super Admin approves it.
-          </p>
-          <button
-            type="button"
-            onClick={() => router.push('/login')}
-            className="w-full bg-command hover:bg-command-dim text-white font-semibold py-2.5 rounded-md text-xs uppercase tracking-wider transition"
-          >
-            Go to Login
-          </button>
+          <form onSubmit={handleVerify} className="space-y-4">
+            <div>
+              <label htmlFor="verify-code" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
+                Verification Code
+              </label>
+              <div className="relative">
+                <Mail size={16} className="absolute left-3 top-2.5 text-slate-500" />
+                <input
+                  id="verify-code"
+                  type="text"
+                  inputMode="numeric"
+                  autoFocus
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="123456"
+                  maxLength={6}
+                  className="w-full bg-ink border border-line rounded-md pl-10 pr-3 py-2 text-sm tracking-[0.3em] text-white text-center focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+                  required
+                />
+              </div>
+            </div>
+            {error && <p className="text-signal-red text-xs">{error}</p>}
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full bg-command hover:bg-command-dim text-white font-semibold py-2.5 rounded-md text-xs uppercase tracking-wider transition disabled:opacity-50"
+            >
+              {submitting ? 'Verifying…' : 'Verify & Activate Account'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingToken(null);
+                setCode('');
+                setError(null);
+              }}
+              className="w-full text-[10px] text-slate-500 hover:text-slate-300 transition"
+            >
+              Back to registration
+            </button>
+          </form>
         </div>
       </main>
     );
@@ -90,7 +135,7 @@ export default function RegisterPage() {
           <div className="inline-flex p-3 bg-command/10 border border-command/30 text-command rounded-lg mb-3">
             <Shield size={32} />
           </div>
-          <h1 className="text-2xl font-bold text-white tracking-wider">NETRA</h1>
+          <h1 className="text-2xl font-bold text-white tracking-wider">DIGDHRISHTI</h1>
           <p className="text-xs text-slate-500 mt-1">Officer Registration</p>
         </div>
 
@@ -120,6 +165,23 @@ export default function RegisterPage() {
               required
             />
           </div>
+          <div>
+            <label htmlFor="email" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
+              Email
+            </label>
+            <input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+              required
+            />
+            <p className="text-[10px] text-slate-600 mt-1">
+              We&apos;ll send a code here to verify and activate your account.
+            </p>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label htmlFor="rank" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
@@ -134,25 +196,27 @@ export default function RegisterPage() {
             </div>
             <div>
               <label htmlFor="department" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
-                Department
+                Department / District
               </label>
               <input
                 id="department"
                 value={department}
                 onChange={(e) => setDepartment(e.target.value)}
+                placeholder="Ahmedabad"
                 className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+                required
               />
             </div>
           </div>
           <div>
             <label htmlFor="contact-info" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
-              Contact Info
+              Phone (optional)
             </label>
             <input
               id="contact-info"
               value={contactInfo}
               onChange={(e) => setContactInfo(e.target.value)}
-              placeholder="Phone or email"
+              placeholder="Phone number"
               className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
             />
           </div>
