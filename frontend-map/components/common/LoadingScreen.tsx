@@ -17,7 +17,7 @@ export function LoadingScreen() {
           <Shield size={32} />
         </div>
         <div className="text-center">
-          <h1 className="text-lg font-bold text-white tracking-wider">NETRA</h1>
+          <h1 className="text-lg font-bold text-white tracking-wider">DIGDHRISHTI</h1>
           <p className="text-xs text-slate-500 mt-1">Establishing secure session…</p>
         </div>
         <div className="w-40 h-1 bg-line rounded-full overflow-hidden">

@@ -1,10 +1,10 @@
-# NETRA
+# DIGDHRISHTI
 
-NETRA (Network for Extended Threat Recognition & Analytics) — a unified CCTV registry, viewing, and analytics prototype for Gujarat Govt departments.
+DIGDHRISHTI — a unified CCTV registry, viewing, and analytics prototype for Gujarat Govt departments.
 
 ## Problem
 
-26 government departments run independent, heterogeneous CCTV infrastructure — different vendors, VMS platforms, storage systems, and retention policies. NETRA provides a unified registry, viewing layer, and analytics pipeline that integrates with existing infrastructure rather than replacing it, with future links to VAHAN, SARTHI, eGujCop, AFIS, and NAFIS.
+26 government departments run independent, heterogeneous CCTV infrastructure — different vendors, VMS platforms, storage systems, and retention policies. DIGDHRISHTI provides a unified registry, viewing layer, and analytics pipeline that integrates with existing infrastructure rather than replacing it, with future links to VAHAN, SARTHI, eGujCop, AFIS, and NAFIS.
 
 ## Structure
 

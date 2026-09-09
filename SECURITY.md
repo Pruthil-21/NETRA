@@ -1,4 +1,4 @@
-# NETRA — Security Overview
+# DIGDHRISHTI — Security Overview
 
 Implemented vs. deferred controls, documented honestly for judges rather
 than overclaiming.

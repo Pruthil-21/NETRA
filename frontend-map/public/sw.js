@@ -1,4 +1,4 @@
-// Offline-tolerant caching for NETRA: keeps the app usable (last-known camera
+// Offline-tolerant caching for DIGDHRISHTI: keeps the app usable (last-known camera
 // registry, alerts, and app shell) when the network drops mid-shift, instead
 // of going blank. Deliberately narrow in scope:
 //   - GET only. Every PATCH/POST/PUT/DELETE (alert status updates, camera
