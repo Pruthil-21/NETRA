@@ -5,11 +5,25 @@ import { SlidersHorizontal, X, Search, Check } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { circlesService, Circle } from '@/services/circlesService';
 import { COVERAGE_LEGEND, COVERAGE_COLORS, COVERAGE_RADIUS_METERS } from '@/lib/coverageMath';
+import { DENSITY_WINDOW_OPTIONS, formatDensityHour } from '@/lib/densityMath';
+import { MapLayer } from '@/types/filters';
+import { DensityLoadStatus } from './DensityCanvasLayer';
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: 'online', label: 'Online' },
   { value: 'offline', label: 'Offline' },
+] as const;
+
+const LAYER_OPTIONS = [
+  { value: 'none', label: 'None' },
+  { value: 'coverage', label: 'Coverage' },
+  { value: 'density', label: 'Density' },
+] as const;
+
+const DENSITY_MODE_OPTIONS = [
+  { value: 'live', label: 'Live' },
+  { value: 'hour', label: 'By hour' },
 ] as const;
 
 type LocationRow =
@@ -27,7 +41,16 @@ type LocationRow =
  * so this is a new presentation over machinery that was never deleted.
  * Only ever narrows what CameraMap renders; the sidebar tree deliberately
  * keeps showing the full registry regardless. */
-export function MapFilterControl() {
+interface MapFilterControlProps {
+  /** Latest fetch outcome from the density layer, or null while it isn't
+   * active -- see app/map/page.tsx, which owns this state since
+   * DensityCanvasLayer is a sibling of this component, not an ancestor.
+   * Surfaced here so a permission error or network failure reads as an
+   * explicit message instead of a silently empty map. */
+  densityStatus?: DensityLoadStatus | null;
+}
+
+export function MapFilterControl({ densityStatus }: MapFilterControlProps = {}) {
   const { cameras, filters, setFilters } = useCameraRegistry();
   const [open, setOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
@@ -74,8 +97,8 @@ export function MapFilterControl() {
   );
 
   const activeCount =
-    (filters.coverageEnabled ? 1 : 0) +
-    (!filters.coverageEnabled && filters.connectivity !== 'all' ? 1 : 0) +
+    (filters.mapLayer !== 'none' ? 1 : 0) +
+    (filters.mapLayer === 'none' && filters.connectivity !== 'all' ? 1 : 0) +
     selectedCities.length +
     selectedAreaIds.length;
 
@@ -140,14 +163,21 @@ export function MapFilterControl() {
       connectivity: 'all',
       departments: [],
       circleIds: [],
-      coverageEnabled: false,
+      mapLayer: 'none',
+      densityMode: 'live',
+      densityWindowMinutes: 30,
+      densityHour: new Date().getHours(),
     }));
     setLocationSearch('');
     setLocationOpen(false);
   };
 
-  const toggleCoverage = () => {
-    setFilters((prev) => ({ ...prev, coverageEnabled: !prev.coverageEnabled, connectivity: 'all' }));
+  // Coverage and Density are full-canvas layers (see CameraMap's
+  // hideMarkers/coverage/density props) -- selecting either one forces
+  // Status back to 'all' so the layer classifies every camera itself
+  // instead of the map showing a Status-narrowed pin subset underneath it.
+  const setMapLayer = (layer: MapLayer) => {
+    setFilters((prev) => ({ ...prev, mapLayer: layer, connectivity: layer === 'none' ? prev.connectivity : 'all' }));
   };
 
   return (
@@ -192,7 +222,7 @@ export function MapFilterControl() {
             </button>
           </div>
 
-          <div className={filters.coverageEnabled ? 'opacity-40 pointer-events-none' : undefined}>
+          <div className={filters.mapLayer !== 'none' ? 'opacity-40 pointer-events-none' : undefined}>
             <span className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1.5">
               Status
             </span>
@@ -204,7 +234,7 @@ export function MapFilterControl() {
                     key={opt.value}
                     type="button"
                     aria-pressed={isActive}
-                    disabled={filters.coverageEnabled}
+                    disabled={filters.mapLayer !== 'none'}
                     onClick={() => setFilters((prev) => ({ ...prev, connectivity: opt.value }))}
                     className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
                       isActive
@@ -220,29 +250,31 @@ export function MapFilterControl() {
           </div>
 
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
-                Coverage map
-              </span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={filters.coverageEnabled}
-                aria-label={filters.coverageEnabled ? 'Hide coverage map' : 'Show coverage map'}
-                onClick={toggleCoverage}
-                className={`relative w-8 h-4 rounded-full border transition ${
-                  filters.coverageEnabled ? 'bg-command border-command' : 'bg-ink border-line'
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 rounded-full bg-white transition-transform ${
-                    filters.coverageEnabled ? 'translate-x-3.5' : ''
-                  }`}
-                />
-              </button>
+            <span className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1.5">
+              Map layer
+            </span>
+            <div role="group" aria-label="Map layer" className="flex gap-1.5 mb-1.5">
+              {LAYER_OPTIONS.map((opt) => {
+                const isActive = filters.mapLayer === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => setMapLayer(opt.value)}
+                    className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
+                      isActive
+                        ? 'bg-command text-white border-command'
+                        : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
 
-            {filters.coverageEnabled && (
+            {filters.mapLayer === 'coverage' && (
               <>
                 <div className="flex flex-col gap-1 mb-1.5">
                   {COVERAGE_LEGEND.map(({ status, label }) => (
@@ -261,6 +293,96 @@ export function MapFilterControl() {
                   survey. Gujarat only.
                 </p>
               </>
+            )}
+
+            {filters.mapLayer === 'density' && (
+              <div className="space-y-1.5">
+                <div role="group" aria-label="Density mode" className="flex gap-1.5">
+                  {DENSITY_MODE_OPTIONS.map((opt) => {
+                    const isActive = filters.densityMode === opt.value;
+                    return (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        aria-pressed={isActive}
+                        onClick={() => setFilters((prev) => ({ ...prev, densityMode: opt.value }))}
+                        className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
+                          isActive
+                            ? 'bg-command text-white border-command'
+                            : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {filters.densityMode === 'live' ? (
+                  <div role="group" aria-label="Rolling window" className="flex gap-1.5">
+                    {DENSITY_WINDOW_OPTIONS.map((minutes) => {
+                      const isActive = filters.densityWindowMinutes === minutes;
+                      return (
+                        <button
+                          key={minutes}
+                          type="button"
+                          aria-pressed={isActive}
+                          onClick={() => setFilters((prev) => ({ ...prev, densityWindowMinutes: minutes }))}
+                          className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
+                            isActive
+                              ? 'bg-command text-white border-command'
+                              : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+                          }`}
+                        >
+                          {minutes}m
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[11px] font-semibold text-slate-200">
+                        {formatDensityHour(filters.densityHour)}
+                      </span>
+                      <span className="text-[10px] text-slate-500">Today, IST</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={23}
+                      step={1}
+                      value={filters.densityHour}
+                      aria-label="Hour of day"
+                      onChange={(e) =>
+                        setFilters((prev) => ({ ...prev, densityHour: Number(e.target.value) }))
+                      }
+                      className="w-full accent-command"
+                    />
+                  </div>
+                )}
+
+                <div
+                  className="h-1.5 rounded-full"
+                  style={{ background: 'linear-gradient(to right, #22c55e, #f59e0b, #ef4444)' }}
+                  aria-hidden
+                />
+                <div className="flex justify-between text-[10px] text-slate-500">
+                  <span>Quiet</span>
+                  <span>Busiest on screen</span>
+                </div>
+
+                {densityStatus?.error && (
+                  <p className="text-[10px] text-rose-400 leading-snug">
+                    Couldn&apos;t load density data: {densityStatus.error}
+                  </p>
+                )}
+                {!densityStatus?.error && !densityStatus?.loading && densityStatus?.pointCount === 0 && (
+                  <p className="text-[10px] text-slate-500 leading-snug">
+                    No detections in this window yet.
+                  </p>
+                )}
+              </div>
             )}
           </div>
 

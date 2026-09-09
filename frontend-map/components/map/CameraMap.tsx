@@ -12,6 +12,8 @@ import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_
 import { buildSightingRoute } from '@/lib/buildSightingRoute';
 import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
 import { CoverageCanvasLayer } from './CoverageCanvasLayer';
+import { DensityCanvasLayer, DensityLoadStatus } from './DensityCanvasLayer';
+import { DensityMode } from '@/types/filters';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
@@ -154,14 +156,25 @@ interface CameraMapProps {
    * unchanged. */
   timelineIndex?: number;
   /** Suppresses the individual camera pin markers/clusters and the police
-   * station markers below -- used while the coverage view (see `coverage`
-   * below) is active, since point markers would just clutter a
-   * region-colored view. The sighting route (if any) still renders. */
+   * station markers below -- used while a full-canvas layer (coverage or
+   * density, see `coverage`/`density` below) is active, since point
+   * markers would just clutter a region-colored view. The sighting route
+   * (if any) still renders. */
   hideMarkers?: boolean;
   /** Renders the canvas coverage-radius layer for the given cameras/tier
    * instead of (or alongside) pins -- see CoverageCanvasLayer. Omit to
    * render no coverage layer at all. */
   coverage?: { cameras: Camera[] };
+  /** Renders the canvas density-heat layer -- see DensityCanvasLayer. Omit
+   * to render no density layer at all; mutually exclusive with `coverage`
+   * in practice (the caller only ever sets one at a time). */
+  density?: {
+    cameras: Camera[];
+    mode: DensityMode;
+    windowMinutes: number;
+    hour: number;
+    onStatusChange?: (status: DensityLoadStatus) => void;
+  };
 }
 
 export const CameraMap: React.FC<CameraMapProps> = ({
@@ -174,6 +187,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   timelineIndex,
   hideMarkers,
   coverage,
+  density,
 }) => {
   // Police station pins -- a separate data source from cameras (backend-registry's
   // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
@@ -403,6 +417,15 @@ export const CameraMap: React.FC<CameraMapProps> = ({
         )}
 
         {coverage && <CoverageCanvasLayer cameras={coverage.cameras} />}
+        {density && (
+          <DensityCanvasLayer
+            cameras={density.cameras}
+            mode={density.mode}
+            windowMinutes={density.windowMinutes}
+            hour={density.hour}
+            onStatusChange={density.onStatusChange}
+          />
+        )}
 
         {routePositions.length > 1 && timelineIndex === undefined && (
           <Polyline

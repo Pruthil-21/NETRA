@@ -9,6 +9,7 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { TreeSelection } from '@/components/tree/DistrictCircleTree';
 import { CameraInfoOverlay } from '@/components/overlay/CameraInfoOverlay';
 import { MapFilterControl } from '@/components/map/MapFilterControl';
+import { DensityLoadStatus } from '@/components/map/DensityCanvasLayer';
 import { circlesService, Circle } from '@/services/circlesService';
 
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
@@ -42,6 +43,13 @@ export default function MapPage() {
   // clear on "is the cursor actually over the overlay right now", the
   // overlay closes and reopens in a flicker loop.
   const overlayHoveredRef = useRef(false);
+  // Reported by DensityCanvasLayer on every fetch attempt -- lifted here
+  // (rather than left inside the canvas layer) so MapFilterControl, a
+  // sibling of CameraMap rather than an ancestor, can show *why* the
+  // density layer is empty: a permission error, a network failure, and a
+  // genuinely quiet window all render zero heat blobs but mean very
+  // different things to an officer looking at the map.
+  const [densityStatus, setDensityStatus] = useState<DensityLoadStatus | null>(null);
 
   useEffect(() => {
     circlesService.listCircles().then(setCircles).catch(() => {
@@ -120,10 +128,21 @@ export default function MapPage() {
                 setHoveredCameraId(id);
               }}
               highlightedCameraIds={highlightedCameraIds}
-              hideMarkers={filters.coverageEnabled}
-              coverage={filters.coverageEnabled ? { cameras: filteredCameras } : undefined}
+              hideMarkers={filters.mapLayer !== 'none'}
+              coverage={filters.mapLayer === 'coverage' ? { cameras: filteredCameras } : undefined}
+              density={
+                filters.mapLayer === 'density'
+                  ? {
+                      cameras: filteredCameras,
+                      mode: filters.densityMode,
+                      windowMinutes: filters.densityWindowMinutes,
+                      hour: filters.densityHour,
+                      onStatusChange: setDensityStatus,
+                    }
+                  : undefined
+              }
             />
-            <MapFilterControl />
+            <MapFilterControl densityStatus={filters.mapLayer === 'density' ? densityStatus : null} />
           </div>
         </div>
         <CameraDetailDrawer camera={selectedCamera} />

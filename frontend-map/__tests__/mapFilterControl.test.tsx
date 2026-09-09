@@ -217,38 +217,72 @@ describe('MapFilterControl', () => {
     expect(screen.getByLabelText('Camera filters')).toHaveTextContent('1');
   });
 
-  it('turning on the coverage map resets status to all and disables the Status buttons', async () => {
+  it('selecting the Coverage layer resets status to all and disables the Status buttons', async () => {
     await openPanel();
 
     fireEvent.click(screen.getByRole('button', { name: 'Offline' }));
     expect(screen.getByRole('button', { name: 'Offline' })).toHaveAttribute('aria-pressed', 'true');
 
-    fireEvent.click(screen.getByLabelText('Show coverage map'));
+    fireEvent.click(screen.getByRole('button', { name: 'Coverage' }));
 
     expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Offline' })).toBeDisabled();
   });
 
-  it('shows the red/green/amber legend once coverage is on', async () => {
+  it('shows the red/green/amber legend once Coverage is selected', async () => {
     await openPanel();
 
     expect(screen.queryByText('Operational coverage')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('Show coverage map'));
+    fireEvent.click(screen.getByRole('button', { name: 'Coverage' }));
 
     expect(screen.getByText('Operational coverage')).toBeInTheDocument();
     expect(screen.getByText('Registered, not operational')).toBeInTheDocument();
     expect(screen.getByText('No coverage')).toBeInTheDocument();
   });
 
-  it('counts coverage as one active filter and reset turns it back off', async () => {
+  it('counts a selected layer as one active filter and reset turns it back to None', async () => {
     await openPanel();
 
-    fireEvent.click(screen.getByLabelText('Show coverage map'));
+    fireEvent.click(screen.getByRole('button', { name: 'Coverage' }));
     expect(screen.getByLabelText('Camera filters')).toHaveTextContent('1');
 
     fireEvent.click(screen.getByLabelText('Reset all active filters'));
-    expect(screen.queryByLabelText('Hide coverage map')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'None' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.queryByText('Operational coverage')).not.toBeInTheDocument();
+  });
+
+  it('selecting the Density layer disables Status and shows live-window controls by default', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Density' }));
+
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Offline' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '30m' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Quiet')).toBeInTheDocument();
+  });
+
+  it('switching Density to "By hour" swaps the window pills for an hour scrubber', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Density' }));
+    fireEvent.click(screen.getByRole('button', { name: 'By hour' }));
+
+    expect(screen.queryByRole('button', { name: '30m' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Hour of day')).toBeInTheDocument();
+  });
+
+  it('Coverage and Density are mutually exclusive -- picking one drops the other', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Coverage' }));
+    expect(screen.getByText('Operational coverage')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Density' }));
+    expect(screen.queryByText('Operational coverage')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Live' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Camera filters')).toHaveTextContent('1');
   });
 });

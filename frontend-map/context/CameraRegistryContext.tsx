@@ -169,7 +169,10 @@ const initialFilters: CameraFilters = {
   connectivity: 'all',
   health: 'all',
   searchQuery: '',
-  coverageEnabled: false,
+  mapLayer: 'none',
+  densityMode: 'live',
+  densityWindowMinutes: 30,
+  densityHour: new Date().getHours(),
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
