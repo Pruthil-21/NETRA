@@ -26,6 +26,15 @@ CREATE TABLE cameras (
 
 CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 
+-- Backs cameras_service.get_camera_by_stream_id -- looked up on every
+-- inbound recording-health webhook event (see recording_webhooks.py). At
+-- 100k+ cameras this runs far more often than any admin-facing query on
+-- this table, so it needs its own index rather than relying on the primary
+-- key; partial (stream_id IS NOT NULL) since manually-added cameras with no
+-- stream mapping are never looked up this way and would otherwise bloat it
+-- for nothing.
+CREATE INDEX IF NOT EXISTS idx_cameras_stream_id ON cameras (stream_id) WHERE stream_id IS NOT NULL;
+
 CREATE TABLE circles (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -115,25 +124,6 @@ CREATE TABLE IF NOT EXISTS postings (
 -- NIST Core RBAC's "activate one role per session" (see plan Architecture).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_postings_one_active_per_officer
     ON postings (officer_id) WHERE is_active;
-
--- An officer's self-service request for a Super Admin to reset their
--- password (e.g. forgotten password) -- deliberately carries no password
--- value at all, in either direction. The admin reviews the requesting
--- officer's identity (name, badge, rank, posting) and reason, then either
--- rejects it or approves it by setting a brand-new password through the
--- existing POST /admin/officers/{id}/reset-password flow -- this table only
--- tracks the request's lifecycle, never a credential.
-CREATE TABLE IF NOT EXISTS password_reset_requests (
-    id           SERIAL PRIMARY KEY,
-    officer_id   INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
-    reason       TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
-    requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    reviewed_by  TEXT,
-    reviewed_at  TIMESTAMPTZ
-);
-
-CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status ON password_reset_requests (status, requested_at);
 
 CREATE INDEX IF NOT EXISTS idx_postings_officer ON postings (officer_id);
 
@@ -248,7 +238,7 @@ ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT tr
 ALTER TABLE roles ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false;
 
 -- A duty bundles permissions into one named, reusable unit (D365's "assign
--- only duties to roles" guidance -- Section 2.1). NETRA has no separate
+-- only duties to roles" guidance -- Section 2.1). DIGDHRISHTI has no separate
 -- Privilege layer, so a duty's permissions are plain VALID_PERMISSIONS
 -- strings, validated in rbac_service, not a DB-level FK/CHECK.
 CREATE TABLE IF NOT EXISTS duties (
@@ -361,22 +351,6 @@ CREATE TABLE IF NOT EXISTS import_export_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_import_export_jobs_entity ON import_export_jobs (entity_type, created_at);
 
--- Generalized Separation-of-Duty rule engine (v2 spec, Phase D, Section
--- 3.8): an admin-configurable table of role pairs that must never both be
--- actively held by the same officer at once, generalizing Task 6's single
--- hardcoded alert-escalation rule to posting assignment itself. role_a_id
--- is stored as the lesser of the two ids so a pair is never inserted
--- twice in reverse order.
-CREATE TABLE IF NOT EXISTS sod_rules (
-    id          SERIAL PRIMARY KEY,
-    role_a_id   INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    role_b_id   INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    description TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (role_a_id < role_b_id),
-    UNIQUE (role_a_id, role_b_id)
-);
-
 -- Minimal in-app notification log (v2 spec, Phase D): role granted/revoked,
 -- registration approved/rejected, an SoD conflict blocked an assignment.
 -- Not email/SMS -- just what makes the approval queue and audit log feel
@@ -406,3 +380,67 @@ CREATE TABLE IF NOT EXISTS role_drafts (
     created_by        TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Self-service email 2FA / password reset. Mandatory from registration
+-- onward (see RegisterRequest.email) -- every new officer verifies an
+-- email via OTP before their account activates. An officer seeded before
+-- this feature existed can still have NULL here; nothing besides 2FA and
+-- self-service reset depends on it.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS email TEXT;
+
+-- One row per OTP ever issued (never updated in place except to mark it
+-- consumed) -- purpose distinguishes a login code from a password-reset
+-- code so one can never be replayed as the other. code_hash, never the raw
+-- code, same reasoning as officers.password_hash.
+CREATE TABLE IF NOT EXISTS email_otps (
+    id            SERIAL PRIMARY KEY,
+    officer_id    INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    purpose       TEXT NOT NULL CHECK (purpose IN ('login_2fa', 'password_reset', 'email_verification')),
+    code_hash     TEXT NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    consumed_at   TIMESTAMPTZ,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_otps_officer_purpose ON email_otps (officer_id, purpose, created_at DESC);
+
+-- "Remember this device" for login 2FA: a long random token (device_token_hash
+-- stores only its hash, same reasoning as the OTP code above) a trusted
+-- browser presents on a future login to skip the OTP step entirely. Deleting
+-- a row (or letting it expire) is the only way to revoke it -- there's no
+-- separate "logged in" state to track here, unlike sessions.
+CREATE TABLE IF NOT EXISTS trusted_devices (
+    id                SERIAL PRIMARY KEY,
+    officer_id        INTEGER NOT NULL REFERENCES officers(id) ON DELETE CASCADE,
+    device_token_hash TEXT NOT NULL UNIQUE,
+    expires_at        TIMESTAMPTZ NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_trusted_devices_officer ON trusted_devices (officer_id);
+
+-- Inbound recording-health events from the DIGDHRISHTI continuous-recording
+-- service (streaming/recording -- Dhruv's project; see
+-- app/routers/recording_webhooks.py and recordings_service.py's module
+-- docstring for the outbound half of this integration). event_id UNIQUE is
+-- the idempotency guarantee it explicitly asked for: it retries failed
+-- deliveries, so a retried event_id must be a no-op, not a duplicate row --
+-- same pattern synthetic_detection_events.event_id already uses. stream_id
+-- is the recording service's own camera path (matches cameras.stream_id),
+-- not the registry's numeric camera id, since the recorder only knows the
+-- path it's ingesting from.
+CREATE TABLE IF NOT EXISTS recording_health_events (
+    id          BIGSERIAL PRIMARY KEY,
+    event_id    TEXT NOT NULL UNIQUE,
+    stream_id   TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    message     TEXT,
+    occurred_at TIMESTAMPTZ,
+    payload     JSONB,
+    received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_recording_health_events_received_at ON recording_health_events (received_at);
+CREATE INDEX IF NOT EXISTS idx_recording_health_events_stream ON recording_health_events (stream_id);

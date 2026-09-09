@@ -2,10 +2,22 @@
 
 Field names match /contract/API_CONTRACT.md exactly.
 """
+import re
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# email-validator (pydantic's EmailStr) isn't a project dependency -- a
+# lightweight format check here avoids adding one just for this.
+_EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _validate_email_format(value: str) -> str:
+    value = value.strip()
+    if not _EMAIL_PATTERN.match(value):
+        raise ValueError("Enter a valid email address")
+    return value
 
 
 class CameraCreate(BaseModel):
@@ -87,10 +99,80 @@ class ReportSummary(BaseModel):
 class LoginRequest(BaseModel):
     badge_number: str
     password: str
+    # Presented back by a browser this officer previously chose to "remember"
+    # (see LoginResponse.device_token) -- lets login skip the OTP step below
+    # entirely when it matches a real, unexpired trusted_devices row for this
+    # officer. Omitted/wrong/expired: login proceeds exactly as if 2FA were
+    # being triggered for the first time on this device.
+    device_token: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
+    # Exactly one of (token) or (otp_required + pending_token) is set: a
+    # trusted device or an officer with no email on file gets `token`
+    # straight away, same as before this feature existed; anyone else gets
+    # otp_required=True and must call POST /auth/verify-login-otp with
+    # `pending_token` to actually get a token.
+    token: Optional[str] = None
+    otp_required: bool = False
+    pending_token: Optional[str] = None
+
+
+class VerifyLoginOtpRequest(BaseModel):
+    pending_token: str
+    code: str
+    remember_device: bool = False
+
+
+class VerifyLoginOtpResponse(BaseModel):
     token: str
+    # Present only when the request asked to remember this device -- the
+    # client stores it (localStorage, not sessionStorage: it must outlive
+    # this one session) and sends it back as LoginRequest.device_token on
+    # future logins.
+    device_token: Optional[str] = None
+
+
+class RequestPasswordResetOtpBody(BaseModel):
+    badge_number: str
+
+
+class ResetPasswordWithOtpBody(BaseModel):
+    badge_number: str
+    code: str
+    new_password: str
+
+
+class EmailUpdateRequest(BaseModel):
+    # Required -- 2FA is mandatory from registration onward (see
+    # RegisterRequest.email), so there is no longer a supported way to
+    # clear an officer's email and fall back to password-only login.
+    email: str
+    # Changing the address 2FA codes and reset codes go to is security-
+    # relevant enough to require re-proving the password -- not just
+    # "already holds a valid session JWT."
+    current_password: str
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value):
+        return _validate_email_format(value)
+
+
+class EmailUpdateResponse(BaseModel):
+    """Response for PUT /auth/me/email when `email` was non-null -- nothing
+    is written to officers.email yet, the officer must prove they actually
+    control that inbox first via POST /auth/me/email/verify. Clearing the
+    email (email=None) skips this entirely and returns MeResponse directly,
+    same as before this feature existed -- there's no ownership to prove
+    when turning 2FA off."""
+    verification_required: bool = True
+    pending_token: str
+
+
+class VerifyEmailRequest(BaseModel):
+    pending_token: str
+    code: str
 
 
 class MeResponse(BaseModel):
@@ -99,6 +181,10 @@ class MeResponse(BaseModel):
     role: Optional[str] = None
     rank: Optional[str] = None
     photo_url: Optional[str] = None
+    # Set only via PUT /auth/me/email -- non-None is exactly what "login 2FA
+    # and self-service password reset are on for this officer" means (see
+    # schema.sql's comment above officers.email).
+    email: Optional[str] = None
     last_login: Optional[datetime] = None
     status: str = "active"
     scope_type: Optional[str] = None
@@ -106,42 +192,8 @@ class MeResponse(BaseModel):
     permissions: list[str]
 
 
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-
-
 class PasswordResetBody(BaseModel):
     new_password: str
-    # When this reset fulfills a pending password_reset_requests row, pass its
-    # id so the request is atomically marked approved in the same call --
-    # otherwise an admin could set the password but leave the request stuck
-    # "pending" forever.
-    request_id: Optional[int] = None
-
-
-class PasswordResetRequestCreate(BaseModel):
-    reason: Optional[str] = None
-
-
-class PasswordResetRequestReject(BaseModel):
-    reason: Optional[str] = None
-
-
-class PasswordResetRequestOut(BaseModel):
-    id: int
-    officer_id: int
-    badge_number: str
-    officer_name: str
-    rank: Optional[str] = None
-    role_name: Optional[str] = None
-    scope_type: Optional[str] = None
-    scope_value: Optional[str] = None
-    reason: Optional[str] = None
-    status: str
-    requested_at: datetime
-    reviewed_by: Optional[str] = None
-    reviewed_at: Optional[datetime] = None
 
 
 class ProfilePhotoUpdate(BaseModel):
@@ -283,22 +335,39 @@ class EffectivePermissionsOut(BaseModel):
     permissions: list[str]
 
 
-class DiagnosticsOut(BaseModel):
-    officer_id: Optional[int] = None
-    role_id: Optional[int] = None
-    permission: Optional[str] = None
-    has_permission: Optional[bool] = None
-    granting_roles: list[str] = []
-    granting_duties: dict[str, list[str]] = {}
-
-
 class RegisterRequest(BaseModel):
     badge_number: str
     name: str
     rank: Optional[str] = None
-    department: Optional[str] = None
+    # Required now (was optional): this becomes the officer's initial
+    # posting's district scope the moment their email verifies -- there is
+    # no admin left in the loop to supply one, so it can't be missing (see
+    # POST /auth/register/verify).
+    department: str = Field(min_length=1)
+    # The account's email from day one -- proving control of it (via the
+    # OTP sent at registration) is what replaces admin approval as the
+    # activation gate, and it doubles as this officer's 2FA email with no
+    # separate setup step needed.
+    email: str
     contact_info: Optional[str] = None
     password: str
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value):
+        return _validate_email_format(value)
+
+
+class RegisterResponse(BaseModel):
+    """Response for POST /auth/register -- registration no longer activates
+    the account by itself; POST /auth/register/verify (with the OTP just
+    emailed) does that."""
+    pending_token: str
+
+
+class VerifyRegistrationRequest(BaseModel):
+    pending_token: str
+    code: str
 
 
 class RegistrationRequestOut(BaseModel):
@@ -358,22 +427,6 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
-class SodRuleCreate(BaseModel):
-    role_a_id: int
-    role_b_id: int
-    description: Optional[str] = None
-
-
-class SodRuleOut(BaseModel):
-    id: int
-    role_a_id: int
-    role_a_name: str
-    role_b_id: int
-    role_b_name: str
-    description: Optional[str] = None
-    created_at: datetime
-
-
 class OfficerProfileOut(BaseModel):
     id: int
     badge_number: str
@@ -424,6 +477,23 @@ class SyntheticDetectionEventAccepted(BaseModel):
 
 class ArchiveResult(BaseModel):
     archived: int
+
+
+class RecordingHealthEventIn(BaseModel):
+    event_id: str
+    # The recording service's own camera path (matches cameras.stream_id) --
+    # not the registry's numeric camera id, since the recorder only knows
+    # the path it's ingesting from.
+    path: str
+    status: str
+    message: Optional[str] = None
+    occurred_at: Optional[str] = None
+    payload: Optional[dict] = None
+
+
+class RecordingHealthEventAccepted(BaseModel):
+    event_id: str
+    status: str = "accepted"
 
 
 class CoverageTargetCreate(BaseModel):
