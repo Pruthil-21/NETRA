@@ -104,6 +104,20 @@ def get_camera(conn, camera_id: int):
         return dict(zip(cols, row))
 
 
+def get_camera_by_stream_id(conn, stream_id: str):
+    """The recording service's webhook (routers/recording_webhooks.py) only
+    knows the camera path it's ingesting from, not our registry's numeric
+    id -- this resolves that path back to a real camera so an inbound event
+    can be broadcast scoped to the right district."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, name, dept FROM cameras WHERE stream_id = %s LIMIT 1", (str(stream_id),))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cols = [c.name for c in cur.description]
+        return dict(zip(cols, row))
+
+
 def create_camera(conn, data: dict):
     with conn.cursor() as cur:
         cur.execute("""

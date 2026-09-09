@@ -1,0 +1,99 @@
+import httpx
+from app.services import stream_health_service
+
+
+class _FakeResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+def test_live_check_requires_auth(client):
+    resp = client.get("/cameras/1/live-check")
+    assert resp.status_code == 401
+
+
+def test_live_check_404s_for_a_camera_that_does_not_exist(client, viewer_headers):
+    resp = client.get("/cameras/999999/live-check", headers=viewer_headers)
+    assert resp.status_code == 404
+
+
+def test_live_check_false_when_camera_has_no_stream_url(client, viewer_headers, officer_headers, gap_analysis_test_cameras):
+    created = client.post(
+        "/cameras",
+        json={
+            "name": "No Stream Camera", "dept": "Traffic Police", "lat": 23.0, "long": 72.5,
+            "camera_type": "IP", "ownership": "test", "storage_type": "Cloud", "retention_days": 30,
+        },
+        headers=officer_headers,
+    ).json()
+    gap_analysis_test_cameras.append(created["id"])
+
+    resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"reachable": False}
+
+
+def test_live_check_true_only_on_a_real_200_from_the_manifest(
+    client, viewer_headers, officer_headers, monkeypatch, gap_analysis_test_cameras
+):
+    # This is the exact bug being fixed: the old client-side no-cors probe
+    # treated ANY response (a 404 included) as "reachable". A real
+    # server-side check must not.
+    created = client.post(
+        "/cameras",
+        json={
+            "name": "Stream Camera", "dept": "Traffic Police", "lat": 23.0, "long": 72.5,
+            "camera_type": "IP", "ownership": "test", "storage_type": "Cloud", "retention_days": 30,
+            "stream_id": "cam42",
+        },
+        headers=officer_headers,
+    ).json()
+    gap_analysis_test_cameras.append(created["id"])
+
+    captured = {}
+
+    def fake_get(url, timeout=None, follow_redirects=None):
+        captured["url"] = url
+        return _FakeResponse(404)
+
+    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"reachable": False}
+    assert captured["url"].endswith("/stream/cam42/index.m3u8")
+
+    monkeypatch.setattr(stream_health_service.httpx, "get", lambda *a, **k: _FakeResponse(200))
+    resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
+    assert resp.json() == {"reachable": True}
+
+
+def test_live_check_prefers_hls_url_when_set(client, viewer_headers, officer_headers, monkeypatch, gap_analysis_test_cameras):
+    created = client.post(
+        "/cameras",
+        json={
+            "name": "Full Url Camera", "dept": "Traffic Police", "lat": 23.0, "long": 72.5,
+            "camera_type": "IP", "ownership": "test", "storage_type": "Cloud", "retention_days": 30,
+            "stream_id": "should-be-ignored", "hls_url": "https://elsewhere.example/stream/x/index.m3u8",
+        },
+        headers=officer_headers,
+    ).json()
+    gap_analysis_test_cameras.append(created["id"])
+
+    captured = {}
+
+    def fake_get(url, timeout=None, follow_redirects=None):
+        captured["url"] = url
+        return _FakeResponse(200)
+
+    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
+    assert resp.json() == {"reachable": True}
+    assert captured["url"] == "https://elsewhere.example/stream/x/index.m3u8"
+
+
+def test_check_hls_reachable_treats_a_network_error_as_unreachable(monkeypatch):
+    def fake_get(*args, **kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    assert stream_health_service.check_hls_reachable("https://example.com/stream/x/index.m3u8") is False

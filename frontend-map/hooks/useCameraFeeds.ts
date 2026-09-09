@@ -47,18 +47,28 @@ const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 // cadence a "how fresh is this badge" indicator should be measured against.
 export const FEED_STALE_THRESHOLD_MS = HEALTH_CHECK_INTERVAL_MS;
 
-// no-cors: cross-origin tunnel responses (Cloudflare Quick Tunnel -> MediaMTX)
-// don't send Access-Control-Allow-Origin, so a normal fetch() gets blocked by
-// the browser and throws even when the stream is genuinely live -- no-cors
-// sidesteps the CORS check entirely (opaque response, can't read status, but
-// fetch only throws on a real network failure), matching the same approach
-// CameraRegistryContext already uses for its WebRTC reachability probe.
-async function probeStreamReachable(url: string): Promise<boolean> {
+// Was a client-side `fetch(url, {mode: 'no-cors'})` -- cross-origin tunnel
+// responses (Cloudflare Quick Tunnel -> MediaMTX) don't send
+// Access-Control-Allow-Origin, so a normal same-origin-checked fetch()
+// throws even when the stream is genuinely live. no-cors sidesteps that,
+// but at a real cost: in no-cors mode the browser can't read the actual
+// HTTP status, so ANY response at all -- a 404 from a path with no active
+// publisher included -- resolved the fetch successfully, reporting a
+// camera "reachable"/LIVE when it genuinely wasn't. Backend-registry now
+// does this same check server-to-server (GET /cameras/{id}/live-check),
+// where there's no CORS restriction at all and the real status code is
+// what actually decides the answer -- see stream_health_service.py.
+async function probeStreamReachable(cameraId: number): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
   try {
-    await fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
-    return true;
+    const res = await authorizedFetch(`${REGISTRY_API_URL}/cameras/${cameraId}/live-check`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const data: { reachable: boolean } = await res.json();
+    return data.reachable;
   } catch {
     return false;
   } finally {
@@ -166,7 +176,11 @@ export function useCameraFeeds(): UseCameraFeedsResult {
     const checkAll = async () => {
       const snapshot = rawFeedsRef.current;
       const results = await Promise.allSettled(
-        snapshot.map(async (feed) => [feed.id, await probeStreamReachable(feed.hlsUrl)] as const)
+        snapshot.map(async (feed) => {
+          const numericId = Number(feed.id);
+          const reachable = Number.isNaN(numericId) ? false : await probeStreamReachable(numericId);
+          return [feed.id, reachable] as const;
+        })
       );
       if (cancelled) return;
       setReachability((prev) => {

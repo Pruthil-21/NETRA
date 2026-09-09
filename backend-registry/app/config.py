@@ -13,10 +13,23 @@ class Settings:
     # demo infrastructure, not always running, so this has a default rather
     # than the hard-required DATABASE_URL/JWT_SECRET above.
     snmp_monitor_url: str = os.environ.get("SNMP_MONITOR_URL", "http://localhost:9116")
-    # MediaMTX's Playback API (streaming/mediamtx.yml's `playback` server) --
-    # only used to list a camera's available recorded segments; the frontend
-    # streams/exports clips by hitting MediaMTX's playback server directly.
-    playback_api_url: str = os.environ.get("PLAYBACK_API_URL", "http://localhost:9996")
+    # Base URL for a camera's HLS manifest, when it has no fully-qualified
+    # hls_url of its own -- same real value as frontend-map's own
+    # NEXT_PUBLIC_MEDIAMTX_HLS_URL (see GET /cameras/{id}/live-check).
+    mediamtx_hls_url: str = os.environ.get("MEDIAMTX_HLS_URL", "http://localhost:8888")
+    # Email 2FA / self-service password reset (see services/email_service.py)
+    # is entirely opt-in per officer (gated on officers.email being set), so
+    # this has a default rather than joining DATABASE_URL/JWT_SECRET as a
+    # hard-required var -- a deployment that never configures Resend simply
+    # never sends an officer-set email an OTP; login/reset behave exactly as
+    # before for every officer with no email on file.
+    resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
+    # Resend's own shared sandbox sender -- works out of the box with no
+    # domain verification, but (per Resend's own restriction) can only
+    # deliver to the email address that owns the RESEND_API_KEY's account
+    # until a real sending domain is verified. Fine for dev/demo; swap for a
+    # verified "you@yourdomain.com" address in production.
+    resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "DIGDHRISHTI <onboarding@resend.dev>")
 
 
 settings = Settings()
