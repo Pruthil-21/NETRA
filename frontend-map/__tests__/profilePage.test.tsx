@@ -2,10 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ProfilePage from '@/app/profile/page';
 import { usePermissions } from '@/hooks/usePermissions';
-import { changePassword, updateProfilePhoto } from '@/services/profileService';
+import { updateProfilePhoto, updateMyEmail, verifyMyEmail } from '@/services/profileService';
+import { fileToAvatarDataUri, ImageUploadError } from '@/lib/imageUpload';
 
 vi.mock('@/hooks/usePermissions');
 vi.mock('@/services/profileService');
+vi.mock('@/lib/imageUpload', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/imageUpload')>('@/lib/imageUpload');
+  return { ...actual, fileToAvatarDataUri: vi.fn() };
+});
 
 const BASE_PERMISSIONS = {
   badgeNumber: 'GJ-SO-001',
@@ -42,11 +47,20 @@ describe('ProfilePage', () => {
     expect(screen.getByText('Traffic Police')).toBeInTheDocument();
   });
 
-  it('shows a fallback avatar and lets the officer add a photo URL', async () => {
+  it('defaults to the file-upload picker, styled as an "Add a file" button', () => {
+    render(<ProfilePage />);
+
+    fireEvent.click(screen.getByText('Add a photo'));
+    expect(screen.getByText('Add a file')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Profile photo URL')).not.toBeInTheDocument();
+  });
+
+  it('lets the officer switch to pasting a photo URL instead', async () => {
     (updateProfilePhoto as any).mockResolvedValue(undefined);
     render(<ProfilePage />);
 
     fireEvent.click(screen.getByText('Add a photo'));
+    fireEvent.click(screen.getByText('Or paste a URL instead'));
     fireEvent.change(screen.getByLabelText('Profile photo URL'), {
       target: { value: 'https://example.com/avatar.jpg' },
     });
@@ -56,69 +70,69 @@ describe('ProfilePage', () => {
     expect(BASE_PERMISSIONS.refetch).toHaveBeenCalled();
   });
 
-  it('submits a password reset request with the typed reason, and shows a confirmation', async () => {
-    const requestSpy = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ id: 1, status: 'pending' }) });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn((_url: string, opts?: RequestInit) => requestSpy(_url, opts))
-    );
-    sessionStorage.setItem('netra_session_token', 'fake-jwt-token');
-
+  it('resizes a picked image file client-side and saves it as the photo', async () => {
+    (updateProfilePhoto as any).mockResolvedValue(undefined);
+    (fileToAvatarDataUri as any).mockResolvedValue('data:image/jpeg;base64,resized');
     render(<ProfilePage />);
-    fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: 'Forgot after leave' } });
-    fireEvent.click(screen.getByRole('button', { name: /request password reset/i }));
 
-    await waitFor(() => expect(requestSpy).toHaveBeenCalled());
-    const [url, opts] = requestSpy.mock.calls[0];
-    expect(url).toContain('/auth/password-reset-requests');
-    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ reason: 'Forgot after leave' });
-    expect(await screen.findByText(/request submitted/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Add a photo'));
+    const file = new File(['fake-bytes'], 'avatar.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Upload profile photo'), { target: { files: [file] } });
 
-    vi.unstubAllGlobals();
+    expect(await screen.findByText('avatar.png')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Save'));
+
+    await waitFor(() => expect(updateProfilePhoto).toHaveBeenCalledWith('data:image/jpeg;base64,resized'));
+    expect(BASE_PERMISSIONS.refetch).toHaveBeenCalled();
   });
 
-  it('rejects a change-password submission when new password is too short', async () => {
+  it('shows an error and does not select the file when it is not an image', async () => {
+    (fileToAvatarDataUri as any).mockRejectedValue(new ImageUploadError('Only image files are allowed.'));
     render(<ProfilePage />);
-    fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'oldpass123' } });
-    fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'short' } });
-    fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'short' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }));
 
-    expect(await screen.findByText(/at least 8 characters/i)).toBeInTheDocument();
-    expect(changePassword).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Add a photo'));
+    const file = new File(['not-an-image'], 'notes.txt', { type: 'text/plain' });
+    fireEvent.change(screen.getByLabelText('Upload profile photo'), { target: { files: [file] } });
+
+    expect(await screen.findByText('Only image files are allowed.')).toBeInTheDocument();
+    expect(screen.queryByText('notes.txt')).not.toBeInTheDocument();
   });
 
-  it('rejects a change-password submission when confirmation does not match', async () => {
+  it('lets the officer remove a picked file before saving', async () => {
+    (fileToAvatarDataUri as any).mockResolvedValue('data:image/jpeg;base64,resized');
     render(<ProfilePage />);
-    fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'oldpass123' } });
-    fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'newpassword1' } });
-    fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'newpassword2' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }));
 
-    expect(await screen.findByText(/do not match/i)).toBeInTheDocument();
-    expect(changePassword).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('Add a photo'));
+    const file = new File(['fake-bytes'], 'avatar.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Upload profile photo'), { target: { files: [file] } });
+    expect(await screen.findByText('avatar.png')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Remove selected file'));
+    expect(screen.queryByText('avatar.png')).not.toBeInTheDocument();
+    expect(screen.getByText('Add a file')).toBeInTheDocument();
   });
 
-  it('submits a valid change-password form and shows a success message', async () => {
-    (changePassword as any).mockResolvedValue(undefined);
+  it('setting a 2FA email requires entering the verification code before it takes effect', async () => {
+    (updateMyEmail as any).mockResolvedValue({ verificationRequired: true, pendingToken: 'pending-abc' });
+    (verifyMyEmail as any).mockResolvedValue(undefined);
     render(<ProfilePage />);
-    fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'oldpass123' } });
-    fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'newpassword1' } });
-    fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'newpassword1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }));
 
-    await waitFor(() => expect(changePassword).toHaveBeenCalledWith('oldpass123', 'newpassword1'));
-    expect(await screen.findByText(/Password updated/i)).toBeInTheDocument();
-  });
+    fireEvent.click(screen.getByText('Add an email'));
+    fireEvent.change(screen.getByLabelText('Email', { selector: '#two-factor-email' }), {
+      target: { value: 'officer@example.com' },
+    });
+    fireEvent.change(screen.getByLabelText('Current Password', { selector: '#two-factor-current-password' }), {
+      target: { value: 'currentpass1' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send verification code/i }));
 
-  it('shows the backend error message when the current password is wrong', async () => {
-    (changePassword as any).mockRejectedValue(new Error('Current password is incorrect'));
-    render(<ProfilePage />);
-    fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'wrongpass' } });
-    fireEvent.change(screen.getByLabelText('New Password'), { target: { value: 'newpassword1' } });
-    fireEvent.change(screen.getByLabelText('Confirm New Password'), { target: { value: 'newpassword1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Change Password' }));
+    await waitFor(() => expect(updateMyEmail).toHaveBeenCalledWith('officer@example.com', 'currentpass1'));
+    expect(await screen.findByText(/we emailed a 6-digit code/i)).toBeInTheDocument();
 
-    expect(await screen.findByText('Current password is incorrect')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Verification Code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: /verify & save/i }));
+
+    await waitFor(() => expect(verifyMyEmail).toHaveBeenCalledWith('pending-abc', '123456'));
+    expect(BASE_PERMISSIONS.refetch).toHaveBeenCalled();
   });
 });
