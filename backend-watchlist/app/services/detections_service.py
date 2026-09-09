@@ -187,6 +187,60 @@ def search_detections(
     return db.fetchall()
 
 
+def camera_density_counts(
+    db: RealDictCursor,
+    window_minutes: int | None = None,
+    hour: int | None = None,
+    on_date=None,
+    dept: str | None = None,
+):
+    """Per-camera detection counts for the Map page's density layer --
+    exactly one of two windows, chosen by the caller (see the router's own
+    validation that exactly one is set):
+
+    - window_minutes: a rolling "right now" window (e.g. the last 30
+      minutes) for the live density view.
+    - hour + on_date: every detection whose IST calendar hour matches
+      `hour` on `on_date`, for the time-of-day playback scrubber -- reusing
+      the same append-only `detections` history rather than a separate
+      hourly rollup, since an hour-bucketed scan is cheap enough at this
+      table's current scale and the index above keeps it cheap as it grows.
+
+    Cameras with zero detections in the window are simply absent from the
+    result -- the frontend only paints where there's actual activity, so an
+    idle camera contributing nothing here isn't a special case.
+    """
+    joins = ""
+    clauses = []
+    params: list = []
+
+    if window_minutes is not None:
+        clauses.append("detected_at >= now() - (%s || ' minutes')::interval")
+        params.append(window_minutes)
+    else:
+        clauses.append("(detected_at AT TIME ZONE 'Asia/Kolkata')::date = %s")
+        params.append(on_date)
+        clauses.append("EXTRACT(HOUR FROM detected_at AT TIME ZONE 'Asia/Kolkata') = %s")
+        params.append(hour)
+
+    if dept is not None:
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    db.execute(
+        f"""
+        SELECT detections.camera_id AS camera_id, COUNT(*) AS count
+        FROM detections {joins}
+        {where}
+        GROUP BY detections.camera_id
+        """,
+        params,
+    )
+    return db.fetchall()
+
+
 def get_vehicle_trace(
     db: RealDictCursor,
     plate_number: str,

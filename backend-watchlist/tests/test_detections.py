@@ -320,3 +320,87 @@ def test_csv_export_returns_csv_with_matching_rows(client, internal_headers):
     assert lines[0] == "id,plate_number,camera_id,detected_at,confidence"
     assert len(lines) == 2  # header + 1 row
     assert plate in lines[1]
+
+
+def test_density_requires_view_analytics_permission(client):
+    # station_officer has search_vehicles but not view_analytics per
+    # seed_rbac.py's PERMISSIONS table -- the density layer is gated
+    # separately from plain plate search.
+    token = _make_rbac_token("station_officer", "district", "Traffic Police")
+    resp = client.get(
+        "/detections/density", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+
+
+def test_density_requires_exactly_one_window_param(client):
+    token = _make_rbac_token("super_admin", "platform")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    neither = client.get("/detections/density", headers=headers)
+    assert neither.status_code == 400
+
+    both = client.get("/detections/density", params={"window_minutes": 30, "hour": 5}, headers=headers)
+    assert both.status_code == 400
+
+
+def test_density_live_window_counts_recent_detections(client, internal_headers):
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": 7, "plate_number": plate}, headers=internal_headers)
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/density", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    counts = {row["camera_id"]: row["count"] for row in resp.json()}
+    assert counts.get(7, 0) >= 1
+
+
+def test_density_hour_mode_counts_current_hour_bucket_only(client, internal_headers):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": 8, "plate_number": plate}, headers=internal_headers)
+
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+    token = _make_rbac_token("super_admin", "platform")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    resp = client.get(
+        "/detections/density",
+        params={"hour": now_ist.hour, "date": now_ist.date().isoformat()},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    counts = {row["camera_id"]: row["count"] for row in resp.json()}
+    assert counts.get(8, 0) >= 1
+
+    other_hour = (now_ist.hour + 12) % 24
+    resp_other = client.get(
+        "/detections/density",
+        params={"hour": other_hour, "date": now_ist.date().isoformat()},
+        headers=headers,
+    )
+    assert 8 not in {row["camera_id"] for row in resp_other.json()}
+
+
+def test_density_district_scoped_only_counts_own_district(client, internal_headers, scoping_test_cameras):
+    cam_a = _insert_test_camera("Scoping Test District A")
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Scoping Test District B")
+    scoping_test_cameras.append(cam_b)
+    client.post("/detections", json={"camera_id": cam_a, "plate_number": _random_plate()}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_b, "plate_number": _random_plate()}, headers=internal_headers)
+
+    token = _make_rbac_token("district_command", "district", "Scoping Test District A")
+    resp = client.get(
+        "/detections/density",
+        params={"window_minutes": 30},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    counted_ids = {row["camera_id"] for row in resp.json()}
+    assert cam_a in counted_ids
+    assert cam_b not in counted_ids

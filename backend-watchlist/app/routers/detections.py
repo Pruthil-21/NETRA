@@ -10,8 +10,9 @@ frontend route/timeline view.
 """
 import csv
 import io
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from psycopg2.extras import RealDictCursor
@@ -19,8 +20,10 @@ from psycopg2.extras import RealDictCursor
 from ..auth import has_permission, require_internal_key, require_permission
 from ..database import get_db
 from ..logging_config import logger
-from ..schemas import DetectionIn, DetectionOut, DetectionResult
+from ..schemas import DensityPoint, DetectionIn, DetectionOut, DetectionResult
 from ..services import alerts_service, audit_service, detections_service
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 router = APIRouter(prefix="/detections", tags=["detections"])
 
@@ -66,6 +69,33 @@ def search_detections(
             _csv_safe(r["detected_at"]), _csv_safe(r["confidence"]),
         ])
     return Response(content=buffer.getvalue(), media_type="text/csv")
+
+
+@router.get("/density", response_model=list[DensityPoint])
+def get_density(
+    window_minutes: Optional[int] = Query(None, ge=1, le=180),
+    hour: Optional[int] = Query(None, ge=0, le=23),
+    on_date: Optional[date] = Query(None, alias="date"),
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_permission("view_analytics")),
+):
+    """Per-camera detection counts for the Map page's density layer -- see
+    detections_service.camera_density_counts for the two supported windows.
+    Exactly one of window_minutes (live, rolling) or hour (time-of-day
+    playback, defaulting `date` to today in IST) must be given; the two are
+    mutually exclusive views, never combined."""
+    if (window_minutes is None) == (hour is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of window_minutes (live) or hour (time-of-day playback)",
+        )
+
+    dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+    resolved_date = on_date if hour is not None and on_date is not None else datetime.now(_IST).date()
+    results = detections_service.camera_density_counts(
+        db, window_minutes=window_minutes, hour=hour, on_date=resolved_date, dept=dept
+    )
+    return [DensityPoint(**r).model_dump(mode="json") for r in results]
 
 
 @router.post("", response_model=DetectionResult, status_code=201)

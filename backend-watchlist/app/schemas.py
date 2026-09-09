@@ -77,6 +77,13 @@ class DetectionOut(BaseModel):
     event_id: Optional[uuid.UUID] = None
 
 
+class DensityPoint(BaseModel):
+    """One camera's detection count for the Map page's density layer --
+    see detections_service.camera_density_counts."""
+    camera_id: int
+    count: int
+
+
 class DetectionResult(BaseModel):
     """Response for POST /detections — the detection is always recorded;
     alert is populated only when the plate matched the watchlist."""
