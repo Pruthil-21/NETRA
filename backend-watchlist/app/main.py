@@ -1,4 +1,4 @@
-"""NETRA — backend-watchlist service entrypoint.
+"""DIGDHRISHTI — backend-watchlist service entrypoint.
 
 Run locally: uvicorn app.main:app --reload --port 8001
 """
@@ -18,7 +18,7 @@ from .services import alerts_stream
 
 configure_logging()
 
-app = FastAPI(title="NETRA Watchlist & Alerts Service")
+app = FastAPI(title="DIGDHRISHTI Watchlist & Alerts Service")
 
 
 @app.on_event("startup")

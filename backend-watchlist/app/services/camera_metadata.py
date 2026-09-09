@@ -1,17 +1,14 @@
-"""Temporary camera metadata for the vehicle-trace demo.
+"""Camera metadata for the vehicle-trace view.
 
-backend-watchlist has no direct ownership of camera records (those belong to
-backend-registry's `cameras` table in Model 1), and the demo cameras
-(101/102/103) aren't real registered cameras there — so rather than reaching
-across into another service's schema/data for a one-off demo we hardcode the
-three demo cameras here.
-
-backend-registry has since grown a real `stream_id`/`hls_url` concept on its
-`cameras` table (see contract/API_CONTRACT.md, Model 1) — once these demo
-cameras are registered there for real, replace this with a lookup against
-that table (same Postgres instance — see database.py) or a service call, and
-delete this module.
+Looks up the real backend-registry `cameras` table first (same Postgres
+instance — see database.py) since that's the actual source of truth for
+every registered camera's name/coordinates/stream_id. The three demo
+cameras (101/102/103) used by the scripted vehicle-trace replay predate
+real camera registration and aren't rows in that table, so they fall back
+to this hardcoded dict — keep it only for those ids; every real camera
+resolves through the registry lookup below.
 """
+from psycopg2.extras import RealDictCursor
 
 DEMO_CAMERAS: dict[int, dict] = {
     101: {
@@ -35,10 +32,25 @@ DEMO_CAMERAS: dict[int, dict] = {
 }
 
 
-def lookup(camera_id: int) -> dict:
-    """Returns camera metadata fields for a sighting, or all-None fields for
-    an unknown camera_id (never raises — a missing lookup shouldn't hide a
-    real detection from the trace)."""
+def lookup(db: RealDictCursor, camera_id: int) -> dict:
+    """Returns camera metadata fields for a sighting: the real registered
+    camera when one exists, the hardcoded demo entry for 101/102/103
+    otherwise, or all-None fields for a truly unknown camera_id (never
+    raises — a missing lookup shouldn't hide a real detection from the
+    trace)."""
+    db.execute(
+        "SELECT name, ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude, "
+        "stream_id FROM cameras WHERE id = %s",
+        (camera_id,),
+    )
+    row = db.fetchone()
+    if row:
+        return {
+            "camera_name": row["name"],
+            "latitude": row["latitude"],
+            "longitude": row["longitude"],
+            "stream_id": row["stream_id"],
+        }
     return DEMO_CAMERAS.get(
         camera_id,
         {"camera_name": None, "latitude": None, "longitude": None, "stream_id": None},
