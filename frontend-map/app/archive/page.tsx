@@ -1,14 +1,20 @@
 'use client';
 
-import React, { Suspense, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
-import { DistrictCircleTree, TreeSelection } from '@/components/tree/DistrictCircleTree';
+import { TreeSelection } from '@/components/tree/DistrictCircleTree';
+import { CameraRegistrySidebar } from '@/components/registry/CameraRegistrySidebar';
 import { circlesService, Circle } from '@/services/circlesService';
 import { fetchRecordingSegments, RecordingSegment } from '@/services/recordingsService';
 import { RecordingCalendar, toLocalDateKey } from '@/components/archive/RecordingCalendar';
 import { RecordingPlayer } from '@/components/archive/RecordingPlayer';
+import { ArchiveGridTile } from '@/components/archive/ArchiveGridTile';
 import { Camera } from '@/types/camera';
+import { usePermissions } from '@/hooks/usePermissions';
+import { useCameraDropTarget } from '@/hooks/useCameraDropTarget';
+
+const MAX_ARCHIVE_GRID_CAMERAS = 6;
 
 /** Recorded-footage browsing -- separate from the live Map/Dashboard views
  * on purpose: picking a camera here means "show me what it saw," not "show
@@ -18,6 +24,7 @@ import { Camera } from '@/types/camera';
  * fork into a second convention. */
 function ArchivePageInner() {
   const { cameras } = useCameraRegistry();
+  const { scopeValue: homeDistrict } = usePermissions();
   const searchParams = useSearchParams();
 
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
@@ -28,6 +35,62 @@ function ArchivePageInner() {
   const [available, setAvailable] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>(() => toLocalDateKey(new Date()));
+  // Freshly fetched for whichever day is selected, separately from
+  // allSegments -- each segment's playback url only carries a 15-minute
+  // token, so the broad history fetch below (which only exists to feed the
+  // calendar's "which days have anything" dots) can't double as this.
+  const [daySegments, setDaySegments] = useState<RecordingSegment[] | null>(null);
+  const [dayError, setDayError] = useState<string | null>(null);
+
+  // Cameras dragged in from the sidebar to browse side by side -- takes over
+  // the whole main panel ahead of the single-camera calendar+player view
+  // below (same "drag is a deliberate, explicit pick" precedent as the
+  // Dashboard's watch set, just recorded footage instead of live streams).
+  const [gridCameraIds, setGridCameraIds] = useState<Set<number>>(new Set());
+  const [gridNotice, setGridNotice] = useState<string | null>(null);
+  const isGridMode = gridCameraIds.size > 0;
+
+  const handleDropCameraIds = useCallback((cameraIds: number[]) => {
+    setGridCameraIds((prev) => {
+      const next = new Set(prev);
+      let dropped = 0;
+      for (const id of cameraIds) {
+        if (next.has(id)) continue;
+        if (next.size >= MAX_ARCHIVE_GRID_CAMERAS) {
+          dropped += 1;
+          continue;
+        }
+        next.add(id);
+      }
+      if (dropped > 0) {
+        setGridNotice(
+          `Only added ${MAX_ARCHIVE_GRID_CAMERAS - prev.size} of ${cameraIds.length} cameras — ${MAX_ARCHIVE_GRID_CAMERAS} at once is the limit here.`
+        );
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!gridNotice) return;
+    const timer = setTimeout(() => setGridNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [gridNotice]);
+
+  const handleRemoveFromGrid = useCallback((cameraId: number) => {
+    setGridCameraIds((prev) => {
+      const next = new Set(prev);
+      next.delete(cameraId);
+      return next;
+    });
+  }, []);
+
+  const gridCameras = useMemo(
+    () => cameras.filter((c) => gridCameraIds.has(c.id)),
+    [cameras, gridCameraIds]
+  );
+  const gridCols = Math.max(1, Math.ceil(Math.sqrt(gridCameraIds.size)));
+  const { isOver: isGridDropTarget, dropHandlers: gridDropHandlers } = useCameraDropTarget(handleDropCameraIds);
 
   useEffect(() => {
     circlesService.listCircles().then(setCircles).catch(() => {
@@ -84,10 +147,31 @@ function ArchivePageInner() {
     };
   }, [selectedCamera]);
 
-  const daySegments = useMemo(
-    () => (allSegments ?? []).filter((s) => toLocalDateKey(new Date(s.start)) === selectedDate),
-    [allSegments, selectedDate]
-  );
+  // Re-fetched (fresh tokens) every time the selected camera or day
+  // changes -- reusing allSegments' entries here would mean playing back
+  // with a token that may well have gone stale by the time the officer
+  // actually clicks play.
+  useEffect(() => {
+    if (!selectedCamera) {
+      setDaySegments(null);
+      return;
+    }
+    let cancelled = false;
+    setDayError(null);
+    setDaySegments(null);
+    const dayStart = new Date(`${selectedDate}T00:00:00`);
+    const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+    fetchRecordingSegments(selectedCamera.id, { start: dayStart.toISOString(), end: dayEnd.toISOString() })
+      .then((result) => {
+        if (!cancelled) setDaySegments(result.segments);
+      })
+      .catch((err) => {
+        if (!cancelled) setDayError(err instanceof Error ? err.message : 'Failed to load recordings for this day');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCamera, selectedDate]);
 
   const handleTreeSelect = (selection: TreeSelection) => {
     setTreeSelection(selection);
@@ -98,24 +182,56 @@ function ArchivePageInner() {
   };
 
   return (
-    <div className="flex-1 flex overflow-hidden min-h-0">
-      <div className="w-72 shrink-0 border-r border-line bg-panel overflow-y-auto">
-        <div className="px-3.5 py-3 border-b border-line">
-          <h2 className="text-[11px] font-semibold tracking-wider text-slate-400 uppercase">Cameras</h2>
-        </div>
-        <DistrictCircleTree
-          districts={districts}
-          circles={circles}
-          cameras={cameras}
-          selected={treeSelection}
-          onSelect={handleTreeSelect}
-        />
-      </div>
+    <div className="flex-1 flex overflow-hidden min-h-0 relative">
+      <CameraRegistrySidebar
+        districts={districts}
+        circles={circles}
+        cameras={cameras}
+        selected={treeSelection}
+        onSelect={handleTreeSelect}
+        homeDistrict={homeDistrict}
+      />
 
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-0">
-        {!selectedCamera ? (
+      <main
+        {...gridDropHandlers}
+        className={`flex-1 overflow-y-auto p-4 sm:p-6 min-h-0 rounded-lg transition-shadow ${
+          isGridDropTarget ? 'ring-2 ring-command ring-offset-2 ring-offset-ink' : ''
+        }`}
+      >
+        {isGridMode ? (
+          <div className="flex flex-col gap-4 h-full">
+            <div className="flex items-center justify-between gap-3">
+              <h1 className="text-sm font-semibold text-white tracking-wide">
+                Archive — {gridCameraIds.size} camera{gridCameraIds.size === 1 ? '' : 's'}
+              </h1>
+              <button
+                type="button"
+                onClick={() => setGridCameraIds(new Set())}
+                className="text-xs text-command hover:underline font-semibold shrink-0"
+              >
+                Exit grid view
+              </button>
+            </div>
+            {gridNotice && (
+              <div className="text-xs bg-amber-950/60 border border-amber-800 text-amber-300 rounded-lg px-3 py-2">
+                {gridNotice}
+              </div>
+            )}
+            <div
+              className="grid gap-4"
+              style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
+            >
+              {gridCameras.map((camera) => (
+                <ArchiveGridTile key={camera.id} camera={camera} onRemove={handleRemoveFromGrid} />
+              ))}
+            </div>
+          </div>
+        ) : !selectedCamera ? (
           <div className="text-center py-16 border border-dashed border-line rounded-lg">
-            <p className="text-slate-400 text-sm">Pick a camera from the tree to browse its recorded footage.</p>
+            <p className="text-slate-400 text-sm">
+              Pick a camera from the tree to browse its recorded footage, or drag a camera, area, or district here to
+              compare several at once.
+            </p>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -128,9 +244,7 @@ function ArchivePageInner() {
             {!error && allSegments === null && <p className="text-xs text-slate-500">Loading recordings…</p>}
 
             {!error && allSegments !== null && (!available || allSegments.length === 0) && (
-              <p className="text-xs text-slate-500">
-                No recorded footage available for this camera yet. Recording starts once the camera has been viewed live.
-              </p>
+              <p className="text-xs text-slate-500">No recorded footage available for this camera yet.</p>
             )}
 
             {allSegments !== null && available && allSegments.length > 0 && (
@@ -141,11 +255,15 @@ function ArchivePageInner() {
                   onSelectDate={setSelectedDate}
                 />
                 <div className="flex-1 min-w-0">
-                  <RecordingPlayer
-                    pathId={selectedCamera.stream_id || selectedCamera.id}
-                    cameraName={selectedCamera.name}
-                    segments={daySegments}
-                  />
+                  {dayError && <p className="text-xs text-signal-red mb-2">{dayError}</p>}
+                  {!dayError && daySegments === null && <p className="text-xs text-slate-500">Loading this day…</p>}
+                  {!dayError && daySegments !== null && (
+                    <RecordingPlayer
+                      cameraId={selectedCamera.id}
+                      cameraName={selectedCamera.name}
+                      segments={daySegments}
+                    />
+                  )}
                 </div>
               </div>
             )}

@@ -164,10 +164,12 @@ interface RegistryContextType {
 }
 
 const initialFilters: CameraFilters = {
-  department: 'All Departments',
+  departments: [],
+  circleIds: [],
   connectivity: 'all',
   health: 'all',
   searchQuery: '',
+  coverageEnabled: false,
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
@@ -286,11 +288,14 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
 
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
-      // 1. Department filter (handles case-insensitive match & 'All Departments')
+      // 1. Location filter -- a camera passes if it's in any selected city
+      // (department) OR any selected area (circle); picking a city and a
+      // specific area elsewhere means "either," not "both." No selection at
+      // all means every location passes.
       const matchesDept =
-        !filters.department ||
-        filters.department === 'All Departments' ||
-        cam.dept?.toLowerCase() === filters.department.toLowerCase();
+        (filters.departments.length === 0 && filters.circleIds.length === 0) ||
+        filters.departments.some((d) => cam.dept?.toLowerCase() === d.toLowerCase()) ||
+        (cam.circle_id != null && filters.circleIds.includes(cam.circle_id));
 
       // 2. Connectivity filter (online / offline / all)
       const matchesConnectivity =

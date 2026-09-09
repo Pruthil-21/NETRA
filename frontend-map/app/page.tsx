@@ -12,9 +12,14 @@ import { useCameraRegistry } from "@/context/CameraRegistryContext";
 import { useTileOrder } from "@/hooks/useTileOrder";
 import { CameraFeed } from "@/types/stream";
 import { DistrictCircleTree, TreeSelection } from "@/components/tree/DistrictCircleTree";
+import { CameraRegistrySidebar } from "@/components/registry/CameraRegistrySidebar";
 import { CameraInfoOverlay } from "@/components/overlay/CameraInfoOverlay";
 import { circlesService, Circle } from "@/services/circlesService";
 import { filterFeedsByTreeSelection } from "@/lib/dashboardTreeFilter";
+import { usePermissions } from "@/hooks/usePermissions";
+import { useImmersiveMode } from "@/context/ImmersiveModeContext";
+import { useFullscreen } from "@/hooks/useFullscreen";
+import { Maximize2, Minimize2 } from "lucide-react";
 
 type StatusFilter = CameraFeed["status"] | "all";
 const MAX_CONCURRENT_PLAYERS = 6;
@@ -22,6 +27,7 @@ const MAX_CONCURRENT_PLAYERS = 6;
 export default function DashboardPage() {
   const { feeds, loading, error, refetch, lastUpdated } = useCameraFeeds();
   const { cameras } = useCameraRegistry();
+  const { scopeValue: homeDistrict } = usePermissions();
   const { isStale } = useStaleness(lastUpdated, !!error, FEED_STALE_THRESHOLD_MS);
   const [layout, setLayout] = useState<"grid-4" | "grid-9" | "focus">("grid-9");
   const [searchTerm, setSearchTerm] = useState("");
@@ -32,6 +38,12 @@ export default function DashboardPage() {
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
   const [circles, setCircles] = useState<Circle[]>([]);
   const [hoveredCameraId, setHoveredCameraId] = useState<string | null>(null);
+  // Cameras an officer dragged in from the sidebar tree, rather than picked
+  // via the tree-selection filter -- while this is non-empty it takes over
+  // what the grid shows entirely (see visibleFeeds below), auto-sized to
+  // however many are in it instead of the fixed grid-4/grid-9/focus layouts.
+  const [watchSetIds, setWatchSetIds] = useState<Set<string>>(new Set());
+  const [watchSetNotice, setWatchSetNotice] = useState<string | null>(null);
 
   const { activeCameraIds, openPlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
 
@@ -81,14 +93,69 @@ export default function DashboardPage() {
     return orderedIds.map((id) => byId.get(id)).filter((f): f is CameraFeed => f !== undefined);
   }, [orderedIds, filteredFeeds]);
 
+  const isWatchMode = watchSetIds.size > 0;
+  const { setImmersive } = useImmersiveMode();
+  const { isFullscreen, toggle: toggleFullscreen } = useFullscreen();
+  // AppShell's own persistent nav/header lives in a different component
+  // tree than this page -- ImmersiveModeContext is how "hide the app chrome
+  // too, not just this page's own header/sidebar" reaches it. Resets on
+  // unmount so leaving the Dashboard page (not just exiting watch mode)
+  // can never leave the rest of the app stuck without its nav bar.
+  useEffect(() => {
+    setImmersive(isWatchMode);
+    return () => setImmersive(false);
+  }, [isWatchMode, setImmersive]);
+  const watchSetFeeds = useMemo(
+    () => feeds.filter((f) => watchSetIds.has(f.id)),
+    [feeds, watchSetIds]
+  );
+  const handleDropCameraIds = useCallback((cameraIds: number[]) => {
+    setWatchSetIds((prev) => {
+      const next = new Set(prev);
+      let dropped = 0;
+      for (const id of cameraIds) {
+        const key = String(id);
+        if (next.has(key)) continue;
+        if (next.size >= MAX_CONCURRENT_PLAYERS) {
+          dropped += 1;
+          continue;
+        }
+        next.add(key);
+      }
+      if (dropped > 0) {
+        setWatchSetNotice(
+          `Only added ${MAX_CONCURRENT_PLAYERS - prev.size} of ${cameraIds.length} cameras — ${MAX_CONCURRENT_PLAYERS} concurrent streams is the limit for smooth playback.`
+        );
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!watchSetNotice) return;
+    const timer = setTimeout(() => setWatchSetNotice(null), 5000);
+    return () => clearTimeout(timer);
+  }, [watchSetNotice]);
+
+  const handleRemoveFromWatchSet = useCallback((id: string) => {
+    setWatchSetIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   // Focus mode shows exactly one camera — the one explicitly picked via a FeedCard's
   // "Focus this camera" button, an alert's "View Camera"/plate link, or the first
-  // filtered result if none was picked yet.
+  // filtered result if none was picked yet. A drag-composed watch set takes over
+  // entirely ahead of this -- it's a deliberate, explicit pick, same as focus, just
+  // for however many cameras were dragged in rather than exactly one.
   const visibleFeeds = useMemo(() => {
+    if (isWatchMode) return watchSetFeeds;
     if (layout !== "focus") return orderedFeeds;
     const focused = filteredFeeds.find((f) => f.id === focusedId);
     return focused ? [focused] : filteredFeeds.slice(0, 1);
-  }, [layout, orderedFeeds, filteredFeeds, focusedId]);
+  }, [isWatchMode, watchSetFeeds, layout, orderedFeeds, filteredFeeds, focusedId]);
 
   const hoveredCamera = useMemo(
     () => (hoveredCameraId ? cameras.find((c) => String(c.id) === hoveredCameraId) ?? null : null),
@@ -160,19 +227,90 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playAllMode, visibleFeeds]);
 
-  return (
-    <main className="flex-1 flex overflow-hidden min-h-0 w-full">
-      <div className="w-56 shrink-0 h-full border-r border-line">
-        <DistrictCircleTree
-          districts={districts}
-          circles={circles}
-          cameras={cameras}
-          selected={treeSelection}
-          onSelect={setTreeSelection}
-        />
-      </div>
+  // Theater mode: an officer dragging cameras in wants to watch them, not
+  // navigate or read alerts, so the top nav/header/alerts/controls go right
+  // away (see the setImmersive effect above and AppShell's own isImmersive
+  // check). The camera registry sidebar is the one exception -- it's the
+  // only way to drag *more* cameras in, so it stays until the officer takes
+  // the extra, explicit step of going true fullscreen (isFullscreen): that's
+  // the point where "entire screen should be only of custom viewer" really
+  // applies, since there's no browser chrome left to reach it through
+  // anyway once fullscreen hides the tab/URL bar too.
+  if (isWatchMode) {
+    return (
+      <main className="flex-1 flex overflow-hidden min-h-0 w-full bg-black">
+        {!isFullscreen && (
+          <div className="w-56 shrink-0 h-full border-r border-line">
+            <DistrictCircleTree
+              districts={districts}
+              circles={circles}
+              cameras={cameras}
+              selected={treeSelection}
+              onSelect={setTreeSelection}
+              homeDistrict={homeDistrict}
+              defaultCollapsed
+            />
+          </div>
+        )}
 
-      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+        <div className="relative flex-1 min-h-0">
+          <CameraGrid
+            feeds={visibleFeeds}
+            layout={layout}
+            registryEmpty={feeds.length === 0}
+            mode="playAll"
+            activeIds={watchSetIds}
+            onHoverStart={handleHoverStart}
+            onHoverEnd={handleHoverEnd}
+            onDropCameraIds={handleDropCameraIds}
+            immersive
+            onRemove={handleRemoveFromWatchSet}
+          />
+
+          <div className="absolute top-3 right-3 z-20 flex items-center gap-2">
+            {watchSetNotice && (
+              <div className="text-xs bg-amber-950/80 backdrop-blur-sm border border-amber-800 text-amber-300 rounded-lg px-3 py-1.5">
+                {watchSetNotice}
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+              title={
+                isFullscreen
+                  ? "Exit fullscreen"
+                  : "Enter fullscreen — hides the camera registry and the browser's own tabs/toolbar too"
+              }
+              className="p-2 rounded bg-black/60 backdrop-blur-sm border border-line text-slate-300 hover:text-white hover:bg-black/80 transition-colors"
+            >
+              {isFullscreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setWatchSetIds(new Set())}
+              className="px-3 py-2 rounded bg-black/60 backdrop-blur-sm border border-line text-xs font-semibold text-slate-300 hover:text-white hover:bg-black/80 transition-colors"
+            >
+              Exit custom view
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="flex-1 flex overflow-hidden min-h-0 w-full relative">
+      <CameraRegistrySidebar
+        districts={districts}
+        circles={circles}
+        cameras={cameras}
+        selected={treeSelection}
+        onSelect={setTreeSelection}
+        homeDistrict={homeDistrict}
+      />
+
+      <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
         <AlertBanner onAlertsUpdate={setAllAlerts} onJumpToCamera={handleSelectFocus} />
 
         <div className="flex-1 p-4 sm:p-6">
@@ -234,6 +372,7 @@ export default function DashboardPage() {
                 onHoverStart={handleHoverStart}
                 onHoverEnd={handleHoverEnd}
                 onReorder={moveTile}
+                onDropCameraIds={handleDropCameraIds}
               />
             </div>
           )}

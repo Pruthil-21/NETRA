@@ -5,12 +5,13 @@ import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
-import { createCustomMarkerIcon, createVehicleTraceIcon } from './MapCustomMarker';
+import { createCustomMarkerIcon, createDirectionArrowIcon, createVehicleTraceIcon } from './MapCustomMarker';
 import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
-import { resolveSightingCamera } from '@/lib/resolveSightingCamera';
+import { buildSightingRoute } from '@/lib/buildSightingRoute';
 import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
+import { CoverageCanvasLayer } from './CoverageCanvasLayer';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
@@ -143,6 +144,24 @@ interface CameraMapProps {
    * highlightedPositions effect and createCustomMarkerIcon's isHighlighted
    * ring) -- never used to filter which markers render below. */
   highlightedCameraIds?: Set<number>;
+  /** Index into the same chronologically-sorted, camera-resolved sighting
+   * list TrajectoryTimeline scrubs through (see lib/buildSightingRoute.ts --
+   * both derive from it so the Nth scrubber stop is always the Nth point
+   * here). When provided, replaces the free-running animated sweep with a
+   * marker snapped to that exact stop, and splits the route into a solid
+   * "traveled" segment and a dashed "remaining" one. Omitting it (undefined)
+   * keeps every existing caller's continuous auto-looping animation
+   * unchanged. */
+  timelineIndex?: number;
+  /** Suppresses the individual camera pin markers/clusters and the police
+   * station markers below -- used while the coverage view (see `coverage`
+   * below) is active, since point markers would just clutter a
+   * region-colored view. The sighting route (if any) still renders. */
+  hideMarkers?: boolean;
+  /** Renders the canvas coverage-radius layer for the given cameras/tier
+   * instead of (or alongside) pins -- see CoverageCanvasLayer. Omit to
+   * render no coverage layer at all. */
+  coverage?: { cameras: Camera[] };
 }
 
 export const CameraMap: React.FC<CameraMapProps> = ({
@@ -152,6 +171,9 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   sightings,
   onHoverChange,
   highlightedCameraIds,
+  timelineIndex,
+  hideMarkers,
+  coverage,
 }) => {
   // Police station pins -- a separate data source from cameras (backend-registry's
   // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
@@ -174,18 +196,13 @@ export const CameraMap: React.FC<CameraMapProps> = ({
 
   const sightingPoints = useMemo(() => {
     if (!sightings || sightings.length === 0) return [];
-    const cameraById = new Map(cameras.map((cam) => [cam.id, cam]));
-    // Defensive re-sort: this component only trusts detected_at order, not
-    // caller order, since the route/animation direction depends on it.
-    return [...sightings]
-      .sort((a, b) => new Date(a.detected_at).getTime() - new Date(b.detected_at).getTime())
-      .map((sighting) => {
-        const camera = resolveSightingCamera(sighting, cameraById);
-        if (!camera) return null;
-        return { sighting, camera };
-      })
-      .filter((point): point is { sighting: Detection; camera: Camera } => point !== null);
+    return buildSightingRoute(sightings, cameras);
   }, [sightings, cameras]);
+
+  const anomalyCount = useMemo(
+    () => sightingPoints.filter((point) => point.anomaly).length,
+    [sightingPoints]
+  );
 
   const routePositions = useMemo(
     () => sightingPoints.map(({ camera }) => [camera.lat, camera.long ?? 0] as [number, number]),
@@ -332,7 +349,14 @@ export const CameraMap: React.FC<CameraMapProps> = ({
                 normal plate search. */}
             {sightingPoints[0].sighting.route_label || 'Inferred route from camera sightings'}
           </p>
-          <p className="text-[10px] text-slate-400">Not GPS tracking — derived from camera detections only</p>
+          <p className="text-[10px] text-slate-400">
+            Not GPS tracking — direction and speed are inferred from camera order and spacing only
+          </p>
+          {anomalyCount > 0 && (
+            <p className="text-[10px] text-rose-400 font-semibold mt-0.5">
+              ⚠ {anomalyCount} leg{anomalyCount === 1 ? '' : 's'} flagged for review
+            </p>
+          )}
         </div>
       )}
 
@@ -350,40 +374,130 @@ export const CameraMap: React.FC<CameraMapProps> = ({
           highlightedPositions={highlightedPositions}
         />
 
-        <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
-          {/* Unconditional over every camera passed in -- the tree's highlightedCameraIds
-              (below) only adds a visual ring and drives the pan/zoom effect above, it
-              never filters this list. Every camera in the caller's RBAC scope stays
-              visible and clickable regardless of what's selected in the tree. */}
-          {cameras.map((cam: Camera) => {
-            const longitude = cam.long ?? 0;
-            const isSelected = selectedCamera?.id === cam.id;
-            const isOnRoute = routeCameraIds.has(cam.id);
-            const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
-            return (
-              <Marker
-                key={cam.id}
-                ref={markerRefCallbacks.get(cam.id)}
-                position={[cam.lat, longitude]}
-                icon={createCustomMarkerIcon(cam, isSelected, isOnRoute, isHighlighted)}
-                eventHandlers={{
-                  click: () => onSelectCamera(cam),
-                  mouseover: () => handleMarkerHoverStart(cam.id),
-                  mouseout: () => handleMarkerHoverEnd(cam.id),
-                }}
-              />
-            );
-          })}
-        </MarkerClusterGroup>
+        {!hideMarkers && (
+          <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
+            {/* Unconditional over every camera passed in -- the tree's highlightedCameraIds
+                (below) only adds a visual ring and drives the pan/zoom effect above, it
+                never filters this list. Every camera in the caller's RBAC scope stays
+                visible and clickable regardless of what's selected in the tree. */}
+            {cameras.map((cam: Camera) => {
+              const longitude = cam.long ?? 0;
+              const isSelected = selectedCamera?.id === cam.id;
+              const isOnRoute = routeCameraIds.has(cam.id);
+              const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
+              return (
+                <Marker
+                  key={cam.id}
+                  ref={markerRefCallbacks.get(cam.id)}
+                  position={[cam.lat, longitude]}
+                  icon={createCustomMarkerIcon(cam, isSelected, isOnRoute, isHighlighted)}
+                  eventHandlers={{
+                    click: () => onSelectCamera(cam),
+                    mouseover: () => handleMarkerHoverStart(cam.id),
+                    mouseout: () => handleMarkerHoverEnd(cam.id),
+                  }}
+                />
+              );
+            })}
+          </MarkerClusterGroup>
+        )}
 
-        {routePositions.length > 1 && (
+        {coverage && <CoverageCanvasLayer cameras={coverage.cameras} />}
+
+        {routePositions.length > 1 && timelineIndex === undefined && (
           <Polyline
             positions={routePositions}
             pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.8 }}
           />
         )}
 
-        {routePositions.length > 1 && <VehicleTraceMarker positions={routePositions} />}
+        {routePositions.length > 1 && timelineIndex !== undefined && (
+          <>
+            {/* Traveled leg: solid + brighter, up to and including the
+                scrubber's current stop. */}
+            <Polyline
+              positions={routePositions.slice(0, timelineIndex + 1)}
+              pathOptions={{ color: '#60A5FA', weight: 4, opacity: 0.95 }}
+            />
+            {/* Remaining leg: same dashed styling as the free-running route,
+                starting at the current stop so the two segments join with no
+                visible gap. */}
+            {timelineIndex < routePositions.length - 1 && (
+              <Polyline
+                positions={routePositions.slice(timelineIndex)}
+                pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.5 }}
+              />
+            )}
+          </>
+        )}
+
+        {routePositions.length > 1 && timelineIndex === undefined && (
+          <VehicleTraceMarker positions={routePositions} />
+        )}
+
+        {timelineIndex !== undefined && routePositions[timelineIndex] && (
+          <Marker
+            position={routePositions[timelineIndex]}
+            icon={VEHICLE_TRACE_ICON}
+            interactive={false}
+            zIndexOffset={1000}
+          />
+        )}
+
+        {/* Anomalous legs (see lib/geo.classifyLegAnomaly / backend's
+            geo.py) drawn as a bold red overlay on top of the normal route --
+            a heuristic worth a second look, not a finding, but exactly the
+            kind of thing a plain route-on-a-map never surfaces. */}
+        {sightingPoints.map(({ anomaly }, index) => {
+          if (index === 0 || !anomaly) return null;
+          const leg: [number, number][] = [routePositions[index - 1], routePositions[index]];
+          return (
+            <Polyline
+              key={`anomaly-${index}`}
+              positions={leg}
+              pathOptions={{ color: '#F87171', weight: 4, opacity: 0.9 }}
+            />
+          );
+        })}
+
+        {sightingPoints.map(({ camera, anomaly }, index) => {
+          if (!anomaly) return null;
+          return (
+            <CircleMarker
+              key={`anomaly-marker-${camera.id}-${index}`}
+              center={[camera.lat, camera.long ?? 0]}
+              radius={11}
+              pathOptions={{ color: '#F87171', fillOpacity: 0, weight: 2, dashArray: '3 3' }}
+            >
+              <Tooltip direction="top" offset={[0, -10]} className="anomaly-tooltip">
+                {anomaly === 'improbable_speed'
+                  ? 'Improbable speed for this leg -- possible OCR mismatch'
+                  : 'Unusually long gap before this sighting'}
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+
+        {/* Inferred direction-of-travel arrow at each leg's midpoint --
+            see MapCustomMarker.createDirectionArrowIcon for why this is
+            legitimate to show despite the route being camera-inferred, not
+            GPS. bearingDeg is undefined for the first stop (no prior leg). */}
+        {sightingPoints.map(({ camera, bearingDeg }, index) => {
+          if (index === 0 || bearingDeg == null) return null;
+          const prevCamera = sightingPoints[index - 1].camera;
+          const midpoint: [number, number] = [
+            (prevCamera.lat + camera.lat) / 2,
+            (prevCamera.long ?? 0) + ((camera.long ?? 0) - (prevCamera.long ?? 0)) / 2,
+          ];
+          return (
+            <Marker
+              key={`arrow-${camera.id}-${index}`}
+              position={midpoint}
+              icon={createDirectionArrowIcon(bearingDeg)}
+              interactive={false}
+            />
+          );
+        })}
 
         {sightingPoints.map(({ sighting, camera }, index) => (
           <CircleMarker
@@ -413,22 +527,23 @@ export const CameraMap: React.FC<CameraMapProps> = ({
           </CircleMarker>
         ))}
 
-        {stations.map((station: PoliceStation) => (
-          <CircleMarker
-            key={`station-${station.id}`}
-            center={[station.lat, station.long]}
-            radius={8}
-            pathOptions={{ color: '#F59E0B', fillColor: '#FBBF24', fillOpacity: 0.85, weight: 2 }}
-          >
-            <Popup className="dark-gis-popup">
-              <div className="p-1 min-w-[160px] text-slate-100 text-xs">
-                <p className="font-semibold text-white mb-1">{station.name}</p>
-                <p className="text-slate-400">{station.district}</p>
-                <p className="text-slate-500 mt-1">{station.contact || 'No contact on file'}</p>
-              </div>
-            </Popup>
-          </CircleMarker>
-        ))}
+        {!hideMarkers &&
+          stations.map((station: PoliceStation) => (
+            <CircleMarker
+              key={`station-${station.id}`}
+              center={[station.lat, station.long]}
+              radius={8}
+              pathOptions={{ color: '#F59E0B', fillColor: '#FBBF24', fillOpacity: 0.85, weight: 2 }}
+            >
+              <Popup className="dark-gis-popup">
+                <div className="p-1 min-w-[160px] text-slate-100 text-xs">
+                  <p className="font-semibold text-white mb-1">{station.name}</p>
+                  <p className="text-slate-400">{station.district}</p>
+                  <p className="text-slate-500 mt-1">{station.contact || 'No contact on file'}</p>
+                </div>
+              </Popup>
+            </CircleMarker>
+          ))}
       </MapContainer>
     </div>
   );
