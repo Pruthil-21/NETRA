@@ -54,3 +54,7 @@ streaming/.organizer-password
 
 # Local planning/working docs (never pushed)
 docs/
+
+# Federation middleware secrets/local config (machine-specific)
+middleware/.env.federation
+middleware/sources.local.json
