@@ -1,13 +1,16 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { VehicleSearchPanel } from '@/components/search/VehicleSearchPanel';
 import { SightingAlertToasts } from '@/components/search/SightingAlertToasts';
+import TrajectoryTimeline from '@/components/search/TrajectoryTimeline';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import { Camera } from '@/types/camera';
-import { Detection } from '@/types/detection';
+import { Detection, PredictedNextCamera } from '@/types/detection';
+import { buildSightingRoute } from '@/lib/buildSightingRoute';
+import { detectionService } from '@/services/detectionService';
 
 const CameraMap = dynamic(
   () => import('@/components/map/CameraMap').then((mod) => mod.CameraMap || mod.default),
@@ -31,6 +34,46 @@ export default function VehicleSearchPage() {
   const { cameras, isLoading, error } = useCameraRegistry();
   const [sightings, setSightings] = useState<Detection[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
+
+  // Same chronological, camera-resolved list CameraMap draws its route from
+  // (see lib/buildSightingRoute.ts) -- shared so the timeline's stop N is
+  // always CameraMap's point N.
+  const resolvedRoute = useMemo(() => buildSightingRoute(sightings, cameras), [sightings, cameras]);
+  const [timelineIndex, setTimelineIndex] = useState(0);
+
+  // A fresh search (or a poll landing a new sighting) jumps the scrubber to
+  // the most recent stop -- the "where is it now" default -- rather than
+  // resetting mid-scrub every 5s while the background poll in
+  // VehicleSearchPanel is merely re-confirming the same result set.
+  useEffect(() => {
+    setTimelineIndex(resolvedRoute.length === 0 ? 0 : resolvedRoute.length - 1);
+    // Only re-runs when the count of resolved sightings actually changes
+    // (new search, or a poll landing a genuinely new sighting) -- an
+    // unchanged-result poll tick doesn't touch resolvedRoute.length, so it
+    // never yanks the scrubber away from wherever the user left it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedRoute.length]);
+
+  const [predictedNext, setPredictedNext] = useState<PredictedNextCamera[]>([]);
+  const lastCameraId = resolvedRoute.length > 0 ? resolvedRoute[resolvedRoute.length - 1].camera.id : null;
+
+  // Predicted-next is only meaningful from the plate's actual current
+  // position (the LAST resolved stop's camera) -- keyed on that camera id
+  // alone, so it doesn't refetch on every poll tick unless the plate has
+  // genuinely moved to a new camera since the last check.
+  useEffect(() => {
+    if (lastCameraId == null) {
+      setPredictedNext([]);
+      return;
+    }
+    let cancelled = false;
+    detectionService.predictNextCamera(lastCameraId).then((candidates) => {
+      if (!cancelled) setPredictedNext(candidates);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [lastCameraId]);
 
   return (
     <div className="flex-1 flex overflow-hidden min-h-0">
@@ -70,8 +113,17 @@ export default function VehicleSearchPage() {
             selectedCamera={selectedCamera}
             onSelectCamera={setSelectedCamera}
             sightings={sightings}
+            timelineIndex={resolvedRoute.length > 1 ? timelineIndex : undefined}
           />
           <SightingAlertToasts sightings={sightings} cameras={cameras} />
+          {resolvedRoute.length > 1 && (
+            <TrajectoryTimeline
+              resolved={resolvedRoute}
+              currentIndex={timelineIndex}
+              onIndexChange={setTimelineIndex}
+              predictedNext={predictedNext}
+            />
+          )}
         </div>
         {/* Clicking a sighting (map point or sidebar row) sets selectedCamera,
             which mounts this with key={camera.id} inside CameraDetailDrawer ->
