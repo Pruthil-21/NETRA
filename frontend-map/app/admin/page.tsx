@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Users, ShieldCheck, Map as MapIcon, ScrollText, UserPlus, Radio, LucideIcon } from 'lucide-react';
+import { Users, ShieldCheck, Map as MapIcon, ScrollText, UserPlus, Radio, Database, LucideIcon } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { UsersSection } from './UsersSection';
 import { SecurityConfigurationSection } from './SecurityConfigurationSection';
@@ -9,6 +9,7 @@ import { CircleManagementSection } from './CircleManagementSection';
 import { AuditLogSection } from './AuditLogSection';
 import { ApprovalsSection } from './ApprovalsSection';
 import { FederationSection } from './FederationSection';
+import { DataConsoleSection } from './DataConsoleSection';
 
 interface NavItem {
   id: string;
@@ -28,6 +29,12 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'circles', label: 'Areas', icon: MapIcon, permission: 'manage_circles' },
   { id: 'federation', label: 'Federation', icon: Radio, permission: 'manage_cameras' },
   { id: 'audit-log', label: 'Audit Log', icon: ScrollText, permission: 'view_audit_logs' },
+  // Gated on manage_cameras rather than a data-console-specific permission --
+  // the section itself further narrows which of the nine entities an officer
+  // actually sees based on each one's own permission (DataConsoleSection's
+  // visibleEntities), so this only needs to be broad enough that anyone with
+  // *any* real use for the console lands here at all.
+  { id: 'data-console', label: 'Data Console', icon: Database, permission: 'manage_cameras', fullBleed: true },
 ];
 
 /** Admin console -- a left-aligned vertical nav (one section per concern),
@@ -97,6 +104,7 @@ export default function AdminPage() {
       )}
       {activeId === 'federation' && <FederationSection />}
       {activeId === 'audit-log' && <AuditLogSection />}
+      {activeId === 'data-console' && <DataConsoleSection onViewAuditLog={() => setActiveId('audit-log')} />}
     </>
   );
 
