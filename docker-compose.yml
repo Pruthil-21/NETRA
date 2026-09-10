@@ -54,6 +54,13 @@ services:
       # unset means those endpoints just report "unavailable".
       RECORDING_SERVICE_URL: "${RECORDING_SERVICE_URL:-}"
       RECORDING_SERVICE_KEY: "${RECORDING_SERVICE_KEY:-}"
+      # DIGDHRISHTI Federation (D:\middleware) camera-inventory proxy target
+      # -- see app/federation_proxy.py. host.docker.internal, not
+      # 127.0.0.1: the federation API is published on the *host's*
+      # loopback (compose.federation.yaml binds 127.0.0.1:8096), and from
+      # inside this container 127.0.0.1 means this container, not the host.
+      FEDERATION_URL: "${FEDERATION_URL:-http://host.docker.internal:8096}"
+      FEDERATION_SERVICE_KEY: "${FEDERATION_SERVICE_KEY:-}"
     ports:
       - "${REGISTRY_HOST_PORT:-8000}:8000"
     depends_on:
