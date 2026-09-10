@@ -26,6 +26,10 @@ _DATA_JOB_ENTITY_PERMISSIONS = {
     "circles": "manage_circles",
     "police_stations": "manage_stations",
     "coverage_targets": "manage_cameras",
+    "plate_sightings": "view_analytics",
+    "traffic_alerts": "view_analytics",
+    "traffic_density": "view_analytics",
+    "traffic_flows": "view_analytics",
 }
 
 

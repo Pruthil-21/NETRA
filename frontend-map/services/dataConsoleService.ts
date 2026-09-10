@@ -16,7 +16,11 @@ export type DataConsoleEntity =
   | 'camera_status_history'
   | 'circles'
   | 'police_stations'
-  | 'coverage_targets';
+  | 'coverage_targets'
+  | 'plate_sightings'
+  | 'traffic_alerts'
+  | 'traffic_density'
+  | 'traffic_flows';
 
 export interface DataJob {
   id: number;

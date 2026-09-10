@@ -14,7 +14,8 @@ import {
 
 type FilterField =
   | 'district' | 'date_range' | 'status' | 'category' | 'role' | 'scope_type'
-  | 'active_only' | 'camera_id' | 'department' | 'badge_number';
+  | 'active_only' | 'camera_id' | 'department' | 'badge_number'
+  | 'plate_number' | 'alert_type' | 'live_or_hour_window';
 
 interface EntityConfig {
   label: string;
@@ -52,12 +53,30 @@ const ENTITY_CONFIG: Record<DataConsoleEntity, EntityConfig> = {
     label: 'Audit Logs', group: 'Security & Audit', permission: 'view_audit_logs',
     fields: ['category', 'badge_number', 'date_range'],
   },
+  plate_sightings: {
+    label: 'Plate Sightings', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['plate_number', 'camera_id', 'district', 'date_range'],
+  },
+  traffic_alerts: {
+    label: 'Traffic Alerts', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['status', 'alert_type', 'district', 'date_range'],
+  },
+  traffic_density: {
+    label: 'Traffic Density', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['live_or_hour_window', 'district'],
+  },
+  traffic_flows: {
+    label: 'Traffic Flows', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['live_or_hour_window', 'district'],
+  },
 };
 
-const GROUP_ORDER = ['Identity & Access', 'Camera Registry', 'Security & Audit'];
+const GROUP_ORDER = ['Identity & Access', 'Camera Registry', 'Security & Audit', 'Traffic Analytics'];
 
 const REGISTRATION_STATUS_OPTIONS = ['pending', 'approved', 'rejected'];
 const OFFICER_STATUS_OPTIONS = ['active', 'pending', 'suspended', 'deactivated'];
+const TRAFFIC_ALERT_STATUS_OPTIONS = ['NEW', 'ACKNOWLEDGED', 'DISMISSED'];
+const TRAFFIC_ALERT_TYPE_OPTIONS = ['density', 'flow'];
 const SCOPE_TYPE_OPTIONS = ['platform', 'district'];
 
 const CATEGORY_META: Record<string, { label: string; icon: LucideIcon }> = {
@@ -100,8 +119,10 @@ interface DataConsoleSectionProps {
  * holds -- pick the entity, narrow it with real filters, see how many rows
  * match before committing, then download as CSV/XLSX/JSON. Reuses the
  * pre-existing generic job engine (admin_ops.py's /admin/data-jobs) rather
- * than a one-off screen per entity; watchlist/detections/traffic-analytics
- * data (backend-watchlist) is a separate phase, not covered here. */
+ * than a one-off screen per entity. The four Traffic Analytics entities
+ * read backend-watchlist-owned tables (detections, traffic_alerts) --
+ * export-only, no import support, same cross-service-same-DB pattern the
+ * rest of this job engine already uses for circles/police_stations. */
 export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) {
   const { permissions } = usePermissions();
 
@@ -128,6 +149,13 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
   const [recentRuns, setRecentRuns] = useState<DataJob[]>([]);
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Live vs. hour-of-day playback for traffic_density/traffic_flows --
+  // mirrors the Map page's own Density/Flow layer window toggle. The two
+  // are mutually exclusive server-side (backend-registry's
+  // _live_or_hour_window_clauses 400s if both or neither are set), so
+  // switching modes clears the other mode's filter keys entirely rather
+  // than leaving a stale one behind.
+  const [windowMode, setWindowMode] = useState<'live' | 'hour'>('live');
 
   const addRecentRun = (job: DataJob) => {
     setRecentRuns((prev) => [job, ...prev].slice(0, MAX_RECENT_RUNS));
@@ -135,9 +163,17 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
 
   // Reset filters/preview/recent-runs whenever the selected entity changes --
   // a district filter (or a just-run job) left over from Cameras has no
-  // meaning once you're looking at Postings.
+  // meaning once you're looking at Postings. traffic_density/traffic_flows
+  // require exactly one of window_minutes/hour, so a fresh default (live,
+  // 30 minutes) is seeded immediately rather than leaving filters empty
+  // (which the preview/export calls would otherwise 400 on).
   useEffect(() => {
-    setFilters({});
+    setWindowMode('live');
+    setFilters(
+      selected && ENTITY_CONFIG[selected].fields.includes('live_or_hour_window')
+        ? { window_minutes: 30 }
+        : {}
+    );
     setPreviewCount(null);
     setError(null);
     setRecentRuns([]);
@@ -332,6 +368,18 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                     />
                   </div>
                 )}
+                {config.fields.includes('plate_number') && (
+                  <div>
+                    <label className={labelClass} htmlFor="filter-plate">Plate Number</label>
+                    <input
+                      id="filter-plate"
+                      className={inputClass}
+                      placeholder="e.g. GJ01AB1234"
+                      value={(filters.plate_number as string) ?? ''}
+                      onChange={(e) => setFilter('plate_number', e.target.value)}
+                    />
+                  </div>
+                )}
                 {config.fields.includes('camera_id') && (
                   <div>
                     <label className={labelClass} htmlFor="filter-camera-id">Camera ID</label>
@@ -383,7 +431,29 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                       onChange={(e) => setFilter('status', e.target.value)}
                     >
                       <option value="">Any</option>
-                      {(selected === 'officers' ? OFFICER_STATUS_OPTIONS : REGISTRATION_STATUS_OPTIONS).map((opt) => (
+                      {(selected === 'officers'
+                        ? OFFICER_STATUS_OPTIONS
+                        : selected === 'traffic_alerts'
+                        ? TRAFFIC_ALERT_STATUS_OPTIONS
+                        : REGISTRATION_STATUS_OPTIONS
+                      ).map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={11} className="absolute right-2 top-[26px] text-slate-500 pointer-events-none" />
+                  </div>
+                )}
+                {config.fields.includes('alert_type') && (
+                  <div className="relative">
+                    <label className={labelClass} htmlFor="filter-alert-type">Alert Type</label>
+                    <select
+                      id="filter-alert-type"
+                      className={`${inputClass} appearance-none pr-7`}
+                      value={(filters.alert_type as string) ?? ''}
+                      onChange={(e) => setFilter('alert_type', e.target.value)}
+                    >
+                      <option value="">Any</option>
+                      {TRAFFIC_ALERT_TYPE_OPTIONS.map((opt) => (
                         <option key={opt} value={opt}>{opt}</option>
                       ))}
                     </select>
@@ -426,6 +496,73 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                   </label>
                 )}
               </div>
+
+              {config.fields.includes('live_or_hour_window') && (
+                <div className="mt-3">
+                  <p className={labelClass}>Window</p>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex rounded border border-line overflow-hidden shrink-0">
+                      {(['live', 'hour'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => {
+                            setWindowMode(mode);
+                            setFilters((prev) => {
+                              const next = { ...prev };
+                              delete next.window_minutes;
+                              delete next.hour;
+                              delete next.date;
+                              if (mode === 'live') next.window_minutes = 30;
+                              else {
+                                next.hour = new Date().getHours();
+                                next.date = new Date().toISOString().slice(0, 10);
+                              }
+                              return next;
+                            });
+                          }}
+                          className={`px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            windowMode === mode ? 'bg-command text-white' : 'bg-ink text-slate-300 hover:bg-panel-raised'
+                          }`}
+                        >
+                          {mode === 'live' ? 'Live' : 'Hour of day'}
+                        </button>
+                      ))}
+                    </div>
+                    {windowMode === 'live' ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={selected === 'traffic_flows' ? 360 : 180}
+                          className={`${inputClass} w-20`}
+                          value={(filters.window_minutes as number) ?? 30}
+                          onChange={(e) => setFilter('window_minutes', Number(e.target.value) || 1)}
+                        />
+                        <span className="text-[11px] text-slate-500">minutes back</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          className={`${inputClass} w-16`}
+                          value={(filters.hour as number) ?? 0}
+                          onChange={(e) => setFilter('hour', Number(e.target.value))}
+                        >
+                          {Array.from({ length: 24 }, (_, h) => (
+                            <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+                          ))}
+                        </select>
+                        <input
+                          type="date"
+                          className={inputClass}
+                          value={(filters.date as string) ?? ''}
+                          onChange={(e) => setFilter('date', e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {config.fields.includes('category') && (
                 <div className="mt-3">
