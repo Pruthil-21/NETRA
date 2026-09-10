@@ -107,9 +107,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     has('manage_circles') ||
     has('view_audit_logs') ||
     has('reset_officer_passwords');
-  const navItems = canSeeAdmin
-    ? [...BASE_NAV_ITEMS, { href: '/admin', label: 'Admin', icon: Shield }]
-    : BASE_NAV_ITEMS;
+  const navItems = [
+    ...BASE_NAV_ITEMS,
+    ...(canSeeAdmin ? [{ href: '/admin', label: 'Admin', icon: Shield }] : []),
+  ];
 
   const handleLogout = () => {
     logout();
