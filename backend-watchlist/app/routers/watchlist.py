@@ -6,7 +6,7 @@ from ..auth import require_role
 from ..database import get_db
 from ..logging_config import logger
 from ..schemas import WatchlistCreate, WatchlistOut
-from ..services import watchlist_service
+from ..services import audit_service, watchlist_service
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -27,4 +27,6 @@ def add_watchlist_entry(
 ):
     created = watchlist_service.create_watchlist_entry(db, entry)
     logger.info(f"watchlist entry added: {created['plate_number']} ({entry.priority} priority, flagged by {entry.dept_flagged})")
+    actor = user.get("badge_number", user.get("sub"))
+    audit_service.log(db, actor, "create", "watchlist", created["id"], reason_code=created["plate_number"])
     return created

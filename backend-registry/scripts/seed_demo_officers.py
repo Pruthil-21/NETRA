@@ -1,6 +1,9 @@
 # backend-registry/scripts/seed_demo_officers.py
 """Seeds one demo officer per RBAC role, each with an active posting.
-Idempotent -- re-running just resets the password and posting.
+Idempotent -- re-running resets the password, posting, and email (back to
+NULL, i.e. 2FA off) -- so a test suite run that sets a demo officer's email
+(login 2FA, password reset, registration tests) can never leak that state
+into an unrelated later run sharing the same dev-time DB.
 Run scripts/seed_rbac.py first (roles must already exist)."""
 import os
 import sys
@@ -34,7 +37,7 @@ def seed():
                     """
                     INSERT INTO officers (badge_number, name, rank, password_hash)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (badge_number) DO UPDATE SET password_hash = EXCLUDED.password_hash
+                    ON CONFLICT (badge_number) DO UPDATE SET password_hash = EXCLUDED.password_hash, email = NULL
                     RETURNING id
                     """,
                     (badge, name, rank, auth_service.hash_password(password)),

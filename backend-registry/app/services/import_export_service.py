@@ -16,12 +16,23 @@ Scope: two entity types wired up end-to-end (cameras, officers) --
 covering both a georeferenced resource and a people-lifecycle one, the two
 shapes every other entity type in this spec would follow. Adding another
 entity type is one more ENTITY_HANDLERS entry, not a new engine."""
+import csv
+import io
 import json
 
+from openpyxl import Workbook
 from pydantic import ValidationError
 
 from ..schemas import CameraCreate
-from . import audit_logs_service, auth_service, cameras_service, registration_service
+from . import (
+    audit_logs_service,
+    auth_service,
+    cameras_service,
+    circles_service,
+    coverage_targets_service,
+    police_stations_service,
+    registration_service,
+)
 
 
 def _validate_camera_row(conn, row: dict):
@@ -37,8 +48,8 @@ def _commit_camera_row(conn, data: dict) -> dict:
     return cameras_service.create_camera(conn, data)
 
 
-def _export_cameras(conn) -> list[dict]:
-    return cameras_service.list_cameras(conn, None)
+def _export_cameras(conn, filters: dict) -> list[dict]:
+    return cameras_service.list_cameras(conn, filters.get("district"))
 
 
 _REQUIRED_OFFICER_FIELDS = {"badge_number", "name", "password"}
@@ -70,31 +81,175 @@ def _commit_officer_row(conn, data: dict) -> dict:
     return {"id": officer_id, "badge_number": data["badge_number"]}
 
 
-def _export_officers(conn) -> list[dict]:
+def _export_officers(conn, filters: dict) -> list[dict]:
+    clauses = []
+    params: list = []
+    if filters.get("status"):
+        clauses.append("status = %s")
+        params.append(filters["status"])
+    if filters.get("date_from"):
+        clauses.append("created_at >= %s")
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        clauses.append("created_at <= %s")
+        params.append(filters["date_to"])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with conn.cursor() as cur:
-        cur.execute("SELECT id, badge_number, name, rank, status FROM officers ORDER BY badge_number")
+        cur.execute(
+            f"SELECT id, badge_number, name, rank, status, created_at FROM officers {where} ORDER BY badge_number",
+            params,
+        )
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
-def _export_audit_logs(conn) -> list[dict]:
-    """Ties the audit log viewer (spec Section 3.5) into this generic
-    exporter rather than being its own one-off, per Section 3.5's own
-    instruction. Capped at the most recent 1000 rows -- a full historical
-    export honoring the viewer's live filter state is a natural follow-up,
-    not implemented in this pass (GET /audit-logs already covers filtered
-    *viewing*, which is the capability Section 3.5 is really about)."""
-    logs, _ = audit_logs_service.list_logs(conn, limit=1000)
+def _export_audit_logs(conn, filters: dict) -> list[dict]:
+    """Ties the audit log viewer into this generic exporter rather than
+    being its own one-off. list_logs is paginated (max 200/page, an
+    officer scrolling a live view) -- an export instead pages through
+    every match via its own cursor contract until exhausted, so a filtered
+    export is genuinely complete, not silently truncated at one page."""
+    logs: list[dict] = []
+    cursor = None
+    while True:
+        page, cursor = audit_logs_service.list_logs(
+            conn,
+            badge_number=filters.get("badge_number"),
+            resource_type=filters.get("resource_type"),
+            category=filters.get("category"),
+            district=filters.get("district"),
+            date_from=filters.get("date_from"),
+            date_to=filters.get("date_to"),
+            cursor=cursor,
+            limit=200,
+        )
+        logs.extend(page)
+        if cursor is None:
+            break
     return logs
 
 
-# Export-only entity: audit_logs is an append-only, system-generated
-# table -- "importing" one doesn't mean anything, so it carries no
+def _export_postings(conn, filters: dict) -> list[dict]:
+    clauses = []
+    params: list = []
+    if filters.get("role"):
+        clauses.append("r.name = %s")
+        params.append(filters["role"])
+    if filters.get("scope_type"):
+        clauses.append("p.scope_type = %s")
+        params.append(filters["scope_type"])
+    if filters.get("active_only"):
+        clauses.append("p.is_active")
+    if filters.get("date_from"):
+        clauses.append("p.created_at >= %s")
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        clauses.append("p.created_at <= %s")
+        params.append(filters["date_to"])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT p.id, o.badge_number, o.name AS officer_name, r.name AS role,
+                   p.scope_type, p.scope_value, p.is_active, p.assigned_by,
+                   p.created_at, p.ended_at
+            FROM postings p
+            JOIN officers o ON o.id = p.officer_id
+            JOIN roles r ON r.id = p.role_id
+            {where}
+            ORDER BY p.created_at DESC
+            """,
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _export_registration_requests(conn, filters: dict) -> list[dict]:
+    clauses = []
+    params: list = []
+    if filters.get("status"):
+        clauses.append("rr.status = %s")
+        params.append(filters["status"])
+    if filters.get("department"):
+        clauses.append("rr.department = %s")
+        params.append(filters["department"])
+    if filters.get("date_from"):
+        clauses.append("rr.created_at >= %s")
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        clauses.append("rr.created_at <= %s")
+        params.append(filters["date_to"])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT rr.id, o.badge_number, o.name, rr.department, rr.contact_info, rr.status,
+                   rr.reviewed_by, rr.reviewed_at, rr.rejection_reason, rr.created_at
+            FROM registration_requests rr
+            JOIN officers o ON o.id = rr.officer_id
+            {where}
+            ORDER BY rr.created_at DESC
+            """,
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _export_camera_status_history(conn, filters: dict) -> list[dict]:
+    return cameras_service.list_camera_status_history(
+        conn,
+        camera_id=filters.get("camera_id"),
+        district=filters.get("district"),
+        date_from=filters.get("date_from"),
+        date_to=filters.get("date_to"),
+    )
+
+
+def _filter_by_district(rows: list[dict], filters: dict) -> list[dict]:
+    """Shared by the small reference-data exports below (circles/police
+    stations/coverage targets) -- none of their own list_* functions
+    support server-side district filtering, and at this table size (tens
+    to low hundreds of rows) filtering the already-fetched list in Python
+    is simpler than adding a WHERE clause to three separate services for
+    one shared filter."""
+    district = filters.get("district")
+    if not district:
+        return rows
+    return [r for r in rows if r.get("district") == district]
+
+
+def _export_circles(conn, filters: dict) -> list[dict]:
+    # circles_service.list_circles already filters server-side -- no need
+    # for the Python-side _filter_by_district helper the two tables below
+    # (which have no such support) rely on.
+    return circles_service.list_circles(conn, filters.get("district"))
+
+
+def _export_police_stations(conn, filters: dict) -> list[dict]:
+    return _filter_by_district(police_stations_service.list_stations(conn), filters)
+
+
+def _export_coverage_targets(conn, filters: dict) -> list[dict]:
+    return _filter_by_district(coverage_targets_service.list_targets(conn), filters)
+
+
+# Export-only entities: append-only/system-generated data (audit_logs,
+# camera_status_history) or data whose only real "import" would be a
+# sensitive RBAC/lifecycle action better done through its own dedicated
+# endpoint (postings, registration_requests) -- none carry a
 # validate/commit handler. create_import_job checks for that explicitly.
 ENTITY_HANDLERS = {
     "cameras": {"validate": _validate_camera_row, "commit": _commit_camera_row, "export": _export_cameras},
     "officers": {"validate": _validate_officer_row, "commit": _commit_officer_row, "export": _export_officers},
     "audit_logs": {"export": _export_audit_logs},
+    "postings": {"export": _export_postings},
+    "registration_requests": {"export": _export_registration_requests},
+    "camera_status_history": {"export": _export_camera_status_history},
+    "circles": {"export": _export_circles},
+    "police_stations": {"export": _export_police_stations},
+    "coverage_targets": {"export": _export_coverage_targets},
 }
 
 
@@ -109,10 +264,38 @@ def get_job(conn, job_id: int) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, entity_type, direction, format, status, total_rows, success_rows, failed_rows, "
-            "row_results, failed_rows_payload, run_by, created_at FROM import_export_jobs WHERE id = %s",
+            "row_results, failed_rows_payload, filters, run_by, created_at FROM import_export_jobs WHERE id = %s",
             (job_id,),
         )
         return _row_to_dict(cur, cur.fetchone())
+
+
+def list_jobs(conn, entity_type: str | None = None, limit: int = 50) -> list[dict]:
+    """Job history for the Data Console panel -- newest first. Deliberately
+    excludes row_results/failed_rows_payload (fetched separately via
+    get_job when a caller actually wants one job's full detail) so a
+    history list of, say, 50 jobs doesn't pull every row of every past
+    export back over the wire just to render a list of summaries."""
+    limit = max(1, min(limit, 200))
+    clauses = []
+    params: list = []
+    if entity_type is not None:
+        clauses.append("entity_type = %s")
+        params.append(entity_type)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT id, entity_type, direction, format, status, total_rows, success_rows, failed_rows,
+                   filters, run_by, created_at
+            FROM import_export_jobs {where}
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (*params, limit),
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def _process_rows(conn, entity_type: str, rows: list[dict]) -> tuple[list[dict], list[dict], int]:
@@ -175,23 +358,101 @@ def resubmit_failed_rows(conn, job_id: int, run_by: str) -> dict | None:
     return create_import_job(conn, job["entity_type"], job["format"], failed_rows, run_by)
 
 
-def export_entity(conn, entity_type: str, format: str, run_by: str) -> dict:
+def _export_rows(conn, entity_type: str, filters: dict) -> list[dict]:
     if entity_type not in ENTITY_HANDLERS:
         raise ValueError(f"Unknown entity_type '{entity_type}'")
-    rows = ENTITY_HANDLERS[entity_type]["export"](conn)
+    handler = ENTITY_HANDLERS[entity_type]
+    if "export" not in handler:
+        raise ValueError(f"Entity type '{entity_type}' does not support export")
+    return handler["export"](conn, filters or {})
+
+
+def preview_count(conn, entity_type: str, filters: dict) -> int:
+    """How many rows this filter set would export, without creating a job
+    row -- lets the Data Console show a live count before an officer
+    commits to running it. Runs the same filtered query export_entity
+    would and counts the result rather than a parallel COUNT(*) per
+    entity: at this data's scale (hundreds to low thousands of rows, not
+    millions) that's simpler and can never drift from what export
+    actually returns."""
+    return len(_export_rows(conn, entity_type, filters))
+
+
+def export_entity(conn, entity_type: str, format: str, run_by: str, filters: dict | None = None) -> dict:
+    filters = filters or {}
+    rows = _export_rows(conn, entity_type, filters)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO import_export_jobs
-                (entity_type, direction, format, status, total_rows, success_rows, failed_rows, row_results, run_by)
-            VALUES (%s, 'export', %s, 'committed', %s, %s, 0, %s, %s)
+                (entity_type, direction, format, status, total_rows, success_rows, failed_rows,
+                 row_results, filters, run_by)
+            VALUES (%s, 'export', %s, 'committed', %s, %s, 0, %s, %s, %s)
             RETURNING id
             """,
-            # default=str: audit_logs rows carry a datetime `timestamp` --
+            # default=str: several entities carry a datetime column (audit_logs'
+            # timestamp, postings'/registration_requests' created_at, ...) --
             # json.dumps can't serialize that natively, and a plain str()
             # (ISO-ish) is exactly what an exported row should show anyway.
-            (entity_type, format, len(rows), len(rows), json.dumps(rows, default=str), run_by),
+            (entity_type, format, len(rows), len(rows), json.dumps(rows, default=str), json.dumps(filters), run_by),
         )
         job_id = cur.fetchone()[0]
     conn.commit()
     return get_job(conn, job_id)
+
+
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _csv_safe(value) -> str:
+    """Prefix any cell value starting with a character Excel/Sheets would
+    interpret as the start of a formula with a leading single-quote, so a
+    value like "=cmd(...)" written as literal text, never executed -- same
+    guard backend-watchlist's detections CSV export already uses."""
+    text = "" if value is None else str(value)
+    if text.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + text
+    return text
+
+
+def serialize_rows(rows: list[dict], format: str) -> tuple[bytes, str]:
+    """Turns a job's already-fetched row_results into an actual
+    downloadable file -- (content_bytes, media_type). Column order is
+    every key across every row, first-seen order, since a real export
+    (postings, registration_requests, ...) can have rows shaped slightly
+    differently from each other and a fixed header still has to cover all
+    of them."""
+    columns: list[str] = []
+    seen = set()
+    for row in rows:
+        for key in row:
+            if key not in seen:
+                seen.add(key)
+                columns.append(key)
+
+    if format == "json":
+        return json.dumps(rows, default=str, indent=2).encode("utf-8"), "application/json"
+
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(columns)
+        for row in rows:
+            writer.writerow([_csv_safe(row.get(col)) for col in columns])
+        return buffer.getvalue().encode("utf-8"), "text/csv"
+
+    if format == "xlsx":
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(columns)
+        for row in rows:
+            # openpyxl rejects tz-aware datetimes outright and has no
+            # formula-injection guard of its own -- every cell goes through
+            # the same _csv_safe stringification CSV uses, so a plain-text
+            # spreadsheet cell is exactly what an exported row shows here too.
+            sheet.append([_csv_safe(row.get(col)) for col in columns])
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        return buffer.getvalue(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    raise ValueError(f"Unsupported format '{format}'")

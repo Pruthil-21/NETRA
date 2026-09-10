@@ -27,6 +27,7 @@ function makeFeed(id: string, department = 'Anand'): CameraFeed {
 
 vi.mock('@/context/CameraRegistryContext', () => ({
   useCameraRegistry: () => ({ cameras: [] }),
+  HEALTH_CHECK_INTERVAL_MS: 20000,
 }));
 
 vi.mock('@/services/circlesService', () => ({
@@ -35,6 +36,10 @@ vi.mock('@/services/circlesService', () => ({
 
 vi.mock('@/components/AlertBanner', () => ({
   AlertBanner: () => null,
+}));
+
+vi.mock('@/context/ImmersiveModeContext', () => ({
+  useImmersiveMode: () => ({ isImmersive: false, setImmersive: vi.fn() }),
 }));
 
 beforeEach(() => {

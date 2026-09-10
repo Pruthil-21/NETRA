@@ -1,4 +1,4 @@
-import { Detection, DetectionSearchParams, RawVehicleTraceResponse } from '@/types/detection';
+import { Detection, DetectionSearchParams, PredictedNextCamera, RawVehicleTraceResponse } from '@/types/detection';
 import { authHeaders, unauthorizedError, isJwtConfigured } from '@/lib/apiAuth';
 import { plateSimilarity, PLATE_MATCH_THRESHOLD } from '@/lib/plateSimilarity';
 
@@ -16,6 +16,8 @@ export const detectionService = {
     // below (the real, permanent contract) is untouched either way.
     if (params.scenario_run_id && params.plate_number) {
       const query = new URLSearchParams({ scenario_run_id: params.scenario_run_id });
+      if (params.from) query.set('from', params.from);
+      if (params.to) query.set('to', params.to);
       const response = await fetch(
         `${WATCHLIST_API_URL}/vehicle-traces/${encodeURIComponent(params.plate_number)}?${query.toString()}`,
         { headers: authHeaders(), cache: 'no-store' }
@@ -42,6 +44,9 @@ export const detectionService = {
         confidence: sighting.confidence,
         scenario_run_id: trace.scenario_run_id,
         route_label: trace.label,
+        bearing_deg: sighting.bearing_deg ?? undefined,
+        speed_kmh: sighting.speed_kmh ?? undefined,
+        anomaly: sighting.anomaly,
       }));
     }
 
@@ -74,5 +79,26 @@ export const detectionService = {
     return all.filter(
       (d) => plateSimilarity(d.plate_number.toUpperCase(), target) >= PLATE_MATCH_THRESHOLD
     );
+  },
+
+  /** "Where has the network historically gone next from this camera" --
+   * standalone so a normal fuzzy-matched plate search (the branch above,
+   * which never calls GET /vehicle-traces at all) can still show a
+   * prediction from whichever camera a plate's most recent sighting landed
+   * at. Swallows failures to an empty list rather than throwing -- a
+   * missing prediction shouldn't block the rest of the search from
+   * rendering. */
+  async predictNextCamera(cameraId: number): Promise<PredictedNextCamera[]> {
+    try {
+      const response = await fetch(`${WATCHLIST_API_URL}/vehicle-traces/predict-next/${cameraId}`, {
+        headers: authHeaders(),
+        cache: 'no-store',
+      });
+      if (!response.ok) return [];
+      const body: { candidates: PredictedNextCamera[] } = await response.json();
+      return body.candidates;
+    } catch {
+      return [];
+    }
   },
 };

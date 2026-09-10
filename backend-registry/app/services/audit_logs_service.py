@@ -23,6 +23,7 @@ CATEGORIES: dict[str, dict[str, list[str]]] = {
     "infrastructure": {"resource_types": ["circle", "police_station", "coverage_target"]},
     "alerts": {"resource_types": ["alert"]},
     "detections": {"resource_types": ["detection"]},
+    "data_jobs": {"resource_types": ["import_export_job"]},
 }
 
 _KNOWN_ACTIONS = {a for c in CATEGORIES.values() for a in c.get("actions", [])}

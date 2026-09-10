@@ -3,12 +3,50 @@ import pytest
 from app.config import settings
 from app.db import get_conn
 from app.main import app
+from app.services import email_service
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def captured_otps(monkeypatch):
+    """Every real OTP send (login 2FA, self-service password reset,
+    registration-email verification) goes through
+    email_service.send_otp_email -- monkeypatched here, for every test in
+    this suite, to capture (to, code, purpose) instead of calling Resend
+    for real.
+
+    autouse: without this, any test that logs in as an officer whose email
+    happens to be set -- including one left behind by an earlier test
+    sharing this same dev-time Postgres DB -- 503s trying to reach Resend
+    (email_service.EmailSendError, converted to a hard 503 in auth.py by
+    design: a caller mid-2FA needs to know a code never actually reached
+    the officer). In CI, where RESEND_API_KEY is never set at all, that
+    503 fires unconditionally on every such login. Neither is a real bug
+    in the app; it's tests making a real network call they were never
+    meant to.
+
+    A test that needs the actual code back (to drive a verify-otp call)
+    requests this fixture directly and reads its returned list, the same
+    way test_email_2fa.py and test_registration_approval.py already did
+    with their own now-removed local copies of this exact fixture."""
+    sent: list[tuple[str, str, str]] = []
+
+    def fake_send_otp_email(to, code, purpose):
+        sent.append((to, code, purpose))
+
+    monkeypatch.setattr(email_service, "send_otp_email", fake_send_otp_email)
+    return sent
 
 
 @pytest.fixture
 def client():
-    return TestClient(app)
+    # Must be used as a context manager -- Starlette's TestClient only fires
+    # @app.on_event("startup") handlers this way, which is what lets
+    # recording_health_stream.manager capture the running event loop during
+    # tests (see main.py), exactly as it would under real uvicorn. Same fix
+    # backend-watchlist's own client fixture already carries.
+    with TestClient(app) as c:
+        yield c
 
 
 def make_token(role: str, sub: str = "test-user"):
@@ -132,4 +170,20 @@ def circle_test_rows():
         with get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM circles WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()
+
+
+@pytest.fixture
+def data_job_test_rows():
+    """Guaranteed cleanup for import_export_jobs rows a test creates, even
+    if an assertion fails first -- this table had no such fixture before
+    (every existing Data Console/import-export test left its jobs behind
+    permanently), which is exactly what let ordinary test runs quietly
+    accumulate well over a hundred junk rows in the shared dev database."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM import_export_jobs WHERE id = ANY(%s)", (created_ids,))
             conn.commit()

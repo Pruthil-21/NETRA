@@ -1,6 +1,6 @@
-# NETRA — Scalability Plan
+# DIGDHRISHTI — Scalability Plan
 
-This document combines measured behavior from NETRA's ML and streaming
+This document combines measured behavior from DIGDHRISHTI's ML and streaming
 prototype with an infrastructure plan for scaling from approximately
 30–50 demonstration cameras to roughly 80,000 registered cameras across
 Gujarat.
@@ -104,12 +104,12 @@ otherwise or fake precision it can't back up — the honest statement is
 "this needs a real costed infrastructure proposal before statewide
 rollout is a budget decision, not a rough estimate in a hackathon repo."
 
-**Weighed against the actual problem.** The stated problem NETRA
+**Weighed against the actual problem.** The stated problem DIGDHRISHTI
 addresses isn't "no analytics anywhere" — it's 26 departments running
 independent, duplicated CCTV infrastructure with no unified registry,
 no shared analytics, and slow cross-department investigation when a
 plate or incident needs to be traced across jurisdictions. The
-comparison that actually matters isn't "cost of NETRA vs. cost of
+comparison that actually matters isn't "cost of DIGDHRISHTI vs. cost of
 nothing" — it's "cost of a unified layer vs. the ongoing cost of 26
 departments each separately building (or not building) the same
 capability, and the real cost of slow cross-department correlation
@@ -181,7 +181,7 @@ in production.
 
 ## 4. Network and Bandwidth Planning
 
-Observed NETRA HLS manifests advertised approximately 4–10 Mbps for
+Observed DIGDHRISHTI HLS manifests advertised approximately 4–10 Mbps for
 1080p organizer feeds. The video codec and quality dominate bandwidth;
 changing RTSP ingest into HLS or WebRTC changes delivery behavior but
 does not remove the underlying media bitrate.
@@ -201,7 +201,7 @@ regional edges or a CDN so multiple viewers do not repeatedly pull the
 same media from a relay. WebRTC should use an SFU for multi-viewer cases;
 one direct connection per viewer would multiply relay egress.
 
-NETRA should use tiered ingest:
+DIGDHRISHTI should use tiered ingest:
 
 1. Keep registry metadata and health status available for all cameras.
 2. Continuously ingest only priority checkpoints, active watchlist
@@ -233,7 +233,7 @@ live-consumption constraint and is also the most practical statewide
 storage design.
 
 At statewide scale, existing departmental VMS/NVR systems should remain
-the systems of record for video retention. NETRA should centrally store
+the systems of record for video retention. DIGDHRISHTI should centrally store
 only:
 
 - Camera registry and ownership metadata.
@@ -293,7 +293,7 @@ Required recovery controls include:
   disk pressure, CPU/GPU saturation, and database replication lag.
 - Configuration and secrets stored outside individual relay machines.
 
-Because NETRA does not centrally retain video, relay failure has no video
+Because DIGDHRISHTI does not centrally retain video, relay failure has no video
 archive recovery requirement: live viewing is unavailable during the
 outage, while departmental VMS retention remains intact. Registry,
 watchlist, detection, and audit data do require recovery.

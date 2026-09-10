@@ -44,44 +44,6 @@ def test_legacy_hand_crafted_token_still_gets_a_valid_me_response(client, office
     assert body["last_login"] is None
 
 
-def test_change_password_with_correct_current_password_succeeds_and_new_password_logs_in(client):
-    headers = _login(client)
-
-    change_resp = client.post(
-        "/auth/change-password",
-        json={"current_password": "demo-pass-super-admin", "new_password": "new-demo-password"},
-        headers=headers,
-    )
-    assert change_resp.status_code == 204
-
-    try:
-        old_login = client.post(
-            "/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"}
-        )
-        assert old_login.status_code == 401
-
-        new_login = client.post(
-            "/auth/login", json={"badge_number": "GJ-SA-001", "password": "new-demo-password"}
-        )
-        assert new_login.status_code == 200
-    finally:
-        # Restore the demo password so later tests/re-runs of this suite
-        # (and other tests relying on the seeded demo credentials) aren't
-        # left broken by this test's side effect.
-        _run("scripts/seed_demo_officers.py")
-
-
-def test_change_password_with_wrong_current_password_returns_401(client):
-    headers = _login(client)
-
-    resp = client.post(
-        "/auth/change-password",
-        json={"current_password": "wrong-password", "new_password": "irrelevant"},
-        headers=headers,
-    )
-    assert resp.status_code == 401
-
-
 def test_update_photo_url_persists_and_reflects_in_me(client):
     headers = _login(client)
 

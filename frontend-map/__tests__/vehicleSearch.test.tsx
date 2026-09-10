@@ -76,7 +76,16 @@ describe('VehicleSearchPanel', () => {
     });
 
     expect(detectionService.search).toHaveBeenCalledWith({ plate_number: 'GJ01AB1234' });
-    expect(onResultsChange).toHaveBeenCalledWith(MOCK_DETECTIONS);
+    // onResultsChange fires from a useEffect keyed on `results` -- a
+    // passive effect React schedules to run *after* the paint the DOM
+    // assertions above already waited for, not synchronously with it. Under
+    // real system load (this file run alongside dozens of others in
+    // parallel) that effect flush can lag behind the paint by enough to
+    // miss a bare synchronous assertion here -- wait for the actual
+    // condition instead of assuming it's already settled.
+    await waitFor(() => {
+      expect(onResultsChange).toHaveBeenCalledWith(MOCK_DETECTIONS);
+    });
 
     fireEvent.click(screen.getByText('Sector 10 CH Road Junction'));
     expect(onSelectSighting).toHaveBeenCalledWith(MOCK_CAMERAS[0]);

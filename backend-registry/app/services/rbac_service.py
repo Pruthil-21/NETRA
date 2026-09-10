@@ -164,6 +164,34 @@ def update_duty(
     return get_duty(conn, duty_id)
 
 
+def duty_in_use_role_names(conn, duty_id: int) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT r.name FROM role_duties rd JOIN roles r ON r.id = rd.role_id WHERE rd.duty_id = %s ORDER BY r.name",
+            (duty_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def delete_duty(conn, duty_id: int) -> bool:
+    """Hard-deletes a duty only when no role is currently composed from it
+    -- duty_permissions/role_duties both cascade via FK ON DELETE CASCADE,
+    so an in-use duty would otherwise silently shrink every role holding
+    it the instant this runs. Same in-use guard as delete_role, just
+    checked here instead of relying on the FK (which would happily let it
+    through with no error)."""
+    duty = get_duty(conn, duty_id)
+    if duty is None:
+        return False
+    in_use = duty_in_use_role_names(conn, duty_id)
+    if in_use:
+        raise ValueError(f"Duty '{duty['name']}' is assigned to role(s): {', '.join(in_use)}")
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM duties WHERE id = %s", (duty_id,))
+    conn.commit()
+    return True
+
+
 def get_role_duty_ids(conn, role_id: int) -> list[int]:
     with conn.cursor() as cur:
         cur.execute("SELECT duty_id FROM role_duties WHERE role_id = %s", (role_id,))
@@ -267,75 +295,6 @@ def reactivate_role(conn, role_id: int) -> dict | None:
         cur.execute("UPDATE roles SET is_active = true WHERE id = %s", (role_id,))
     conn.commit()
     return get_role(conn, role_id)
-
-
-# --- Separation-of-Duty rule engine (v2 spec, Phase D, Section 3.8) --------
-# Generalizes Task 6's single hardcoded alert-escalation rule (which stays
-# exactly as-is in backend-watchlist -- an activity-level check, "can't
-# escalate what you already acted on") to role-pair conflicts checked at
-# posting-assignment time instead: two roles that must never both be
-# actively held by the same officer at once.
-
-
-def list_sod_rules(conn) -> list[dict]:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT sr.id, sr.role_a_id, ra.name AS role_a_name, sr.role_b_id, rb.name AS role_b_name,
-                   sr.description, sr.created_at
-            FROM sod_rules sr
-            JOIN roles ra ON ra.id = sr.role_a_id
-            JOIN roles rb ON rb.id = sr.role_b_id
-            ORDER BY sr.created_at
-            """
-        )
-        cols = [c.name for c in cur.description]
-        return [dict(zip(cols, row)) for row in cur.fetchall()]
-
-
-def create_sod_rule(conn, role_id_1: int, role_id_2: int, description: str | None) -> dict:
-    if role_id_1 == role_id_2:
-        raise ValueError("A role cannot conflict with itself")
-    role_a_id, role_b_id = sorted((role_id_1, role_id_2))
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO sod_rules (role_a_id, role_b_id, description) VALUES (%s, %s, %s) RETURNING id",
-            (role_a_id, role_b_id, description),
-        )
-        rule_id = cur.fetchone()[0]
-    conn.commit()
-    return next(r for r in list_sod_rules(conn) if r["id"] == rule_id)
-
-
-def delete_sod_rule(conn, rule_id: int) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM sod_rules WHERE id = %s RETURNING id", (rule_id,))
-        found = cur.fetchone() is not None
-    conn.commit()
-    return found
-
-
-def find_sod_conflict(conn, officer_id: int, candidate_role_id: int) -> dict | None:
-    """Checked before adding a new posting (spec Section 3.8): would this
-    role, combined with any of the officer's OTHER currently-active
-    postings' roles, form a configured conflicting pair? Returns the
-    conflicting rule (with both role names) if so, else None."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT DISTINCT role_id FROM postings WHERE officer_id = %s AND is_active "
-            "AND (expires_at IS NULL OR expires_at > now())",
-            (officer_id,),
-        )
-        held_role_ids = {row[0] for row in cur.fetchall()}
-    if not held_role_ids:
-        return None
-    for rule in list_sod_rules(conn):
-        pair = {rule["role_a_id"], rule["role_b_id"]}
-        if candidate_role_id in pair:
-            other = (pair - {candidate_role_id}).pop()
-            if other in held_role_ids:
-                return rule
-    return None
 
 
 # --- Draft/Publish for role edits (v2 spec, Phase D, Section 2.4/3.1) -----

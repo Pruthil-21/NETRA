@@ -13,6 +13,7 @@ import {
   MapPin,
   ShieldAlert,
   Radar,
+  Database,
   MoreHorizontal,
   LucideIcon,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ const CATEGORY_META: Record<string, { label: string; icon: LucideIcon; className
   infrastructure: { label: 'Infrastructure', icon: MapPin, className: 'bg-command/10 text-command border-command/30' },
   alerts: { label: 'Alerts', icon: ShieldAlert, className: 'bg-signal-red/10 text-signal-red border-signal-red/30' },
   detections: { label: 'Detections', icon: Radar, className: 'bg-slate-500/10 text-slate-400 border-slate-500/30' },
+  data_jobs: { label: 'Data Jobs', icon: Database, className: 'bg-command/10 text-command border-command/30' },
   other: { label: 'Other', icon: MoreHorizontal, className: 'bg-slate-500/10 text-slate-400 border-slate-500/30' },
 };
 
@@ -64,6 +66,9 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
   'status_change:alert': "Changed an alert's status",
   'create:alert': 'Watchlist alert generated',
   'create:detection': 'Plate detection recorded',
+  'data_job_export:import_export_job': 'Ran a data export',
+  'data_job_import:import_export_job': 'Ran a data import',
+  'data_job_resubmit:import_export_job': 'Resubmitted failed import rows',
 };
 
 function describeLog(log: AuditLogOut): string {

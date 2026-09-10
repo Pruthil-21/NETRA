@@ -60,7 +60,16 @@ async function fetchRegistryCameras(): Promise<Camera[]> {
 export const HEALTH_CHECK_INTERVAL_MS = 20000;
 const HEALTH_CHECK_TIMEOUT_MS = 5000;
 
-async function probeStreamReachable(url: string): Promise<boolean> {
+// Only ever reached as a fallback (see probeStreamReachable below) for a
+// camera id backend-registry has no row for at all -- the fixed test-rig
+// (lib/testCameras.ts), vehicle-trace demo, and manually-added cameras
+// (localStorage-only, see lib/manualCameras.ts) all exist purely in the
+// browser, so there's no DB-backed id the backend could ever check for
+// them. A same-origin-checked fetch here is correct (not no-cors) whenever
+// the host actually sends CORS headers; where it doesn't, this throws and
+// reports offline -- a real limitation for exactly this narrow fallback
+// case, not the false-positive bug the backend check below fixes.
+async function legacyProbeStreamReachable(url: string): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
   try {
@@ -68,6 +77,38 @@ async function probeStreamReachable(url: string): Promise<boolean> {
     return res.ok;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Real, server-side reachability for a registry camera's HLS stream --
+// backend-registry does the actual GET itself (see
+// stream_health_service.py), which isn't subject to the browser's
+// CORS/no-cors blind spot a client-side check has (see
+// legacyProbeStreamReachable's docstring, and useCameraFeeds.ts's matching
+// fix for the Dashboard). A 404 means this camera id has no backend row at
+// all -- one of the browser-only fixed/manual sources -- so it falls back
+// to the legacy client-side check, the only option left for something the
+// backend has never heard of.
+async function probeStreamReachable(cameraId: number, fallbackUrl: string | null): Promise<boolean> {
+  const registryApiUrl = process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${registryApiUrl}/cameras/${cameraId}/live-check`, {
+      headers: authHeaders(),
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (res.status === 404) {
+      return fallbackUrl ? legacyProbeStreamReachable(fallbackUrl) : false;
+    }
+    if (!res.ok) return false;
+    const data: { reachable: boolean } = await res.json();
+    return data.reachable;
+  } catch {
+    return fallbackUrl ? legacyProbeStreamReachable(fallbackUrl) : false;
   } finally {
     clearTimeout(timer);
   }
@@ -123,10 +164,18 @@ interface RegistryContextType {
 }
 
 const initialFilters: CameraFilters = {
-  department: 'All Departments',
+  departments: [],
+  circleIds: [],
   connectivity: 'all',
   health: 'all',
   searchQuery: '',
+  mapLayer: 'none',
+  densityMode: 'live',
+  densityWindowMinutes: 30,
+  densityHour: new Date().getHours(),
+  flowMode: 'live',
+  flowWindowMinutes: 30,
+  flowHour: new Date().getHours(),
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
@@ -245,11 +294,14 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
 
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
-      // 1. Department filter (handles case-insensitive match & 'All Departments')
+      // 1. Location filter -- a camera passes if it's in any selected city
+      // (department) OR any selected area (circle); picking a city and a
+      // specific area elsewhere means "either," not "both." No selection at
+      // all means every location passes.
       const matchesDept =
-        !filters.department ||
-        filters.department === 'All Departments' ||
-        cam.dept?.toLowerCase() === filters.department.toLowerCase();
+        (filters.departments.length === 0 && filters.circleIds.length === 0) ||
+        filters.departments.some((d) => cam.dept?.toLowerCase() === d.toLowerCase()) ||
+        (cam.circle_id != null && filters.circleIds.includes(cam.circle_id));
 
       // 2. Connectivity filter (online / offline / all)
       const matchesConnectivity =
@@ -358,8 +410,9 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
           }
 
           const reachable = whepUrl
-            ? (await probeWebRtcReachable(whepUrl)) || (stream.url ? await probeStreamReachable(stream.url) : false)
-            : await probeStreamReachable(stream.url!);
+            ? (await probeWebRtcReachable(whepUrl)) ||
+              (stream.url ? await probeStreamReachable(cam.id, stream.url) : false)
+            : await probeStreamReachable(cam.id, stream.url ?? null);
 
           if (!cancelled) updateCameraConnectivity(cam.id, reachable ? 'online' : 'offline');
         })

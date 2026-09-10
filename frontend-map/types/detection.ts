@@ -26,6 +26,27 @@ export interface Detection {
    * simulated camera sightings"), from GET /vehicle-traces' top-level
    * `label`. Only present on scenario-run results. */
   route_label?: string;
+  /** Inferred direction/speed of the leg from the previous sighting to this
+   * one (undefined for the first sighting, or when either point lacks
+   * coordinates) -- see backend-watchlist's services/geo.py. Only present
+   * on GET /vehicle-traces results; the general /detections search doesn't
+   * compute these. */
+  bearing_deg?: number;
+  speed_kmh?: number;
+  /** "improbable_speed" / "extended_gap" when this leg trips a heuristic
+   * worth a second look (see backend-watchlist's geo.classify_leg_anomaly)
+   * -- a flag, never proof of anything on its own. Undefined for the first
+   * sighting or a normal leg. */
+  anomaly?: string | null;
+}
+
+/** One candidate in "where is this plate likely to be seen next", mined
+ * from every plate's historical camera-to-camera transitions (not just
+ * this one -- see backend-watchlist's predict_next_camera). */
+export interface PredictedNextCamera {
+  camera_id: number;
+  camera_name?: string;
+  confidence: number;
 }
 
 /** Raw shape of one entry in GET /vehicle-traces' `sightings` array --
@@ -40,6 +61,9 @@ interface RawVehicleTraceSighting {
   stream_id?: string | number;
   detected_at: string;
   confidence: number | null;
+  bearing_deg?: number | null;
+  speed_kmh?: number | null;
+  anomaly?: string | null;
 }
 
 export interface RawVehicleTraceResponse {
@@ -47,6 +71,7 @@ export interface RawVehicleTraceResponse {
   plate: string;
   label?: string;
   sightings: RawVehicleTraceSighting[];
+  predicted_next?: PredictedNextCamera[];
 }
 
 export interface DetectionSearchParams {

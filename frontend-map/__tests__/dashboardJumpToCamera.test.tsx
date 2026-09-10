@@ -28,6 +28,7 @@ vi.mock('@/hooks/useCameraFeeds', () => ({
 
 vi.mock('@/context/CameraRegistryContext', () => ({
   useCameraRegistry: () => ({ cameras: [] }),
+  HEALTH_CHECK_INTERVAL_MS: 20000,
 }));
 
 vi.mock('@/services/circlesService', () => ({
@@ -40,6 +41,10 @@ vi.mock('@/components/AlertBanner', () => ({
   AlertBanner: ({ onJumpToCamera }: { onJumpToCamera?: (id: string) => void }) => (
     <button onClick={() => onJumpToCamera?.('2')}>Mock View Camera</button>
   ),
+}));
+
+vi.mock('@/context/ImmersiveModeContext', () => ({
+  useImmersiveMode: () => ({ isImmersive: false, setImmersive: vi.fn() }),
 }));
 
 describe('Dashboard: alert "Jump to Camera" vs. the tree-selection gate', () => {

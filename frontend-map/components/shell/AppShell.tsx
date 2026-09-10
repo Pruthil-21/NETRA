@@ -10,6 +10,7 @@ import { NotificationsBell } from '@/components/notifications/NotificationsBell'
 import { ThemeToggle } from '@/components/common/ThemeToggle';
 import { logout } from '@/lib/session';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useImmersiveMode } from '@/context/ImmersiveModeContext';
 
 // Ordered by how often an officer actually reaches for each one during a
 // shift: Dashboard (continuous monitoring, the default landing page) first,
@@ -94,6 +95,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { has } = usePermissions();
+  const { isImmersive } = useImmersiveMode();
   // Every permission gating a section actually rendered on /admin (see that
   // page's own per-section `permissions.includes(...)` checks) -- an Auditor
   // holds only view_audit_logs, never manage_users_roles, so gating the nav
@@ -116,11 +118,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-ink text-slate-100 overflow-hidden">
+      {!isImmersive && (
       <header className="border-b border-line bg-panel shrink-0">
         <div className="h-14 px-3 sm:px-4 flex items-center gap-1 sm:gap-2">
-          <Link href="/" className="flex items-center gap-2 pr-2 sm:pr-3 shrink-0" aria-label="NETRA home">
+          <Link href="/" className="flex items-center gap-2 pr-2 sm:pr-3 shrink-0" aria-label="DIGDHRISHTI home">
             <Shield className="text-command shrink-0" size={20} />
-            <span className="font-bold text-sm tracking-wider uppercase text-white hidden sm:inline">NETRA</span>
+            <span className="font-bold text-sm tracking-wider uppercase text-white hidden sm:inline">DIGDHRISHTI</span>
           </Link>
 
           <div className="h-6 w-px bg-line shrink-0" />
@@ -180,9 +183,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
+      )}
 
       <div className="flex-1 flex overflow-hidden min-h-0">{children}</div>
-      <LastLoginBadge />
+      {!isImmersive && <LastLoginBadge />}
     </div>
   );
 }

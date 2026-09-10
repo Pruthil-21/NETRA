@@ -96,15 +96,6 @@ export interface OfficerProfileOut {
   active_postings: PostingSummary[];
 }
 
-export interface DiagnosticsOut {
-  officer_id: number | null;
-  role_id: number | null;
-  permission: string | null;
-  has_permission: boolean | null;
-  granting_roles: string[];
-  granting_duties: Record<string, string[]>;
-}
-
 export interface DutyOut {
   id: number;
   name: string;
@@ -126,16 +117,6 @@ export interface RoleOut {
   permissions: string[];
 }
 
-export interface SodRuleOut {
-  id: number;
-  role_a_id: number;
-  role_a_name: string;
-  role_b_id: number;
-  role_b_name: string;
-  description: string | null;
-  created_at: string;
-}
-
 export interface NotificationOut {
   id: number;
   officer_id: number;
@@ -145,22 +126,6 @@ export interface NotificationOut {
   created_at: string;
 }
 
-export interface PasswordResetRequestOut {
-  id: number;
-  officer_id: number;
-  badge_number: string;
-  officer_name: string;
-  rank: string | null;
-  role_name: string | null;
-  scope_type: string | null;
-  scope_value: string | null;
-  reason: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-  requested_at: string;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-}
-
 export const adminService = {
   async listOfficers(): Promise<OfficerOut[]> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/officers`, { headers: authHeaders() });
@@ -168,40 +133,13 @@ export const adminService = {
     return res.json();
   },
 
-  async resetOfficerPassword(officerId: number, newPassword: string, requestId?: number): Promise<void> {
+  async resetOfficerPassword(officerId: number, newPassword: string): Promise<void> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/officers/${officerId}/reset-password`, {
       method: 'POST',
       headers: authHeaders(),
-      body: JSON.stringify({ new_password: newPassword, request_id: requestId }),
+      body: JSON.stringify({ new_password: newPassword }),
     });
     if (!res.ok) throw new Error(`Failed to reset password: HTTP ${res.status}`);
-  },
-
-  async requestPasswordReset(reason?: string): Promise<PasswordResetRequestOut> {
-    const res = await fetch(`${REGISTRY_API_URL}/auth/password-reset-requests`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ reason }),
-    });
-    if (!res.ok) throw new Error(`Failed to submit password reset request: HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async listPasswordResetRequests(status?: string): Promise<PasswordResetRequestOut[]> {
-    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-    const res = await fetch(`${REGISTRY_API_URL}/admin/password-reset-requests${qs}`, { headers: authHeaders() });
-    if (!res.ok) throw new Error(`Failed to fetch password reset requests: HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async rejectPasswordResetRequest(requestId: number, reason?: string): Promise<PasswordResetRequestOut> {
-    const res = await fetch(`${REGISTRY_API_URL}/admin/password-reset-requests/${requestId}/reject`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ reason }),
-    });
-    if (!res.ok) throw new Error(`Failed to reject request: HTTP ${res.status}`);
-    return res.json();
   },
 
   async reassignPosting(body: PostingCreateBody): Promise<PostingSummary> {
@@ -210,7 +148,10 @@ export const adminService = {
       headers: authHeaders(),
       body: JSON.stringify(body),
     });
-    if (!res.ok) throw new Error(`Failed to reassign posting: HTTP ${res.status}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Failed to reassign posting: HTTP ${res.status}`);
+    }
     return res.json();
   },
 
@@ -327,19 +268,6 @@ export const adminService = {
     if (!res.ok) throw new Error(`Failed to revoke posting: HTTP ${res.status}`);
   },
 
-  async getDiagnostics(params: { officerId?: number; roleId?: number; permission: string }): Promise<DiagnosticsOut> {
-    const qs = new URLSearchParams();
-    if (params.officerId != null) qs.set('officer_id', String(params.officerId));
-    if (params.roleId != null) qs.set('role_id', String(params.roleId));
-    qs.set('permission', params.permission);
-    const res = await fetch(`${REGISTRY_API_URL}/admin/diagnostics?${qs.toString()}`, { headers: authHeaders() });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error(body?.detail || `Failed to run diagnostics: HTTP ${res.status}`);
-    }
-    return res.json();
-  },
-
   async listDuties(): Promise<DutyOut[]> {
     const res = await fetch(`${REGISTRY_API_URL}/admin/duties`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`Failed to fetch duties: HTTP ${res.status}`);
@@ -355,6 +283,42 @@ export const adminService = {
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       throw new Error(body?.detail || `Failed to create duty: HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async updateDuty(dutyId: number, displayName: string, permissions: string[], description?: string): Promise<DutyOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/duties/${dutyId}`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ display_name: displayName, description, permissions }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Failed to update duty: HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  async deleteDuty(dutyId: number): Promise<void> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/duties/${dutyId}`, {
+      method: 'DELETE', headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Failed to delete duty: HTTP ${res.status}`);
+    }
+  },
+
+  async updateRoleDuties(roleId: number, dutyIds: number[]): Promise<RoleOut> {
+    const res = await fetch(`${REGISTRY_API_URL}/admin/roles/${roleId}/duties`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify({ duty_ids: dutyIds }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Failed to update role duties: HTTP ${res.status}`);
     }
     return res.json();
   },
@@ -412,32 +376,6 @@ export const adminService = {
       const body = await res.json().catch(() => null);
       throw new Error(body?.detail || `Failed to delete role: HTTP ${res.status}`);
     }
-  },
-
-  async listSodRules(): Promise<SodRuleOut[]> {
-    const res = await fetch(`${REGISTRY_API_URL}/admin/sod-rules`, { headers: authHeaders() });
-    if (!res.ok) throw new Error(`Failed to fetch SoD rules: HTTP ${res.status}`);
-    return res.json();
-  },
-
-  async createSodRule(roleAId: number, roleBId: number, description?: string): Promise<SodRuleOut> {
-    const res = await fetch(`${REGISTRY_API_URL}/admin/sod-rules`, {
-      method: 'POST',
-      headers: authHeaders(),
-      body: JSON.stringify({ role_a_id: roleAId, role_b_id: roleBId, description }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      throw new Error(body?.detail || `Failed to create SoD rule: HTTP ${res.status}`);
-    }
-    return res.json();
-  },
-
-  async deleteSodRule(ruleId: number): Promise<void> {
-    const res = await fetch(`${REGISTRY_API_URL}/admin/sod-rules/${ruleId}`, {
-      method: 'DELETE', headers: authHeaders(),
-    });
-    if (!res.ok) throw new Error(`Failed to delete SoD rule: HTTP ${res.status}`);
   },
 
   async listNotifications(unreadOnly = false): Promise<NotificationOut[]> {

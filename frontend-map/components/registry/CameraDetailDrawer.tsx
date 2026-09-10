@@ -1,21 +1,43 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Activity, Film, History, Radio, VideoOff } from 'lucide-react';
+import { Activity, Disc, Film, History, Radio, VideoOff } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { getCameraStreamUrl } from '@/lib/stream';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { useCameraUptime, formatDuration, formatTimeRange } from '@/hooks/useCameraUptime';
 import { useCameraHealth } from '@/hooks/useCameraHealth';
+import { useRecordingHealthEvents } from '@/hooks/useRecordingHealthEvents';
 import { usePermissions } from '@/hooks/usePermissions';
 import { circlesService, Circle } from '@/services/circlesService';
 import { cameraService } from '@/services/cameraService';
 import CameraLivePlayer from './CameraLivePlayer';
 import Badge from '@/components/common/Badge';
 
+/** Loose classification of whatever status string the recording service
+ * sends -- its exact vocabulary isn't pinned down yet (still pre-deployment
+ * as of this writing), so this matches on substrings rather than an exact
+ * enum, and falls back to a neutral color for anything unrecognized rather
+ * than guessing wrong. */
+function recordingStatusColor(status: string): string {
+  const s = status.toLowerCase();
+  if (s.includes('error') || s.includes('fail') || s.includes('stop')) return 'text-signal-red';
+  if (s.includes('gap') || s.includes('degrad') || s.includes('warn')) return 'text-signal-amber';
+  if (s.includes('record') || s.includes('ok') || s.includes('healthy')) return 'text-signal-green';
+  return 'text-slate-300';
+}
+
+function formatEventTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
   const { updateCameraConnectivity, applyCameraCircleAssignment } = useCameraRegistry();
   const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera?.id ?? null);
   const { device: health, loading: healthLoading } = useCameraHealth(camera?.id ?? null);
+  const { events: recordingHealthEvents, loading: recordingHealthLoading } = useRecordingHealthEvents(camera?.id ?? null);
   const { has } = usePermissions();
   const canManageCameras = has('manage_cameras');
 
@@ -166,11 +188,45 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           </div>
         </div>
 
-        {/* Runtime log -- GET /cameras/{id}/uptime, backed by camera_status_history
-            (append-only, one row per real connectivity transition). Most-recent
-            window first, since "what's it doing right now / just now" is what an
-            officer checking a camera's reliability actually wants first. */}
-        <div className="w-full sm:w-64 shrink-0 border-t sm:border-t-0 sm:border-l border-line p-3 flex flex-col min-h-0">
+        <div className="w-full sm:w-64 shrink-0 border-t sm:border-t-0 sm:border-l border-line p-3 flex flex-col min-h-0 gap-3">
+          {/* Live recording status -- GET /cameras/{id}/recordings/health-events
+              for the initial paint (our own local table, never blocked on the
+              recording service being reachable), then backend-registry's
+              /recordings/health-stream WebSocket pushes anything after that in
+              real time, no polling. */}
+          <div className="shrink-0">
+            <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-2">
+              <Disc size={11} />
+              Recording Health
+            </p>
+            {recordingHealthLoading && <p className="text-[11px] text-slate-600 italic">Checking…</p>}
+            {!recordingHealthLoading && recordingHealthEvents.length === 0 && (
+              <p className="text-[11px] text-slate-600 italic">No recording status reported yet.</p>
+            )}
+            {recordingHealthEvents.length > 0 && (
+              <div className="flex flex-col gap-1.5 overflow-y-auto max-h-28 pr-1">
+                {recordingHealthEvents.map((e, i) => (
+                  <div key={`${e.event_id}-${i}`} className="text-[11px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`font-semibold uppercase tracking-wide ${recordingStatusColor(e.status)}`}>
+                        {e.status}
+                      </span>
+                      <span className="text-slate-600 font-mono shrink-0">
+                        {formatEventTime(e.occurred_at || e.received_at)}
+                      </span>
+                    </div>
+                    {e.message && <p className="text-slate-500 truncate">{e.message}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Runtime log -- GET /cameras/{id}/uptime, backed by camera_status_history
+              (append-only, one row per real connectivity transition). Most-recent
+              window first, since "what's it doing right now / just now" is what an
+              officer checking a camera's reliability actually wants first. */}
+          <div className="border-t border-line pt-3 flex flex-col min-h-0 flex-1">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-2 shrink-0">
             <History size={11} />
             Runtime
@@ -210,6 +266,7 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
                 })}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

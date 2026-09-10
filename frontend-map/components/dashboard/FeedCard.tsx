@@ -3,7 +3,7 @@ import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
 import { useInView } from "@/hooks/useInView";
 import { createHoverGraceController, HoverGraceController } from "@/lib/hoverGrace";
-import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, GripVertical, LucideIcon } from "lucide-react";
+import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, GripVertical, X, LucideIcon } from "lucide-react";
 
 const HlsPlayer = dynamic(
   () => import("@/components/player/HlsPlayer").then((mod) => mod.HlsPlayer),
@@ -29,6 +29,18 @@ interface FeedCardProps {
    * absent in focus layout, where there's only one tile. Called with the
    * dragged feed's id and this card's own id (the drop target). */
   onReorder?: (draggedId: string, targetId: string) => void;
+  /** Present only when this tile is part of an officer's drag-composed
+   * watch set (dragged in from DistrictCircleTree, see CameraGrid's
+   * onDropCameraIds) -- renders a small remove button so any one stream can
+   * be pulled back out without clearing the whole set. */
+  onRemove?: (id: string) => void;
+  /** True only for tiles in the drag-composed watch set -- an officer built
+   * this exact grid to watch footage, not to browse metadata, so the name/
+   * dept/Map/status/ID chrome that's useful in the normal browsing grid
+   * (its own header+footer bars) would just be dead space here. Renders the
+   * video edge-to-edge instead, with the camera's name and the remove
+   * control as small overlays on top of it rather than bars around it. */
+  immersive?: boolean;
 }
 
 const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: string; icon: LucideIcon }> = {
@@ -39,7 +51,8 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
 };
 
 const FeedCardImpl: React.FC<FeedCardProps> = ({
-  feed, onFocus, startPlaying = false, mode = 'hoverOnly', isPlaying = false, onHoverStart, onHoverEnd, onReorder,
+  feed, onFocus, startPlaying = false, mode = 'hoverOnly', isPlaying = false, onHoverStart, onHoverEnd, onReorder, onRemove,
+  immersive = false,
 }) => {
   const isPlayable = feed.status !== "OFFLINE";
   const badge = STATUS_BADGE[feed.status];
@@ -110,6 +123,65 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
     [onReorder, feed.id]
   );
 
+  const videoArea = !isPlayable ? (
+    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
+      <VideoOff className="w-8 h-8" />
+      <span className="text-xs text-gray-500">Feed unavailable</span>
+    </div>
+  ) : shouldRenderPlayer ? (
+    <div data-testid="hls-player" className="w-full h-full">
+      <HlsPlayer src={feed.hlsUrl} />
+    </div>
+  ) : (
+    <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
+      <Play className="w-8 h-8" />
+      <span className="text-xs text-gray-500">
+        {mode === 'playAll' ? 'Queued — waiting for a free decoder slot' : 'Hover to preview this camera'}
+      </span>
+    </div>
+  );
+
+  if (immersive) {
+    // Edge-to-edge footage, nothing else competing for space -- name and
+    // remove are small overlays layered on top of the video instead of
+    // bars taking their own row above/below it.
+    return (
+      <div className="relative w-full h-full bg-black border border-gray-800 overflow-hidden">
+        <div
+          ref={containerRef}
+          data-testid="feed-card-viewport"
+          className="absolute inset-0"
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+        >
+          {videoArea}
+        </div>
+
+        <div className="absolute top-2 left-2 right-2 flex items-start justify-between gap-2 pointer-events-none">
+          <div className="flex items-center gap-1.5 min-w-0 pointer-events-auto bg-black/60 backdrop-blur-sm rounded px-2 py-1">
+            <span
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                feed.status === 'ONLINE' ? 'bg-red-500 animate-pulse' : feed.status === 'OFFLINE' ? 'bg-gray-500' : 'bg-amber-500'
+              }`}
+              aria-hidden="true"
+            />
+            <span className="text-xs font-medium text-white truncate">{feed.name}</span>
+          </div>
+          {onRemove && (
+            <button
+              onClick={() => onRemove(feed.id)}
+              aria-label={`Remove ${feed.name} from the grid`}
+              title="Remove from grid"
+              className="pointer-events-auto shrink-0 p-1 rounded bg-black/60 backdrop-blur-sm text-gray-300 hover:bg-red-950 hover:text-red-300 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       draggable={!!onReorder}
@@ -117,9 +189,9 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`bg-panel border rounded-lg overflow-hidden flex flex-col shadow-lg transition-transform duration-300 ease-out ${
+      className={`bg-panel border rounded-lg overflow-hidden flex flex-col shadow-lg ${
         isDragOver ? 'border-blue-500 border-2' : 'border-line'
-      } ${shouldRenderPlayer ? 'scale-[1.06] shadow-2xl relative z-10' : 'scale-100'}`}
+      }`}
     >
       <div className="p-3 border-b border-line flex items-center justify-between bg-gray-900/40">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -131,16 +203,19 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
           )}
           <div className="min-w-0">
             <h3 className="font-semibold text-sm text-gray-100">{feed.name}</h3>
-            <p className="text-xs text-gray-400 flex items-center gap-1.5">
-              <span>{feed.department} • {feed.location}</span>
+            <p className="text-xs text-gray-400 flex items-center gap-1.5 min-w-0">
+              <span className="truncate">{feed.department} • {feed.location}</span>
               {/* (0, 0) means "no real location yet" (e.g. a manually-added test feed
-                  pending a proper registry entry) — a maps link there would be misleading. */}
+                  pending a proper registry entry) — a maps link there would be misleading.
+                  shrink-0 + the span's own truncate above is what keeps this pinned in
+                  place instead of drifting out of alignment for a camera with a long
+                  department/location string. */}
               {(feed.lat !== 0 || feed.long !== 0) && (
                 <a
                   href={`https://www.google.com/maps?q=${feed.lat},${feed.long}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-0.5 text-blue-400 hover:underline"
+                  className="inline-flex items-center gap-0.5 text-blue-400 hover:underline shrink-0"
                   title="Open this camera's location in Google Maps"
                 >
                   <MapPin className="w-3 h-3" />
@@ -150,7 +225,7 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <div className={`flex items-center space-x-1.5 border text-[10px] font-bold px-2 py-0.5 rounded ${badge.className}`}>
             <BadgeIcon className={`w-3 h-3 ${feed.status === "ONLINE" ? "animate-pulse" : ""}`} />
             <span>{badge.label}</span>
@@ -165,6 +240,16 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
           )}
+          {onRemove && (
+            <button
+              onClick={() => onRemove(feed.id)}
+              aria-label={`Remove ${feed.name} from the grid`}
+              title="Remove from grid"
+              className="p-1 rounded bg-gray-800 text-gray-400 hover:bg-red-950 hover:text-red-300 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
       <div
@@ -174,23 +259,7 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
       >
-        {!isPlayable ? (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
-            <VideoOff className="w-8 h-8" />
-            <span className="text-xs text-gray-500">Feed unavailable</span>
-          </div>
-        ) : shouldRenderPlayer ? (
-          <div data-testid="hls-player" className="w-full h-full">
-            <HlsPlayer src={feed.hlsUrl} />
-          </div>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-gray-600">
-            <Play className="w-8 h-8" />
-            <span className="text-xs text-gray-500">
-              {mode === 'playAll' ? 'Queued — waiting for a free decoder slot' : 'Hover to preview this camera'}
-            </span>
-          </div>
-        )}
+        {videoArea}
       </div>
       <div className="p-2.5 bg-gray-900/80 text-[11px] text-gray-400 flex justify-between items-center">
         <span>ID: <span className="font-mono text-gray-300">{feed.id}</span></span>

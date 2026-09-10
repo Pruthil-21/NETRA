@@ -31,8 +31,12 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
   const [query, setQuery] = useState('');
   const [scenarioRunId, setScenarioRunId] = useState('');
   const [showScenarioInput, setShowScenarioInput] = useState(false);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [showDateRange, setShowDateRange] = useState(false);
   const [activePlate, setActivePlate] = useState<string | null>(null);
   const [activeScenarioRunId, setActiveScenarioRunId] = useState<string | null>(null);
+  const [activeRange, setActiveRange] = useState<{ from?: string; to?: string }>({});
   const [results, setResults] = useState<Detection[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,10 +52,12 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
 
   const cameraById = new Map(cameras.map((cam) => [cam.id, cam]));
 
-  const fetchSightings = async (plate: string, runId: string | null) => {
+  const fetchSightings = async (plate: string, runId: string | null, range: { from?: string; to?: string }) => {
     const detections = await detectionService.search({
       plate_number: plate,
       ...(runId ? { scenario_run_id: runId } : {}),
+      ...(range.from ? { from: range.from } : {}),
+      ...(range.to ? { to: range.to } : {}),
     });
     // Contract says backend-watchlist already returns these ascending by
     // detected_at, but the map's route/animation order depends on it —
@@ -65,16 +71,25 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
     const plate = query.trim().toUpperCase();
     if (!plate) return;
     const runId = scenarioRunId.trim() || null;
+    // datetime-local inputs give a local, timezone-less string
+    // ("2026-09-07T14:30") -- new Date(...) parses that in the browser's
+    // own timezone, and toISOString() turns it into the UTC timestamp the
+    // backend's `from`/`to` filters actually compare against.
+    const range = {
+      from: fromDate ? new Date(fromDate).toISOString() : undefined,
+      to: toDate ? new Date(toDate).toISOString() : undefined,
+    };
 
     setIsLoading(true);
     setError(null);
     try {
-      const ordered = await fetchSightings(plate, runId);
+      const ordered = await fetchSightings(plate, runId, range);
       setResults(ordered);
       // Only starts polling once the initial search succeeds — a failed
       // plate shouldn't spin up a background loop hammering the backend.
       setActivePlate(plate);
       setActiveScenarioRunId(runId);
+      setActiveRange(range);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to search vehicle sightings');
       setResults(null);
@@ -110,7 +125,7 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
 
     const interval = setInterval(async () => {
       try {
-        const ordered = await fetchSightings(activePlate, activeScenarioRunId);
+        const ordered = await fetchSightings(activePlate, activeScenarioRunId, activeRange);
         setResults((prev) => {
           const prevIds = (prev ?? []).map((d) => d.id).join(',');
           const nextIds = ordered.map((d) => d.id).join(',');
@@ -122,7 +137,7 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(interval);
-  }, [activePlate, activeScenarioRunId]);
+  }, [activePlate, activeScenarioRunId, activeRange]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') runSearch();
@@ -172,6 +187,39 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
             onKeyDown={handleKeyDown}
             className="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2.5 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
           />
+        )}
+
+        <button
+          type="button"
+          onClick={() => setShowDateRange((prev) => !prev)}
+          className="mt-1.5 flex items-center gap-1 text-[10px] text-slate-500 hover:text-slate-300 transition"
+        >
+          {showDateRange ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+          Narrow by date range
+        </button>
+        {showDateRange && (
+          <div className="mt-1 grid grid-cols-2 gap-1.5">
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[9px] text-slate-500 uppercase tracking-wide">From</span>
+              <input
+                type="datetime-local"
+                aria-label="Sightings from"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
+              />
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[9px] text-slate-500 uppercase tracking-wide">To</span>
+              <input
+                type="datetime-local"
+                aria-label="Sightings to"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-[10px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition"
+              />
+            </label>
+          </div>
         )}
 
         <button

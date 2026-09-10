@@ -1,4 +1,4 @@
-# NETRA API Contract v0.1
+# DIGDHRISHTI API Contract v0.1
 
 (Draft this together in the Day 1 kickoff — this is a starting skeleton only.)
 

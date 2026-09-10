@@ -43,6 +43,24 @@ services:
     environment:
       DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
       JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
+      # Required for the tunneled recording-health webhook sink
+      # (routers/recording_webhooks.py) to actually accept Dhruv's calls --
+      # without this, the publicly-reachable container 401s every request
+      # even with the right token, since it never learned the key existed.
+      RECORDING_WEBHOOK_KEY: "${RECORDING_WEBHOOK_KEY:-}"
+      # Outbound side of the same integration -- lets this container proxy
+      # GET /cameras/{id}/recordings and /recordings/health to Dhruv's
+      # recording service (see services/recordings_service.py). Optional:
+      # unset means those endpoints just report "unavailable".
+      RECORDING_SERVICE_URL: "${RECORDING_SERVICE_URL:-}"
+      RECORDING_SERVICE_KEY: "${RECORDING_SERVICE_KEY:-}"
+      # DIGDHRISHTI Federation (D:\middleware) camera-inventory proxy target
+      # -- see app/federation_proxy.py. host.docker.internal, not
+      # 127.0.0.1: the federation API is published on the *host's*
+      # loopback (compose.federation.yaml binds 127.0.0.1:8096), and from
+      # inside this container 127.0.0.1 means this container, not the host.
+      FEDERATION_URL: "${FEDERATION_URL:-http://host.docker.internal:8096}"
+      FEDERATION_SERVICE_KEY: "${FEDERATION_SERVICE_KEY:-}"
     ports:
       - "${REGISTRY_HOST_PORT:-8000}:8000"
     depends_on:
@@ -110,6 +128,40 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+
+  # Named Cloudflare Tunnel (api.digdhrishti.me -> backend-watchlist:8001).
+  # Ingress rules live in the Cloudflare Zero Trust dashboard for this
+  # tunnel, not in a local config file -- the token is the only secret
+  # needed here. Optional: leaving CLOUDFLARE_TUNNEL_TOKEN unset just means
+  # this service exits immediately: everything else in the stack still
+  # comes up and runs on localhost as normal.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: netra-backend-cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - backend-watchlist
+
+  # Named Cloudflare Tunnel for backend-registry -- needed so external
+  # service-to-service callers (e.g. the DIGDHRISHTI continuous-recording
+  # service's recording-health webhook, see
+  # backend-registry/app/routers/recording_webhooks.py) can reach it at
+  # all; before this it only ever existed on localhost. Same pattern as the
+  # backend-watchlist tunnel above: a dedicated tunnel/token, hostname ->
+  # local service mapping (point it at backend-registry:8000, the
+  # in-network container port, not the host-published one) lives in the
+  # Cloudflare Zero Trust dashboard for THIS tunnel, not here. Optional:
+  # leaving CLOUDFLARE_REGISTRY_TUNNEL_TOKEN unset just means this service
+  # exits immediately, same as the other cloudflared service -- everything
+  # else in the stack still runs on localhost as normal.
+  cloudflared-registry:
+    image: cloudflare/cloudflared:latest
+    container_name: netra-registry-cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_REGISTRY_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - backend-registry
 
 volumes:
   db_data:

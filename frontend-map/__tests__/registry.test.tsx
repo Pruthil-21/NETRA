@@ -98,7 +98,7 @@ describe('P2 Frontend Map: Feature Tests', () => {
         <div>
           <button
             onClick={() =>
-              setFilters((prev: CameraFilters) => ({ ...prev, department: 'Transport / GSRTC' }))
+              setFilters((prev: CameraFilters) => ({ ...prev, departments: ['Transport / GSRTC'] }))
             }
           >
             Filter Transport

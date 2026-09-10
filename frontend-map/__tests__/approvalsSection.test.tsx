@@ -36,11 +36,32 @@ describe('ApprovalsSection', () => {
     await waitFor(() => expect(screen.getByText('New Recruit')).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole('button', { name: /^approve$/i }));
+    fireEvent.change(screen.getByLabelText(/district \/ department/i), { target: { value: 'Ahmedabad' } });
     fireEvent.click(screen.getByRole('button', { name: /confirm approval/i }));
 
     await waitFor(() => expect(approveSpy).toHaveBeenCalled());
     const body = JSON.parse((approveSpy.mock.calls[0][1] as RequestInit).body as string);
     expect(body.role_name).toBe('station_officer');
+    expect(body.scope_value).toBe('Ahmedabad');
+  });
+
+  it('blocks approval of a district-scoped role with no district entered', async () => {
+    const approveSpy = vi.fn();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string, opts?: RequestInit) => {
+        if (url.includes('/approve')) return approveSpy(url, opts);
+        return Promise.resolve({ ok: true, json: async () => [MOCK_REQUEST] });
+      })
+    );
+    render(<ApprovalsSection />);
+    await waitFor(() => expect(screen.getByText('New Recruit')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /^approve$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /confirm approval/i }));
+
+    await waitFor(() => expect(screen.getByText(/district-scoped role requires a district/i)).toBeInTheDocument());
+    expect(approveSpy).not.toHaveBeenCalled();
   });
 
   it('rejects a request with a reason', async () => {

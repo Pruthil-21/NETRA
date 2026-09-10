@@ -16,7 +16,7 @@ describe('RecordingCalendar', () => {
 
     render(
       <RecordingCalendar
-        segments={[{ start: today.toISOString(), duration: 600 }]}
+        segments={[{ start: today.toISOString(), duration: 600, url: 'https://playback.example/get?token=x' }]}
         selectedDate={todayKey}
         onSelectDate={onSelectDate}
       />

@@ -65,8 +65,16 @@ export function ApprovalsSection() {
   const closeApprove = () => setApprovingId(null);
 
   const confirmApprove = async (request: RegistrationRequestOut) => {
-    setApproveSubmitting(true);
     setApproveError(null);
+    // Mirrors the backend's own check (main.py's
+    // _guard_delegated_posting_assignment) -- a district-scoped role
+    // approved with this left blank used to succeed silently and leave the
+    // officer able to see no cameras/data at all.
+    if (role !== 'super_admin' && !scopeValue.trim()) {
+      setApproveError('A district-scoped role requires a district');
+      return;
+    }
+    setApproveSubmitting(true);
     try {
       await adminService.approveRegistration(
         request.id, role, role === 'super_admin' ? 'platform' : 'district',

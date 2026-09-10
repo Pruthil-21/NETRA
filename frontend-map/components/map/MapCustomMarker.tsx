@@ -55,10 +55,30 @@ export const createCustomMarkerIcon = (
   });
 };
 
+// A small chevron rotated to `bearingDeg`, placed at each leg's midpoint --
+// large-scale ALPR platforms (e.g. Genetec AutoVu's ML Core) report
+// "direction of travel" the same way this route does: inferred from the
+// order and spacing of fixed camera reads, not continuous GPS. Framed as
+// "inferred" everywhere it's shown (see CameraMap's route caption), same
+// honesty the rest of this route already keeps toward an investigator
+// reading it.
+export const createDirectionArrowIcon = (bearingDeg: number) =>
+  L.divIcon({
+    html: `
+      <div style="transform: rotate(${bearingDeg}deg);" class="w-4 h-4 flex items-center justify-center">
+        <svg viewBox="0 0 16 16" class="w-3.5 h-3.5 drop-shadow">
+          <path d="M8 1 L13 13 L8 10 L3 13 Z" fill="#93C5FD" stroke="#1E3A8A" stroke-width="0.75" />
+        </svg>
+      </div>
+    `,
+    className: 'direction-arrow-marker',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+
 // The animated marker that sweeps along a vehicle's inferred route
 // (CameraMap's VehicleTraceMarker) — a small glowing dot, not a directional
-// icon, since deriving true heading between sparse camera points would be
-// more precision than the "inferred, not GPS" route actually supports.
+// icon; direction is now shown separately via createDirectionArrowIcon above.
 export const createVehicleTraceIcon = () =>
   L.divIcon({
     html: `

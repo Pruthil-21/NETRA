@@ -9,6 +9,7 @@ import { useAlertsStream } from '@/hooks/useAlertsStream';
 import { Alert, AlertStatus } from '@/types/alert';
 import { AddToWatchlistModal } from '@/components/alerts/AddToWatchlistModal';
 import { getCameraCity } from '@/lib/cameraCity';
+import { usePermissions } from '@/hooks/usePermissions';
 
 // Every alert starts NEW and needs an officer to act on it -- these are the
 // only forward transitions the backend accepts (append-only history, see
@@ -31,6 +32,7 @@ const STATUS_STYLES: Record<string, string> = {
 export default function AlertsPage() {
   const router = useRouter();
   const { cameras } = useCameraRegistry();
+  const { scopeValue: homeDistrict } = usePermissions();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [expandedCities, setExpandedCities] = useState<Set<string>>(new Set());
@@ -133,8 +135,19 @@ export default function AlertsPage() {
         city,
         alerts: [...cityAlerts].sort((a, b) => new Date(b.matched_at).getTime() - new Date(a.matched_at).getTime()),
       }))
-      .sort((a, b) => a.city.localeCompare(b.city));
-  }, [alerts, camerasById]);
+      .sort((a, b) => {
+        // The officer's own posting city floats to the top regardless of
+        // alphabetical order -- an officer posted to Ahmedabad shouldn't
+        // have to scroll past every other city to see alerts from home.
+        if (homeDistrict) {
+          const aIsHome = a.city.toLowerCase() === homeDistrict.toLowerCase();
+          const bIsHome = b.city.toLowerCase() === homeDistrict.toLowerCase();
+          if (aIsHome && !bIsHome) return -1;
+          if (bIsHome && !aIsHome) return 1;
+        }
+        return a.city.localeCompare(b.city);
+      });
+  }, [alerts, camerasById, homeDistrict]);
 
   const visibleGroups = useMemo(() => {
     const query = citySearch.trim().toLowerCase();

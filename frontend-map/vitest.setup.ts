@@ -51,3 +51,17 @@ class IntersectionObserverMock implements IntersectionObserver {
 }
 
 global.IntersectionObserver = IntersectionObserverMock as unknown as typeof IntersectionObserver;
+
+// jsdom doesn't implement ResizeObserver either -- useBestFitTileSize (the
+// drag-composed watch grid's tile-sizing hook) needs one to mount at all.
+// jsdom's own getBoundingClientRect() always reports 0x0 (no real layout
+// engine), so this never actually fires a resize callback in tests -- that's
+// fine, callers must already handle the "not measured yet" 0-size case for
+// the real first-paint frame anyway.
+class ResizeObserverMock implements ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+global.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;

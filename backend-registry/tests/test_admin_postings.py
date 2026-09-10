@@ -161,3 +161,28 @@ def test_officer_without_manage_users_roles_permission_is_rejected(client):
     token = _token("control_room_operator", ["view_live_feeds", "acknowledge_alerts"])
     resp = client.get("/admin/officers", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403
+
+
+def test_district_scoped_posting_requires_a_scope_value(client):
+    # Regression: a Super Admin (a platform-scoped actor) approving/assigning
+    # a 'district' role with the District field left blank used to succeed
+    # silently, producing a posting that resolves to zero effective
+    # jurisdiction everywhere else (_effective_district_scopes filters out
+    # falsy scope_values) -- the officer ends up with the role's permissions
+    # but can see no cameras/data at all. Must be rejected at creation time
+    # instead, for every actor including platform-scoped ones.
+    _run("scripts/seed_rbac.py")
+    _run("scripts/seed_demo_officers.py")
+    sa_token = client.post(
+        "/auth/login", json={"badge_number": "GJ-SA-001", "password": "demo-pass-super-admin"}
+    ).json()["token"]
+
+    officers = client.get("/admin/officers", headers={"Authorization": f"Bearer {sa_token}"}).json()
+    target = next(o for o in officers if o["badge_number"] == "GJ-SO-001")
+
+    resp = client.post(
+        "/admin/postings",
+        json={"officer_id": target["id"], "role_name": "district_command", "scope_type": "district", "scope_value": None},
+        headers={"Authorization": f"Bearer {sa_token}"},
+    )
+    assert resp.status_code == 400

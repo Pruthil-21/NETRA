@@ -6,3 +6,4 @@ pyjwt
 certifi
 bcrypt
 httpx
+openpyxl

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { IBM_Plex_Sans, IBM_Plex_Mono } from 'next/font/google';
 import { CameraRegistryProvider } from '@/context/CameraRegistryContext';
+import { ImmersiveModeProvider } from '@/context/ImmersiveModeContext';
 import { ShellGate } from '@/components/shell/ShellGate';
 import { ServiceWorkerRegistration } from '@/components/common/ServiceWorkerRegistration';
 import { THEME_INIT_SCRIPT } from '@/lib/theme';
@@ -25,7 +26,7 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'NETRA - Unified Video & GIS Command',
+  title: 'DIGDHRISHTI - Unified Video & GIS Command',
   description: 'Real-time CCTV monitoring, GIS camera registry, and vehicle-trace command center',
   manifest: '/manifest.json',
 };
@@ -42,7 +43,9 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <ServiceWorkerRegistration />
         <CameraRegistryProvider>
-          <ShellGate>{children}</ShellGate>
+          <ImmersiveModeProvider>
+            <ShellGate>{children}</ShellGate>
+          </ImmersiveModeProvider>
         </CameraRegistryProvider>
       </body>
     </html>

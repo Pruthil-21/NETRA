@@ -100,6 +100,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id_dedup
     ON detections (event_id)
     WHERE event_id IS NOT NULL;
 
+-- Supports the density-map query (time-range filter + GROUP BY camera_id):
+-- leading on detected_at lets the range scan happen first, with camera_id
+-- covering the grouping without a separate heap lookup per row. At the
+-- 100k+ camera scale this deployment is headed toward, that matters far
+-- more than it would at demo scale.
+CREATE INDEX IF NOT EXISTS idx_detections_detected_at_camera
+    ON detections (detected_at, camera_id);
+
 -- Derived, non-evidentiary daily rollup of detections, for cross-camera
 -- "where was this plate seen today" queries -- NOT a replacement for the
 -- insert-only detections table above, which remains the evidentiary

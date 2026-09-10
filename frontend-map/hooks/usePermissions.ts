@@ -12,6 +12,7 @@ interface MeResponse {
   role: string | null;
   rank: string | null;
   photo_url: string | null;
+  email: string | null;
   last_login: string | null;
   status: string;
   scope_type: string | null;
@@ -25,6 +26,10 @@ interface UsePermissionsResult {
   role: string | null;
   rank: string | null;
   photoUrl: string | null;
+  /** Non-null is what "login 2FA and self-service password reset are on for
+   * this officer" means -- see backend-registry's schema.sql comment on
+   * officers.email. Set via PUT /auth/me/email (profile page). */
+  email: string | null;
   lastLogin: string | null;
   status: string | null;
   scopeValue: string | null;
@@ -77,6 +82,7 @@ export function usePermissions(): UsePermissionsResult {
     role: me?.role ?? null,
     rank: me?.rank ?? null,
     photoUrl: me?.photo_url ?? null,
+    email: me?.email ?? null,
     lastLogin: me?.last_login ?? null,
     status: me?.status ?? null,
     scopeValue: me?.scope_value ?? null,

@@ -77,6 +77,24 @@ class DetectionOut(BaseModel):
     event_id: Optional[uuid.UUID] = None
 
 
+class DensityPoint(BaseModel):
+    """One camera's detection count for the Map page's density layer --
+    see detections_service.camera_density_counts."""
+    camera_id: int
+    count: int
+
+
+class CorridorFlow(BaseModel):
+    """One camera-to-camera transition pair for the Map page's Flow layer --
+    see detections_service.camera_flow_pairs. avg_speed_kmh is the average
+    inferred travel speed across every plate that made this transition in
+    the window, not any single vehicle's speed."""
+    from_camera_id: int
+    to_camera_id: int
+    transitions: int
+    avg_speed_kmh: Optional[float] = None
+
+
 class DetectionResult(BaseModel):
     """Response for POST /detections — the detection is always recorded;
     alert is populated only when the plate matched the watchlist."""
@@ -120,9 +138,32 @@ class VehicleTraceSighting(BaseModel):
     camera_name: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    stream_id: Optional[int] = None
+    # A registered camera's stream_id (backend-registry cameras.stream_id)
+    # is TEXT, not guaranteed numeric -- only the hardcoded vehicle-trace-demo
+    # cameras happen to use small ints for it.
+    stream_id: Optional[str] = None
     detected_at: datetime
     confidence: Optional[float] = None
+    # Inferred direction/speed of the leg from the previous sighting to this
+    # one (None for the first sighting, or when either point lacks
+    # coordinates) -- see services/geo.py's leg_bearing_and_speed.
+    bearing_deg: Optional[float] = None
+    speed_kmh: Optional[float] = None
+    # "improbable_speed" / "extended_gap" (see geo.classify_leg_anomaly) when
+    # this leg trips a heuristic worth an investigator's attention, None
+    # otherwise. A heuristic flag, not a finding -- never surfaced as proof
+    # of anything on its own.
+    anomaly: Optional[str] = None
+
+
+class PredictedNextCamera(BaseModel):
+    """One candidate in "where is this plate likely to be seen next" -- see
+    detections_service.predict_next_camera. Mined from every plate's
+    historical camera-to-camera transitions, not this one plate's own
+    (too sparse to predict from alone)."""
+    camera_id: int
+    camera_name: Optional[str] = None
+    confidence: float
 
 
 class VehicleTraceResponse(BaseModel):
@@ -132,6 +173,19 @@ class VehicleTraceResponse(BaseModel):
     plate: str
     label: str = "Inferred route from simulated camera sightings"
     sightings: list[VehicleTraceSighting]
+    # Predicted next camera(s) from the *last* sighting's camera, based on
+    # network-wide historical transitions -- empty when there are no
+    # sightings yet, or no observed outbound transitions from that camera.
+    predicted_next: list[PredictedNextCamera] = []
+
+
+class PredictNextCameraResponse(BaseModel):
+    """Response for GET /vehicle-traces/predict-next/{camera_id} -- the
+    standalone form of the same prediction, usable from a camera_id alone
+    (e.g. a normal fuzzy-matched plate search, which never goes through
+    GET /vehicle-traces/{plate} at all -- see detectionService.ts)."""
+    camera_id: int
+    candidates: list[PredictedNextCamera]
 
 
 DetectionResult.model_rebuild()
