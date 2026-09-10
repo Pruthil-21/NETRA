@@ -21,6 +21,7 @@ streaming/snmp/targets.json
 # OS
 .DS_Store
 Thumbs.db
+._*
 
 # Editor
 .vscode/
