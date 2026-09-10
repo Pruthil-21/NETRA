@@ -24,7 +24,7 @@ def test_bulk_create_requires_officer(client, viewer_headers):
     assert resp.status_code == 403
 
 
-def test_bulk_create_partial_success(client, officer_headers):
+def test_bulk_create_partial_success(client, officer_headers, gap_analysis_test_cameras):
     resp = client.post(
         "/cameras/bulk",
         json=[VALID_CAMERA, INVALID_CAMERA],
@@ -44,6 +44,7 @@ def test_bulk_create_partial_success(client, officer_headers):
     assert results[1]["reason"]
 
     created_id = results[0]["camera"]["id"]
+    gap_analysis_test_cameras.append(created_id)
     get_resp = client.get(f"/cameras/{created_id}", headers=officer_headers)
     assert get_resp.status_code == 200
 

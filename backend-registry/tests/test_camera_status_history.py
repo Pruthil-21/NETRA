@@ -23,15 +23,17 @@ def _history_rows(camera_id):
     return rows
 
 
-def test_creating_a_camera_does_not_write_history(client, officer_headers):
+def test_creating_a_camera_does_not_write_history(client, officer_headers, gap_analysis_test_cameras):
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
     assert _history_rows(camera_id) == []
 
 
-def test_changing_connectivity_status_writes_one_history_row(client, officer_headers):
+def test_changing_connectivity_status_writes_one_history_row(client, officer_headers, gap_analysis_test_cameras):
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     update_resp = client.put(
         f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers
@@ -41,9 +43,12 @@ def test_changing_connectivity_status_writes_one_history_row(client, officer_hea
     assert _history_rows(camera_id) == ["offline"]
 
 
-def test_setting_the_same_status_again_does_not_write_a_duplicate_row(client, officer_headers):
+def test_setting_the_same_status_again_does_not_write_a_duplicate_row(
+    client, officer_headers, gap_analysis_test_cameras
+):
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
@@ -51,9 +56,10 @@ def test_setting_the_same_status_again_does_not_write_a_duplicate_row(client, of
     assert _history_rows(camera_id) == ["offline"]
 
 
-def test_multiple_real_transitions_are_all_recorded_in_order(client, officer_headers):
+def test_multiple_real_transitions_are_all_recorded_in_order(client, officer_headers, gap_analysis_test_cameras):
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "online"}, headers=officer_headers)
@@ -62,20 +68,24 @@ def test_multiple_real_transitions_are_all_recorded_in_order(client, officer_hea
     assert _history_rows(camera_id) == ["offline", "online", "offline"]
 
 
-def test_updating_a_non_connectivity_field_does_not_write_history(client, officer_headers):
+def test_updating_a_non_connectivity_field_does_not_write_history(
+    client, officer_headers, gap_analysis_test_cameras
+):
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     client.put(f"/cameras/{camera_id}", json={"name": "Renamed Camera"}, headers=officer_headers)
 
     assert _history_rows(camera_id) == []
 
 
-def test_connectivity_only_update_does_not_write_audit_log(client, officer_headers):
+def test_connectivity_only_update_does_not_write_audit_log(client, officer_headers, gap_analysis_test_cameras):
     from tests.test_audit_cleanup import _audit_count
 
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     conn = psycopg.connect(os.environ["DATABASE_URL"])
     before = _audit_count(conn)
@@ -87,11 +97,12 @@ def test_connectivity_only_update_does_not_write_audit_log(client, officer_heade
     conn.close()
 
 
-def test_updating_a_real_field_still_writes_audit_log(client, officer_headers):
+def test_updating_a_real_field_still_writes_audit_log(client, officer_headers, gap_analysis_test_cameras):
     from tests.test_audit_cleanup import _audit_count
 
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     conn = psycopg.connect(os.environ["DATABASE_URL"])
     before = _audit_count(conn)
