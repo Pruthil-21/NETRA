@@ -171,3 +171,19 @@ def circle_test_rows():
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM circles WHERE id = ANY(%s)", (created_ids,))
             conn.commit()
+
+
+@pytest.fixture
+def data_job_test_rows():
+    """Guaranteed cleanup for import_export_jobs rows a test creates, even
+    if an assertion fails first -- this table had no such fixture before
+    (every existing Data Console/import-export test left its jobs behind
+    permanently), which is exactly what let ordinary test runs quietly
+    accumulate well over a hundred junk rows in the shared dev database."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM import_export_jobs WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()

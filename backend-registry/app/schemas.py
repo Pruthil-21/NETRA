@@ -397,11 +397,16 @@ class RegistrationReject(BaseModel):
 
 class DataJobCreate(BaseModel):
     entity_type: str
-    format: Literal["csv", "json"] = "json"
+    format: Literal["csv", "json", "xlsx"] = "json"
     # Pre-parsed rows for an import job (a raw CSV/XLSX file is parsed into
     # this shape before it reaches this endpoint) -- absent/ignored for an
     # export job, which reads the entity's current rows instead.
     rows: list[dict] = []
+    # Export-only: entity-specific narrowing (district, date_from/date_to,
+    # status, category, ...) -- each entity's own export handler in
+    # import_export_service.py reads only the keys it understands from
+    # this, so the shape isn't validated more strictly than "a dict" here.
+    filters: dict = {}
 
 
 class DataJobOut(BaseModel):
@@ -414,6 +419,7 @@ class DataJobOut(BaseModel):
     success_rows: int
     failed_rows: int
     row_results: Optional[list[dict]] = None
+    filters: Optional[dict] = None
     run_by: Optional[str] = None
     created_at: datetime
 

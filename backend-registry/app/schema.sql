@@ -444,3 +444,17 @@ CREATE TABLE IF NOT EXISTS recording_health_events (
 
 CREATE INDEX IF NOT EXISTS idx_recording_health_events_received_at ON recording_health_events (received_at);
 CREATE INDEX IF NOT EXISTS idx_recording_health_events_stream ON recording_health_events (stream_id);
+
+-- Data Console (registry-side import/export, phase 1): the filter payload
+-- a job's export was run with, kept alongside its row_results so the job
+-- history panel can show *what* was exported, not just how many rows.
+ALTER TABLE import_export_jobs ADD COLUMN IF NOT EXISTS filters JSONB;
+
+-- Widen the format check to admit XLSX (real serialization added this
+-- phase -- previously 'format' was a label only, every job stored JSON
+-- regardless of what was requested). Dropped and recreated by its
+-- Postgres-assigned default name rather than IF NOT EXISTS, which CHECK
+-- constraints don't support for an in-place modification.
+ALTER TABLE import_export_jobs DROP CONSTRAINT IF EXISTS import_export_jobs_format_check;
+ALTER TABLE import_export_jobs ADD CONSTRAINT import_export_jobs_format_check
+    CHECK (format IN ('csv', 'json', 'xlsx'));

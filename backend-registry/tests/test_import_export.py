@@ -30,7 +30,9 @@ def _cleanup_cameras_by_name(names):
         conn.commit()
 
 
-def test_camera_import_commits_valid_rows_and_reports_invalid_ones_without_committing_them(client):
+def test_camera_import_commits_valid_rows_and_reports_invalid_ones_without_committing_them(
+    client, data_job_test_rows
+):
     _seed()
     headers = _super_admin_headers(client)
     rows = [
@@ -46,6 +48,7 @@ def test_camera_import_commits_valid_rows_and_reports_invalid_ones_without_commi
         )
         assert resp.status_code == 201
         job = resp.json()
+        data_job_test_rows.append(job["id"])
         assert job["total_rows"] == 2
         assert job["success_rows"] == 1
         assert job["failed_rows"] == 1
@@ -59,7 +62,7 @@ def test_camera_import_commits_valid_rows_and_reports_invalid_ones_without_commi
         _cleanup_cameras_by_name(["Import Test Cam Valid", "Import Test Cam Invalid"])
 
 
-def test_resubmit_failed_rows_only_retries_what_failed(client):
+def test_resubmit_failed_rows_only_retries_what_failed(client, data_job_test_rows):
     _seed()
     headers = _super_admin_headers(client)
     rows = [
@@ -71,6 +74,7 @@ def test_resubmit_failed_rows_only_retries_what_failed(client):
             json={"entity_type": "cameras", "format": "json", "rows": rows},
             headers=headers,
         ).json()
+        data_job_test_rows.append(first["id"])
         assert first["failed_rows"] == 1
 
         # Still bad on resubmit (we never fixed the row) -- proves it actually
@@ -78,6 +82,7 @@ def test_resubmit_failed_rows_only_retries_what_failed(client):
         resubmit_resp = client.post(f"/admin/data-jobs/{first['id']}/resubmit-failed", headers=headers)
         assert resubmit_resp.status_code == 200
         resubmitted = resubmit_resp.json()
+        data_job_test_rows.append(resubmitted["id"])
         assert resubmitted["id"] != first["id"]
         assert resubmitted["total_rows"] == 1
         assert resubmitted["failed_rows"] == 1
@@ -85,7 +90,7 @@ def test_resubmit_failed_rows_only_retries_what_failed(client):
         _cleanup_cameras_by_name(["Resubmit Cam Bad"])
 
 
-def test_get_data_job_requires_the_entitys_own_permission(client):
+def test_get_data_job_requires_the_entitys_own_permission(client, data_job_test_rows):
     _seed()
     sa_headers = _super_admin_headers(client)
     job = client.post(
@@ -93,6 +98,7 @@ def test_get_data_job_requires_the_entitys_own_permission(client):
         json={"entity_type": "officers", "format": "json"},
         headers=sa_headers,
     ).json()
+    data_job_test_rows.append(job["id"])
 
     # An auditor holds view_audit_logs, not manage_users_roles -- blocked
     # from an officers-entity job even though they can authenticate fine.
@@ -107,7 +113,7 @@ def test_get_data_job_requires_the_entitys_own_permission(client):
     assert resp.status_code == 403
 
 
-def test_audit_logs_entity_supports_export_but_not_import(client):
+def test_audit_logs_entity_supports_export_but_not_import(client, data_job_test_rows):
     _seed()
     headers = _super_admin_headers(client)
 
@@ -115,6 +121,7 @@ def test_audit_logs_entity_supports_export_but_not_import(client):
         "/admin/data-jobs?direction=export", json={"entity_type": "audit_logs", "format": "json"}, headers=headers,
     )
     assert export_resp.status_code == 201
+    data_job_test_rows.append(export_resp.json()["id"])
     assert export_resp.json()["total_rows"] >= 1
 
     import_resp = client.post(
@@ -125,7 +132,7 @@ def test_audit_logs_entity_supports_export_but_not_import(client):
     assert import_resp.status_code == 400
 
 
-def test_officer_export_returns_every_seeded_officer(client):
+def test_officer_export_returns_every_seeded_officer(client, data_job_test_rows):
     _seed()
     headers = _super_admin_headers(client)
     resp = client.post(
@@ -134,6 +141,7 @@ def test_officer_export_returns_every_seeded_officer(client):
         headers=headers,
     )
     assert resp.status_code == 201
+    data_job_test_rows.append(resp.json()["id"])
     job = resp.json()
     assert job["direction"] == "export"
     badges = {row["badge_number"] for row in job["row_results"]}

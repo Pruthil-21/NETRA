@@ -185,6 +185,49 @@ def update_camera(conn, camera_id: int, data: dict):
     return get_camera(conn, camera_id), connectivity_changed
 
 
+def list_camera_status_history(
+    conn,
+    camera_id: int | None = None,
+    district: str | None = None,
+    date_from=None,
+    date_to=None,
+) -> list[dict]:
+    """Flat, filterable read across every camera's status-history rows --
+    for the Data Console export. get_uptime_windows (below) stays the
+    per-camera windowed view an officer looking at one camera actually
+    wants; this is the "give me every transition in this range" cut a
+    report pulls from instead."""
+    clauses = []
+    params: list = []
+    if camera_id is not None:
+        clauses.append("h.camera_id = %s")
+        params.append(camera_id)
+    if district is not None:
+        clauses.append("c.dept = %s")
+        params.append(district)
+    if date_from is not None:
+        clauses.append("h.changed_at >= %s")
+        params.append(date_from)
+    if date_to is not None:
+        clauses.append("h.changed_at <= %s")
+        params.append(date_to)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT h.id, h.camera_id, c.name AS camera_name, c.dept AS district,
+                   h.connectivity_status, h.changed_at
+            FROM camera_status_history h
+            JOIN cameras c ON c.id = h.camera_id
+            {where}
+            ORDER BY h.changed_at DESC
+            """,
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def get_uptime_windows(conn, camera_id: int) -> list[dict] | None:
     """Pairs consecutive camera_status_history rows into windows: each row's
     status holds from its own changed_at until the next row's changed_at
