@@ -18,9 +18,14 @@ venv/
 streaming/.organizer-password
 streaming/snmp/targets.json
 
+# Federation middleware secrets/local config (machine-specific)
+middleware/.env.federation
+middleware/sources.local.json
+
 # OS
 .DS_Store
 Thumbs.db
+._*
 
 # Editor
 .vscode/

@@ -1,0 +1,25 @@
+[
+  {
+    "id": "organizer",
+    "name": "Organizer camera system",
+    "adapter": "organizer",
+    "force_ipv4": true,
+    "inventory_url": "https://cctv.corp8.cloud/cameras.json",
+    "playback_base": "https://stream.digdhrishti.me",
+    "playback_template": "stream/direct-{id}/index.m3u8",
+    "login_url": "https://cctv.corp8.cloud/auth/login",
+    "login_email_env": "ORGANIZER_EMAIL",
+    "login_password_env": "ORGANIZER_PASSWORD",
+    "ingest_key_env": "ORGANIZER_INGEST_KEY"
+  },
+  {
+    "id": "local-replay",
+    "name": "DIGDRISHTI MediaMTX replay system",
+    "adapter": "mediamtx",
+    "inventory_url": "http://127.0.0.1:9997/v3/paths/list",
+    "playback_base": "https://stream.digdhrishti.me",
+    "path_prefix": "stream/demo-",
+    "ingest_key_env": "REPLAY_INGEST_KEY",
+    "representative": true
+  }
+]
