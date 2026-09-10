@@ -1,7 +1,13 @@
 name: netra-live
+x-logging: &stream-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
 
 services:
   mediamtx:
+    logging: *stream-logging
     image: bluenviron/mediamtx:1.20.0
     container_name: netra-mediamtx
     restart: unless-stopped
@@ -19,6 +25,7 @@ services:
       - ./mediamtx.yml:/mediamtx.yml:ro
 
   live-relay:
+    logging: *stream-logging
     build:
       context: .
       dockerfile: docker/Dockerfile.live
@@ -38,6 +45,9 @@ services:
       STREAM_PREFIX: direct
       CAMERA_LIMIT: "${CAMERA_LIMIT:-30}"
       RETRY_SECONDS: "${RETRY_SECONDS:-10}"
+      STALL_SECONDS: "${STALL_SECONDS:-45}"
+      MIN_ONLINE_CAMERAS: "${MIN_ONLINE_CAMERAS:-1}"
+      RELAY_FPS: "${RELAY_FPS:-15}"
       AUTH_REFRESH_SECONDS: "${AUTH_REFRESH_SECONDS:-600}"
       TRANSCODE_CAMERAS: "${TRANSCODE_CAMERAS:-^(cam09|cam15|cam18|cam24|cam27|cam29|cam30)$}"
       ORGANIZER_EMAIL_FILE: /run/secrets/organizer_email
@@ -48,13 +58,14 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - test -s /tmp/netra-live/cameras.json
+        - /usr/local/bin/live-healthcheck
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       retries: 5
       start_period: 30s
 
   demo-replay:
+    logging: *stream-logging
     build:
       context: .
       dockerfile: docker/Dockerfile.demo-replay
@@ -84,6 +95,7 @@ services:
       start_period: 60s
 
   cloudflared:
+    logging: *stream-logging
     image: cloudflare/cloudflared:latest
     container_name: netra-cloudflared
     restart: unless-stopped

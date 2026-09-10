@@ -6,6 +6,7 @@ FOOTAGE_DIR="${FOOTAGE_DIR:-/demo-footage}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
 RETRY_SECONDS="${RETRY_SECONDS:-5}"
+[[ "$RETRY_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid retry interval" >&2; exit 1; }
 
 PIDS=()
 
@@ -33,7 +34,9 @@ cleanup() {
   wait 2>/dev/null || true
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [[ -d "$FOOTAGE_DIR" ]] || {
   echo "Demo footage directory is unavailable: $FOOTAGE_DIR" >&2
@@ -60,11 +63,21 @@ done
   exit 1
 }
 
-publish() {
+publish() (
   local stream_id="$1"
   local filename="$2"
-  local input_file="${FOOTAGE_DIR}/${filename}"
+  local input_file="${FOOTAGE_DIR}/prepared/${stream_id}.mp4"
   local target="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${stream_id}"
+  publisher_pid=""
+  stop_publisher() {
+    if [[ -n "$publisher_pid" ]]; then
+      kill -TERM "$publisher_pid" 2>/dev/null || true
+      wait "$publisher_pid" 2>/dev/null || true
+    fi
+  }
+  trap stop_publisher EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   [[ -s "$input_file" ]] || {
     log "[$stream_id] missing or empty file: $input_file"
@@ -72,7 +85,7 @@ publish() {
   }
 
   while true; do
-    log "[$stream_id] publishing ${filename}"
+    log "[$stream_id] publishing prepared ${stream_id}.mp4"
 
     ffmpeg \
       -nostdin \
@@ -85,32 +98,24 @@ publish() {
       -i "$input_file" \
       -map 0:v:0 \
       -an \
-      -vf "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black,fps=15" \
-      -c:v libx264 \
-      -preset ultrafast \
-      -tune zerolatency \
-      -b:v 900k \
-      -maxrate 1100k \
-      -bufsize 1800k \
-      -pix_fmt yuv420p \
-      -g 30 \
-      -keyint_min 30 \
-      -sc_threshold 0 \
-      -threads 1 \
+      -c:v copy \
       -f rtsp \
       -rtsp_transport tcp \
-      "$target" || true
+      "$target" &
+    publisher_pid=$!
+    wait "$publisher_pid" || true
+    publisher_pid=""
 
     log "[$stream_id] publisher stopped; retrying in ${RETRY_SECONDS}s"
     sleep "$RETRY_SECONDS"
   done
-}
+)
 
 for source in "${SOURCES[@]}"; do
   IFS='|' read -r stream_id filename <<< "$source"
 
-  [[ -s "${FOOTAGE_DIR}/${filename}" ]] || {
-    echo "Required recording is missing: ${FOOTAGE_DIR}/${filename}" >&2
+  [[ -s "${FOOTAGE_DIR}/prepared/${stream_id}.mp4" ]] || {
+    echo "Prepared recording is missing: ${FOOTAGE_DIR}/prepared/${stream_id}.mp4; run prepare_demo_footage.py first" >&2
     exit 1
   }
 
@@ -119,4 +124,6 @@ for source in "${SOURCES[@]}"; do
 done
 
 log "Demo-footage publishers launched: ${#PIDS[@]}"
-wait
+wait -n || true
+log "A demo supervisor exited unexpectedly."
+exit 1

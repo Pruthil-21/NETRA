@@ -18,24 +18,35 @@ def now():
 def load_config():
     with TARGETS_FILE.open(encoding="utf-8") as config_file:
         config = json.load(config_file)
+    if not isinstance(config, dict):
+        raise RuntimeError("Configuration must be an object.")
     if config.get("mode", "mock") != "mock":
         raise RuntimeError("Only mock mode is enabled until real SNMPv3 device access is available.")
     limit = config.get("camera_limit", 30)
-    if not isinstance(limit, int) or limit < 1:
-        raise RuntimeError("camera_limit must be a positive integer.")
+    if type(limit) is not int or not 1 <= limit <= 5000:
+        raise RuntimeError("camera_limit must be an integer from 1 to 5000.")
+    states = config.get("mock_states", {})
+    if not isinstance(states, dict) or any(v not in ("online", "offline") for v in states.values()):
+        raise RuntimeError("mock_states must map device IDs to online or offline.")
     return config, limit
 
 
 def load_cameras(limit):
     cameras = []
+    seen = set()
     if MANIFEST_FILE.is_file():
         try:
             manifest = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
             if isinstance(manifest, list):
                 for item in manifest:
+                    if not isinstance(item, dict):
+                        continue
                     camera_id = str(item.get("id", "")).strip()
-                    if camera_id:
+                    if camera_id and camera_id not in seen:
                         cameras.append({"id": camera_id, "name": str(item.get("name", camera_id))})
+                        seen.add(camera_id)
+                        if len(cameras) >= limit:
+                            break
         except (json.JSONDecodeError, OSError):
             pass
     present = {camera["id"] for camera in cameras}

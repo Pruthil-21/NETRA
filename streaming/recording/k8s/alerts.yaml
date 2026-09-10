@@ -1,0 +1,24 @@
+# Load into Prometheus (or wrap in a PrometheusRule with your operator's labels).
+groups:
+- name: recording
+  rules:
+  - alert: RecordingFeedLoss
+    expr: recording_cameras{state=~"feed_lost|worker_unavailable|disk_full|archive_delayed"} > 0
+    for: 2m
+    labels: {severity: critical}
+    annotations: {summary: "Recording coverage or archival is degraded; inspect /api/health"}
+  - alert: RecordingNotificationsDelayed
+    expr: recording_notification_delay_seconds > 120
+    for: 2m
+    labels: {severity: warning}
+    annotations: {summary: "Registry recording notifications are not being delivered"}
+  - alert: RecordingMetricsMissing
+    expr: absent(recording_cameras)
+    for: 3m
+    labels: {severity: critical}
+    annotations: {summary: "Archive monitoring is unavailable"}
+  - alert: RecorderVolumeNearlyFull
+    expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+    for: 5m
+    labels: {severity: critical}
+    annotations: {summary: "A persistent volume has less than 15 percent free space"}
