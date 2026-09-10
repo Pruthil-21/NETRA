@@ -1,0 +1,1 @@
+"""DIGDRISHTI inventory federation service."""

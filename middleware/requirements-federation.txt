@@ -1,0 +1,4 @@
+-r requirements.txt
+psycopg[binary,pool]==3.2.10
+celery[redis]==5.5.3
+ijson==3.4.0
