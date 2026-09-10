@@ -28,6 +28,49 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Web Push -- an alert (watchlist match, congestion, camera-down,
+// escalation; see backend-registry/backend-watchlist's push_service.py)
+// arrives here even when no tab has the app open. Payload shape is always
+// {title, body, url} -- url is what notificationclick below opens.
+self.addEventListener('push', (event) => {
+  let payload = { title: 'DIGDHRISHTI', body: 'New alert', url: '/' };
+  try {
+    if (event.data) payload = { ...payload, ...event.data.json() };
+  } catch {
+    // Malformed/non-JSON push payload -- show the generic fallback above
+    // rather than silently dropping the notification.
+  }
+
+  event.waitUntil(
+    // No icon set: this PWA doesn't ship one yet (manifest.json's own
+    // icons array is empty too) -- browsers fall back to a default
+    // notification icon rather than showing a broken image.
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      data: { url: payload.url },
+    })
+  );
+});
+
+// Focuses an existing DIGDHRISHTI tab if one's already open (navigating it
+// to the alert's page) rather than always opening a new one -- an officer
+// with the app already open in the background shouldn't end up with two tabs.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ('focus' in client) {
+          client.navigate(url);
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(url);
+    })
+  );
+});
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;

@@ -28,5 +28,13 @@ class Settings:
     # every 5-minute tick during a sustained jam would create a fresh row.
     traffic_alert_cooldown_minutes: int = int(os.environ.get("TRAFFIC_ALERT_COOLDOWN_MINUTES", 30))
 
+    # Web Push (VAPID) -- see services/push_service.py. Optional: an unset
+    # VAPID_PRIVATE_KEY just means push_service.send_to_badges skips sending
+    # (no-ops) rather than crashing -- every other alert path (WS, poll) is
+    # completely unaffected.
+    vapid_public_key: str = os.environ.get("VAPID_PUBLIC_KEY", "")
+    vapid_private_key: str = os.environ.get("VAPID_PRIVATE_KEY", "")
+    vapid_subject: str = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
+
 
 settings = Settings()

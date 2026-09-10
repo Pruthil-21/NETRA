@@ -27,6 +27,7 @@ from .routers import (
     notifications,
     police_stations,
     postings,
+    push,
     recording_webhooks,
     registration_admin,
     reports,
@@ -56,6 +57,7 @@ app.add_middleware(
 app.include_router(build_federation_router(get_current_user, has_permission, get_conn))
 
 app.include_router(auth.router)
+app.include_router(push.router)
 app.include_router(registration_admin.router)
 app.include_router(postings.router)
 app.include_router(notifications.router)

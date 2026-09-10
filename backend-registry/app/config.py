@@ -30,6 +30,13 @@ class Settings:
     # until a real sending domain is verified. Fine for dev/demo; swap for a
     # verified "you@yourdomain.com" address in production.
     resend_from_email: str = os.environ.get("RESEND_FROM_EMAIL", "DIGDHRISHTI <onboarding@resend.dev>")
+    # Web Push (VAPID) -- see services/push_service.py. Optional: an unset
+    # VAPID_PRIVATE_KEY just means push_service.send_to_badges skips sending
+    # (logs and no-ops) rather than crashing, same "degrade, don't break"
+    # posture as resend_api_key above.
+    vapid_public_key: str = os.environ.get("VAPID_PUBLIC_KEY", "")
+    vapid_private_key: str = os.environ.get("VAPID_PRIVATE_KEY", "")
+    vapid_subject: str = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
 
 
 settings = Settings()

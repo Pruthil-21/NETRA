@@ -1,10 +1,11 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
-import { UserCircle2, ShieldCheck, MapPin, Clock, Mail, Image as ImageIcon, Upload, X, CheckCircle2, AlertTriangle } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { UserCircle2, ShieldCheck, MapPin, Clock, Mail, Image as ImageIcon, Upload, X, CheckCircle2, AlertTriangle, Bell, BellOff } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { updateProfilePhoto, updateMyEmail, verifyMyEmail } from '@/services/profileService';
 import { fileToAvatarDataUri, ImageUploadError } from '@/lib/imageUpload';
+import { isPushSupported, isSubscribed, subscribe, unsubscribe } from '@/services/pushSubscriptionService';
 
 function formatRole(role: string | null): string {
   if (!role) return '—';
@@ -406,6 +407,89 @@ function EmailTwoFactorSection() {
   );
 }
 
+/** Opt-in toggle for real OS-level push notifications (watchlist match,
+ * congestion, camera-down, escalation) -- reaches this device even with
+ * the app closed, on top of the in-app bell/poll this app already has.
+ * Deliberately opt-in via a toggle here rather than an auto-prompt on
+ * every login: an officer grants it once, and it persists as a server-side
+ * subscription row, not anything that needs re-asking each session. */
+function PushNotificationsSection() {
+  const [supported, setSupported] = useState(true);
+  const [enabled, setEnabled] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSupported(isPushSupported());
+    isSubscribed()
+      .then(setEnabled)
+      .catch(() => setEnabled(false))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleToggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (enabled) {
+        await unsubscribe();
+        setEnabled(false);
+      } else {
+        await subscribe();
+        setEnabled(true);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update push notification settings');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <section className="bg-panel border border-line rounded-lg p-4 sm:p-5">
+      <h2 className="text-sm font-semibold text-white uppercase tracking-wide mb-1">Push Notifications</h2>
+      <p className="text-xs text-slate-500 mb-3">
+        Get watchlist, congestion, camera-down, and escalation alerts on this device even when
+        DIGDHRISHTI isn&apos;t open -- on top of the in-app bell, not instead of it.
+      </p>
+      {!supported ? (
+        <p className="text-xs text-slate-500">Not supported in this browser.</p>
+      ) : (
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleToggle}
+            disabled={busy}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded disabled:opacity-50 ${
+              enabled
+                ? 'bg-panel-raised border border-line text-slate-300 hover:text-white'
+                : 'bg-command hover:bg-command-dim text-white'
+            }`}
+          >
+            {enabled ? <BellOff size={13} /> : <Bell size={13} />}
+            {busy ? 'Updating…' : enabled ? 'Turn Off' : 'Turn On'}
+          </button>
+          <span className="text-xs text-slate-400">
+            {enabled ? (
+              <span className="text-signal-green font-semibold">ON</span>
+            ) : (
+              <span className="text-slate-500">OFF</span>
+            )}
+          </span>
+        </div>
+      )}
+      {error && (
+        <p className="flex items-center gap-1.5 text-[11px] text-signal-red mt-2">
+          <AlertTriangle size={12} /> {error}
+        </p>
+      )}
+    </section>
+  );
+}
+
 export default function ProfilePage() {
   const { badgeNumber, name, role, rank, scopeValue, lastLogin, loading } = usePermissions();
 
@@ -468,6 +552,8 @@ export default function ProfilePage() {
           </p>
           <EmailTwoFactorSection />
         </section>
+
+        <PushNotificationsSection />
       </div>
     </main>
   );

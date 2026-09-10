@@ -28,6 +28,7 @@ from ..services import (
     audit_service,
     cameras_service,
     circles_service,
+    push_service,
     recording_health_events_service,
     recordings_service,
     snmp_service,
@@ -214,6 +215,15 @@ def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_per
             audit_service.log(conn, user.get("badge_number", user.get("sub")), "update", "camera", camera_id)
         if connectivity_changed:
             logger.info(f"camera {camera_id} connectivity changed to '{updated['connectivity_status']}'")
+            if updated["connectivity_status"] == "offline":
+                push_service.send_to_badges(
+                    conn, push_service.recipients_for_scope(conn, updated["dept"]),
+                    {
+                        "title": "Camera offline",
+                        "body": f"{updated['name']} ({updated['dept']}) went offline",
+                        "url": "/admin",
+                    },
+                )
 
         return updated
 

@@ -7,7 +7,7 @@ in the latest history row so callers always see the current status.
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from . import alerts_stream, govt_lookup_service, watchlist_service
+from . import alerts_stream, govt_lookup_service, push_service, watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
     SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
@@ -124,6 +124,15 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
     dept_row = db.fetchone()
     camera_district = dept_row["dept"] if dept_row else None
     alerts_stream.manager.broadcast_sync(alert, camera_district)
+
+    push_service.send_to_badges(
+        db, push_service.recipients_for_scope(db, camera_district),
+        {
+            "title": "Watchlist match",
+            "body": f"{plate_number} spotted at camera {camera_id}",
+            "url": f"/alerts/track/{plate_number}",
+        },
+    )
 
     return alert
 

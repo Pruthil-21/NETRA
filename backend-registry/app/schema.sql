@@ -458,3 +458,22 @@ ALTER TABLE import_export_jobs ADD COLUMN IF NOT EXISTS filters JSONB;
 ALTER TABLE import_export_jobs DROP CONSTRAINT IF EXISTS import_export_jobs_format_check;
 ALTER TABLE import_export_jobs ADD CONSTRAINT import_export_jobs_format_check
     CHECK (format IN ('csv', 'json', 'xlsx'));
+
+-- Web Push subscriptions -- shared across backend-registry and
+-- backend-watchlist (same Postgres instance), same convention audit_logs
+-- above uses: declared identically, behind IF NOT EXISTS, in both
+-- services' schema.sql so either one can run first with zero cross-folder
+-- migration coordination. badge_number, not a FK to officers(id), since
+-- either service needs to write/read this without depending on the
+-- other's ownership of the officers table.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id           SERIAL PRIMARY KEY,
+    badge_number TEXT NOT NULL,
+    endpoint     TEXT NOT NULL,
+    p256dh_key   TEXT NOT NULL,
+    auth_key     TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (badge_number, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_badge ON push_subscriptions (badge_number);

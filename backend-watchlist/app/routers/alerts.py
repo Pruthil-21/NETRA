@@ -21,7 +21,7 @@ from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
 from ..schemas import AlertOut, AlertStatusUpdate
-from ..services import alerts_service, alerts_stream, audit_service
+from ..services import alerts_service, alerts_stream, audit_service, push_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -53,6 +53,25 @@ def update_alert_status(
         raise HTTPException(status_code=404, detail="Alert not found")
     audit_service.log(db, actor, "status_change", "alert", alert_id, reason_code=body.reason_code)
     logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
+
+    if body.status == "ESCALATED":
+        db.execute("SELECT dept FROM cameras WHERE id = %s", (alert["camera_id"],))
+        dept_row = db.fetchone()
+        district = dept_row["dept"] if dept_row else None
+        # Every officer scoped to see this alert, not just one named
+        # assignee -- there's no "escalate to a specific officer" concept
+        # in the alert model today (AlertStatusUpdate is just a status
+        # enum), so this reuses the same district/platform scoping the WS
+        # broadcast already applies rather than inventing new assignment UI.
+        push_service.send_to_badges(
+            db, push_service.recipients_for_scope(db, district),
+            {
+                "title": "Alert escalated",
+                "body": f"{alert['plate_number']} escalated by {actor}",
+                "url": f"/alerts/track/{alert['plate_number']}",
+            },
+        )
+
     return alert
 
 

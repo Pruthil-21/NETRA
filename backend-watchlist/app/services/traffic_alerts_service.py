@@ -19,7 +19,7 @@ from psycopg2.extras import RealDictCursor
 from .. import database
 from ..config import settings
 from ..logging_config import logger
-from . import alerts_stream, detections_service
+from . import alerts_stream, detections_service, push_service
 
 
 def _camera_district(db: RealDictCursor, camera_id: int) -> str | None:
@@ -67,6 +67,15 @@ def _create_and_broadcast(
     )
     alert = db.fetchone()
     alerts_stream.manager.broadcast_sync(alert, district, kind="congestion")
+
+    if alert_type == "density":
+        body = f"Camera {camera_id}: {metric_value:g} detections (threshold {threshold_value:g})"
+    else:
+        body = f"Camera {from_camera_id} -> {to_camera_id}: {metric_value:g} km/h avg (threshold {threshold_value:g})"
+    push_service.send_to_badges(
+        db, push_service.recipients_for_scope(db, district),
+        {"title": "Traffic congestion alert", "body": body, "url": "/map"},
+    )
 
     return alert
 
