@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 def normalize_plate(value: str) -> str:
@@ -171,6 +171,22 @@ class AlertOut(BaseModel):
 
 class AlertStatusUpdate(BaseModel):
     status: Literal["ACKNOWLEDGED", "DISMISSED", "ESCALATED"]
+    reason_code: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_reason_on_dismiss(self):
+        # A dismissed watchlist hit with no recorded reason is an
+        # accountability gap -- Acknowledge/Escalate leave the alert open to
+        # further action so they don't need one, but Dismiss is final.
+        if self.status == "DISMISSED" and not (self.reason_code or "").strip():
+            raise ValueError("reason_code is required when dismissing an alert")
+        return self
+
+
+class AlertHistoryEntry(BaseModel):
+    action: str
+    badge_number: Optional[str] = None
+    timestamp: datetime
     reason_code: Optional[str] = None
 
 

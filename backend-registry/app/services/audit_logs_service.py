@@ -21,7 +21,7 @@ CATEGORIES: dict[str, dict[str, list[str]]] = {
     "user_management": {"resource_types": ["posting", "role"]},
     "camera_registry": {"resource_types": ["camera"]},
     "infrastructure": {"resource_types": ["circle", "police_station", "coverage_target"]},
-    "alerts": {"resource_types": ["alert"]},
+    "alerts": {"resource_types": ["alert", "traffic_alert"]},
     "detections": {"resource_types": ["detection"]},
     "data_jobs": {"resource_types": ["import_export_job"]},
 }

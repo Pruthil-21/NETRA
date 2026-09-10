@@ -24,6 +24,15 @@ export interface Alert {
   nearest_station?: { name: string; distance_meters: number } | null;
 }
 
+// One audit_logs row for this alert (see backend-watchlist's
+// audit_service.history_for) -- the alert detail panel's history strip.
+export interface AlertHistoryEntry {
+  action: string;
+  badge_number: string | null;
+  timestamp: string;
+  reason_code: string | null;
+}
+
 export type WatchlistPriority = 'low' | 'medium' | 'high';
 
 export interface WatchlistEntry {

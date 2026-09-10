@@ -20,7 +20,7 @@ from ..auth import _RBAC_ROLES, require_role
 from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
-from ..schemas import AlertOut, AlertStatusUpdate
+from ..schemas import AlertHistoryEntry, AlertOut, AlertStatusUpdate
 from ..services import alerts_service, alerts_stream, audit_service, push_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
@@ -51,7 +51,7 @@ def update_alert_status(
     alert = alerts_service.update_status(db, alert_id, body.status, actor)
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
-    audit_service.log(db, actor, "status_change", "alert", alert_id, reason_code=body.reason_code)
+    audit_service.log(db, actor, f"alert_{body.status.lower()}", "alert", alert_id, reason_code=body.reason_code)
     logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
 
     if body.status == "ESCALATED":
@@ -73,6 +73,15 @@ def update_alert_status(
         )
 
     return alert
+
+
+@router.get("/{alert_id}/history", response_model=list[AlertHistoryEntry])
+def get_alert_history(
+    alert_id: int,
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_role("officer")),
+):
+    return audit_service.history_for(db, "alert", alert_id)
 
 
 @router.websocket("/stream")
