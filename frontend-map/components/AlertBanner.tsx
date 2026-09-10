@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { AlertTriangle } from "lucide-react";
 import { WATCHLIST_API_URL } from "@/config/streams";
 import { authorizedFetch, describeFetchError } from "@/lib/apiClient";
 
@@ -15,6 +16,14 @@ export interface Alert {
   watchlist_id: number;
   matched_at: string;
   status: "NEW" | "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED" | string;
+  // Attached server-side (alerts_service._with_nearest_station) via a real
+  // PostGIS distance calculation from the alert's camera -- null only when
+  // the environment has zero police_stations rows configured yet.
+  nearest_station?: { name: string; distance_meters: number } | null;
+}
+
+function formatDistance(meters: number): string {
+  return meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${Math.round(meters)}m`;
 }
 
 type ActionStatus = "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED";
@@ -49,6 +58,10 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
   // guards against a mis-click on a fast-arriving queue; it reverts on its own
   // if the officer moves on instead of confirming.
   const [confirmDismiss, setConfirmDismiss] = useState(false);
+  // Previously a failed poll only went to console.warn/error -- an officer
+  // watching the actual page had no way to know the alerts feed was down at
+  // all, since this component renders nothing when there's no active alert.
+  const [pollError, setPollError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchAlerts = async () => {
@@ -56,12 +69,18 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
         const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts`);
 
         if (!res.ok) {
+          const message =
+            res.status === 401 || res.status === 403
+              ? "Not authorized — log in again to receive alerts."
+              : `Alerts feed unavailable (HTTP ${res.status}).`;
           console.warn(`Alerts API returned ${res.status} — check you are logged in with a valid officer session.`);
+          setPollError(message);
           onConnectionChange?.(false);
           return;
         }
 
         const alerts: Alert[] = await res.json();
+        setPollError(null);
         onConnectionChange?.(true);
         onAlertsUpdate?.(alerts);
 
@@ -77,6 +96,7 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
         });
       } catch (err) {
         console.error("Failed to poll alerts:", describeFetchError(err, "unknown error"));
+        setPollError("Alerts feed unreachable — retrying…");
         onConnectionChange?.(false);
       }
     };
@@ -124,7 +144,17 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
     }
   };
 
-  if (!activeAlert) return null;
+  if (!activeAlert) {
+    if (!pollError) return null;
+    // Visible even with no active alert -- a dead feed is exactly the kind
+    // of failure an officer can't tell apart from "quiet shift" otherwise.
+    return (
+      <div className="bg-amber-900/80 text-amber-200 px-4 py-2 flex items-center gap-2 text-xs font-medium w-full">
+        <AlertTriangle size={14} className="shrink-0" />
+        {pollError}
+      </div>
+    );
+  }
 
   return (
     <div className="bg-red-600 text-white px-4 py-3 flex flex-wrap justify-between items-center gap-3 shadow-lg w-full">
@@ -138,6 +168,12 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
           {activeAlert.camera_id}
         </button>
         <span className="ml-2 text-red-100 text-xs">{timeAgo(activeAlert.matched_at)}</span>
+        {activeAlert.nearest_station && (
+          <span className="ml-2 text-red-100 text-xs">
+            &middot; Nearest station: {activeAlert.nearest_station.name} (
+            {formatDistance(activeAlert.nearest_station.distance_meters)})
+          </span>
+        )}
         {queuedCount > 0 && (
           <span className="ml-2 text-red-100 text-xs font-medium">
             (+{queuedCount} more alert{queuedCount === 1 ? "" : "s"} pending)

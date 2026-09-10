@@ -99,3 +99,22 @@ ALTER TABLE detections ADD COLUMN IF NOT EXISTS event_id UUID;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_detections_event_id_dedup
     ON detections (event_id)
     WHERE event_id IS NOT NULL;
+
+-- Derived, non-evidentiary daily rollup of detections, for cross-camera
+-- "where was this plate seen today" queries -- NOT a replacement for the
+-- insert-only detections table above, which remains the evidentiary
+-- record. One row per camera_id + plate_number + IST calendar day;
+-- detection_times accumulates every sighting's exact timestamp, no
+-- cooldown or de-duplication (ml-anpr's own tracker already suppresses
+-- same-camera re-sends within 45s upstream).
+CREATE TABLE vehicle_daily_sightings (
+    id              BIGSERIAL PRIMARY KEY,
+    camera_id       INTEGER NOT NULL,
+    plate_number    TEXT NOT NULL,
+    sighting_date   DATE NOT NULL,
+    detection_times TIMESTAMPTZ[] NOT NULL DEFAULT '{}',
+    UNIQUE (camera_id, plate_number, sighting_date)
+);
+
+CREATE INDEX idx_vehicle_daily_sightings_plate
+    ON vehicle_daily_sightings (plate_number, sighting_date);

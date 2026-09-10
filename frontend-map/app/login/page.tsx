@@ -84,6 +84,12 @@ export default function LoginPage() {
         <p className="text-center text-[10px] text-slate-600 mt-6">
           Authorized personnel only. All access is logged.
         </p>
+        <p className="text-center text-[10px] text-slate-600 mt-2">
+          New officer?{' '}
+          <a href="/register" className="text-command hover:underline">
+            Register for access
+          </a>
+        </p>
       </div>
     </main>
   );

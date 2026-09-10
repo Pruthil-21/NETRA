@@ -12,6 +12,7 @@ import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manual
 import { getCameraStreamUrl } from '@/lib/stream';
 import { getWebRtcWhepUrl } from '@/lib/webrtc';
 import { authHeaders } from '@/lib/apiAuth';
+import { SESSION_CHANGED_EVENT } from '@/lib/session';
 
 // backend-registry is the only live camera source now — the organizer's direct
 // live.corp8.cloud API (previously fetched via /api/organizer-cameras) has been
@@ -111,6 +112,14 @@ interface RegistryContextType {
   addCamera: (raw: OrganizerCamera) => void;
   /** Bulk-imports many cameras at once (CSV/JSON upload), same id rules as addCamera. */
   importCameras: (raws: OrganizerCamera[]) => void;
+  /** Reflects a real registry camera's circle_id in local state after the
+   * caller (CameraDetailDrawer) has already confirmed the write succeeded via
+   * cameraService.updateCameraCircle -- mirrors updateCameraConnectivity's
+   * "patch the one changed camera in place" shape, but doesn't make the
+   * network call itself: the caller needs to await the request and surface
+   * its own failure (e.g. a cross-district rejection) inline, which a
+   * fire-and-forget update here couldn't do. */
+  applyCameraCircleAssignment: (id: number, circleId: number | null) => void;
 }
 
 const initialFilters: CameraFilters = {
@@ -220,6 +229,20 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     refreshCameras();
   }, [refreshCameras, isScaleRoute]);
 
+  // This provider mounts once at the app root -- if that first mount
+  // happens before anyone has logged in (e.g. landing on /login), the
+  // fetch above 401s with no token and never gets a second try, since
+  // login() navigates client-side afterward rather than reloading the
+  // page. Without this, every camera tree/area shows zero cameras until a
+  // hard refresh remounts the provider fresh with the token already in
+  // place -- see lib/session.ts's SESSION_CHANGED_EVENT.
+  useEffect(() => {
+    if (isScaleRoute) return;
+    const onSessionChanged = () => refreshCameras();
+    window.addEventListener(SESSION_CHANGED_EVENT, onSessionChanged);
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, onSessionChanged);
+  }, [refreshCameras, isScaleRoute]);
+
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
       // 1. Department filter (handles case-insensitive match & 'All Departments')
@@ -281,6 +304,19 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     });
     setSelectedCamera((prev) =>
       prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
+    );
+  }, []);
+
+  const applyCameraCircleAssignment = useCallback((id: number, circleId: number | null) => {
+    setCameras((prev) => {
+      const idx = prev.findIndex((c) => c.id === id);
+      if (idx === -1 || prev[idx].circle_id === circleId) return prev;
+      const next = prev.slice();
+      next[idx] = { ...prev[idx], circle_id: circleId };
+      return next;
+    });
+    setSelectedCamera((prev) =>
+      prev && prev.id === id && prev.circle_id !== circleId ? { ...prev, circle_id: circleId } : prev
     );
   }, []);
 
@@ -355,6 +391,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         updateCameraConnectivity,
         addCamera,
         importCameras,
+        applyCameraCircleAssignment,
       }}
     >
       {children}

@@ -181,3 +181,136 @@ def test_audit_logs_limit_negative_returns_422(client):
     token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
     resp = client.get("/audit-logs", params={"limit": -1}, headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 422
+
+
+@pytest.fixture
+def category_test_data():
+    """One real camera (so camera_id/camera_district/camera_circle_id filters
+    have something genuine to resolve against) plus one audit_logs row per
+    category-defining action/resource_type, tagged with a badge_number
+    unique to this fixture so assertions never depend on the shared demo
+    DB's pre-existing history. Cleans up everything it inserts."""
+    badge = "AUDIT-CATEGORY-TEST"
+    camera_id = None
+    log_ids: list[int] = []
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days)
+                VALUES ('Audit Category Test Cam', 'Audit Category Test District',
+                        ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'Bullet', 'Test Rig', 'Cloud', 30)
+                RETURNING id
+                """,
+            )
+            camera_id = cur.fetchone()[0]
+
+            rows = [
+                (badge, "login", "officer", None),
+                (badge, "change_password", "officer", None),
+                (badge, "reassign_posting", "posting", None),
+                (badge, "create", "camera", camera_id),
+                (badge, "create", "circle", None),
+                (badge, "status_change", "alert", None),
+                (badge, "create", "detection", None),
+            ]
+            for b, action, resource_type, resource_id in rows:
+                cur.execute(
+                    """
+                    INSERT INTO audit_logs (badge_number, action, resource_type, resource_id)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (b, action, resource_type, resource_id),
+                )
+                log_ids.append(cur.fetchone()[0])
+        conn.commit()
+
+    try:
+        yield {"badge": badge, "camera_id": camera_id}
+    finally:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                if log_ids:
+                    cur.execute("DELETE FROM audit_logs WHERE id = ANY(%s)", (log_ids,))
+                if camera_id:
+                    cur.execute("DELETE FROM cameras WHERE id = %s", (camera_id,))
+            conn.commit()
+
+
+@pytest.mark.parametrize(
+    "category,expected_action",
+    [
+        ("authentication", "login"),
+        ("credentials", "change_password"),
+        ("user_management", "reassign_posting"),
+        ("camera_registry", "create"),
+        ("infrastructure", "create"),
+        ("alerts", "status_change"),
+        ("detections", "create"),
+    ],
+)
+def test_category_filter_returns_only_that_categorys_entries(client, category_test_data, category, expected_action):
+    data = category_test_data
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    resp = client.get(
+        "/audit-logs",
+        params={"badge_number": data["badge"], "category": category},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    logs = resp.json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["category"] == category
+    assert logs[0]["action"] == expected_action
+
+
+def test_camera_id_filter_resolves_camera_name_and_location(client, category_test_data):
+    data = category_test_data
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    resp = client.get(
+        "/audit-logs",
+        params={"badge_number": data["badge"], "camera_id": data["camera_id"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    logs = resp.json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["camera_name"] == "Audit Category Test Cam"
+    assert logs[0]["camera_district"] == "Audit Category Test District"
+
+
+def test_camera_district_filter(client, category_test_data):
+    data = category_test_data
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    resp = client.get(
+        "/audit-logs",
+        params={"badge_number": data["badge"], "camera_district": "Audit Category Test District"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    logs = resp.json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["resource_type"] == "camera"
+
+    # A district that doesn't match any camera excludes everything, even
+    # though this badge has other (non-camera) entries too.
+    miss = client.get(
+        "/audit-logs",
+        params={"badge_number": data["badge"], "camera_district": "Nowhere District"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert miss.json()["logs"] == []
+
+
+def test_categories_endpoint_lists_every_category_plus_other(client):
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    resp = client.get("/audit-logs/categories", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    categories = resp.json()["categories"]
+    for expected in [
+        "authentication", "credentials", "user_management", "camera_registry",
+        "infrastructure", "alerts", "detections", "other",
+    ]:
+        assert expected in categories

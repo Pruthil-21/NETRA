@@ -68,14 +68,27 @@ Live-container health requires recent successful authentication and at least one
 docker compose -f compose.live.yaml down
 ```
 
+
 This stops the selected stack. Do not run it during a demo unless you intend to interrupt streaming. Changes to entrypoint scripts require rebuilding their images; files on disk do not update already running containers.
+
+## Recorded footage / archive playback
+
+The six Anand cameras share one replay source for live viewing and recording.
+
+The recording service in `streaming/recording` stores footage and provides timeline lookup, playback, and clip export. Backend-registry authenticates requests and maps registry cameras to their stream paths. Playback uses signed URLs returned by the recording service.
+
+Recording runs independently of whether someone is watching the live stream.
+
+## Utility scripts
+
 
 `rtsp_reader.py` provides raw/resized latest frames, rejects frames older than two seconds by default, bounds FFmpeg-backed OpenCV I/O attempts and avoids concurrent capture/release. It requires OpenCV with the FFmpeg backend and timeout support. Network/video integration still needs testing on the target runtime; it is not a zero-latency guarantee.
 
 ## Federation access
 
-The MediaMTX control API is currently **disabled**. Its existing authentication grants API access only from loopback. Simply enabling a Docker listener or using `host.docker.internal` is insufficient for Pruthil's remote laptop.
+The MediaMTX control API is enabled through the authenticated federation Compose overlay. Port 9997 is bound to loopback and forwarded privately through Tailscale.
 
+The inventory endpoint is `http://100.105.88.26:9997/v3/paths/list`. Access requires HTTP Basic authentication. The federation adapter filters the six Anand cameras using `stream/demo-`. Credentials must remain outside Git.
 
 ## Preserved utilities
 

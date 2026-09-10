@@ -18,6 +18,10 @@ export interface Alert {
   // inside stays "not_configured" until real access exists.
   // See govt_lookup_service.py.
   owner_details?: VehicleGovtLookup | null;
+  // Attached server-side (alerts_service._with_nearest_station) via a real
+  // PostGIS distance calculation from the alert's camera -- null only when
+  // the environment has zero police_stations rows configured yet.
+  nearest_station?: { name: string; distance_meters: number } | null;
 }
 
 export type WatchlistPriority = 'low' | 'medium' | 'high';

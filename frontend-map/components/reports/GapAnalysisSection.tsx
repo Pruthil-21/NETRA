@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { Target, MapPinOff, AlertTriangle } from 'lucide-react';
 import {
   fetchGapAnalysisReport,
   fetchCoverageTargets,
@@ -9,6 +10,42 @@ import {
   CoverageTarget,
 } from '@/services/coverageTargetsService';
 import { usePermissions } from '@/hooks/usePermissions';
+
+function SectionCard({
+  icon: Icon,
+  title,
+  count,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="bg-panel border border-line rounded-lg p-4">
+      <h3 className="flex items-center gap-1.5 text-xs font-semibold text-white uppercase tracking-wide mb-3">
+        <Icon size={13} className="text-slate-500" />
+        {title} <span className="text-slate-500 normal-case font-normal">({count})</span>
+      </h3>
+      {children}
+    </div>
+  );
+}
+
+function TableHead({ columns }: { columns: string[] }) {
+  return (
+    <thead>
+      <tr className="text-slate-500 text-left border-b border-line">
+        {columns.map((col) => (
+          <th key={col} className="pb-2 font-semibold text-[10px] uppercase tracking-wider">
+            {col}
+          </th>
+        ))}
+      </tr>
+    </thead>
+  );
+}
 
 export function GapAnalysisSection() {
   const [report, setReport] = useState<GapAnalysisReport | null>(null);
@@ -50,11 +87,8 @@ export function GapAnalysisSection() {
   if (!report) return <p className="text-slate-500 text-xs">Loading gap analysis…</p>;
 
   return (
-    <div className="flex flex-col gap-4">
-      <div>
-        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">
-          Coverage Targets {targets ? `(${targets.length})` : ''}
-        </h3>
+    <div className="flex flex-col gap-3">
+      <SectionCard icon={Target} title="Coverage Targets" count={targets?.length ?? 0}>
         {targetsError ? (
           <p className="text-signal-red text-xs">{targetsError}</p>
         ) : !targets ? (
@@ -63,21 +97,14 @@ export function GapAnalysisSection() {
           <p className="text-slate-500 text-xs">No coverage targets defined.</p>
         ) : (
           <table className="w-full text-xs">
-            <thead>
-              <tr className="text-slate-500 text-left">
-                <th className="pb-1">Name</th>
-                <th className="pb-1">District</th>
-                <th className="pb-1">Priority</th>
-                <th className="pb-1"></th>
-              </tr>
-            </thead>
+            <TableHead columns={['Name', 'District', 'Priority', '']} />
             <tbody>
               {targets.map((t) => (
-                <tr key={t.id} className="border-t border-line">
-                  <td className="py-1 text-white">{t.name}</td>
-                  <td className="py-1 text-slate-400">{t.district}</td>
-                  <td className="py-1 text-slate-400 capitalize">{t.priority}</td>
-                  <td className="py-1 text-right">
+                <tr key={t.id} className="border-t border-line text-slate-300">
+                  <td className="py-2 text-white">{t.name}</td>
+                  <td className="py-2 text-slate-400">{t.district}</td>
+                  <td className="py-2 text-slate-400 capitalize">{t.priority}</td>
+                  <td className="py-2 text-right">
                     {has('manage_cameras') && (
                       <button
                         type="button"
@@ -94,29 +121,20 @@ export function GapAnalysisSection() {
             </tbody>
           </table>
         )}
-      </div>
+      </SectionCard>
 
-      <div>
-        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">
-          Uncovered Zones ({report.uncovered_zones.length})
-        </h3>
+      <SectionCard icon={MapPinOff} title="Uncovered Zones" count={report.uncovered_zones.length}>
         {report.uncovered_zones.length === 0 ? (
           <p className="text-slate-500 text-xs">No coverage gaps found.</p>
         ) : (
           <table className="w-full text-xs">
-            <thead>
-              <tr className="text-slate-500 text-left">
-                <th className="pb-1">Target</th>
-                <th className="pb-1">District</th>
-                <th className="pb-1">Nearest Camera Distance</th>
-              </tr>
-            </thead>
+            <TableHead columns={['Target', 'District', 'Nearest Camera Distance']} />
             <tbody>
               {report.uncovered_zones.map((z) => (
                 <tr key={z.target_id} className="border-t border-line">
-                  <td className="py-1 text-white">{z.name}</td>
-                  <td className="py-1 text-slate-400">{z.district}</td>
-                  <td className="py-1 text-signal-red">
+                  <td className="py-2 text-white">{z.name}</td>
+                  <td className="py-2 text-slate-400">{z.district}</td>
+                  <td className="py-2 text-signal-red">
                     {z.distance_meters !== null ? `${Math.round(z.distance_meters)}m` : 'No cameras at all'}
                   </td>
                 </tr>
@@ -124,37 +142,27 @@ export function GapAnalysisSection() {
             </tbody>
           </table>
         )}
-      </div>
+      </SectionCard>
 
-      <div>
-        <h3 className="text-xs font-semibold text-white uppercase tracking-wide mb-2">
-          Ageing Infrastructure ({report.ageing_infrastructure.length})
-        </h3>
+      <SectionCard icon={AlertTriangle} title="Ageing Infrastructure" count={report.ageing_infrastructure.length}>
         {report.ageing_infrastructure.length === 0 ? (
           <p className="text-slate-500 text-xs">No ageing cameras flagged.</p>
         ) : (
           <table className="w-full text-xs">
-            <thead>
-              <tr className="text-slate-500 text-left">
-                <th className="pb-1">Camera</th>
-                <th className="pb-1">District</th>
-                <th className="pb-1">Age</th>
-                <th className="pb-1">Degraded Events (90d)</th>
-              </tr>
-            </thead>
+            <TableHead columns={['Camera', 'District', 'Age', 'Degraded Events (90d)']} />
             <tbody>
               {report.ageing_infrastructure.map((c) => (
                 <tr key={c.camera_id} className="border-t border-line">
-                  <td className="py-1 text-white">{c.name}</td>
-                  <td className="py-1 text-slate-400">{c.district}</td>
-                  <td className="py-1 text-slate-400">{Math.floor(c.age_days / 365)}y</td>
-                  <td className="py-1 text-amber-400">{c.degraded_transition_count_90d}</td>
+                  <td className="py-2 text-white">{c.name}</td>
+                  <td className="py-2 text-slate-400">{c.district}</td>
+                  <td className="py-2 text-slate-400">{Math.floor(c.age_days / 365)}y</td>
+                  <td className="py-2 text-amber-400">{c.degraded_transition_count_90d}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-      </div>
+      </SectionCard>
     </div>
   );
 }
