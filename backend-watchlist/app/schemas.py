@@ -119,6 +119,29 @@ class FlowTrendResponse(BaseModel):
     top_corridors: list[CorridorFlow]
 
 
+class TrafficAlertOut(BaseModel):
+    """A density/flow threshold breach -- see traffic_alerts_service and
+    schema.sql's traffic_alerts table. Exactly one of camera_id (a density
+    breach) or from_camera_id/to_camera_id (a flow/corridor breach) is set,
+    matching alert_type."""
+    id: int
+    alert_type: Literal["density", "flow"]
+    camera_id: Optional[int] = None
+    from_camera_id: Optional[int] = None
+    to_camera_id: Optional[int] = None
+    metric_value: float
+    threshold_value: float
+    district: Optional[str] = None
+    status: Literal["NEW", "ACKNOWLEDGED", "DISMISSED"]
+    triggered_at: datetime
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
+
+
+class TrafficAlertStatusUpdate(BaseModel):
+    status: Literal["ACKNOWLEDGED", "DISMISSED"]
+
+
 class DetectionResult(BaseModel):
     """Response for POST /detections — the detection is always recorded;
     alert is populated only when the plate matched the watchlist."""

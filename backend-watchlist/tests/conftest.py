@@ -38,6 +38,20 @@ def internal_headers():
 
 
 @pytest.fixture
+def traffic_alert_test_rows():
+    """Guaranteed cleanup for traffic_alerts rows a test creates (directly or
+    via evaluate_and_broadcast), even if an assertion fails first -- same
+    pattern as scoping_test_cameras above."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with contextlib.closing(psycopg2.connect(settings.database_url)) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM traffic_alerts WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()
+
+
+@pytest.fixture
 def scoping_test_cameras():
     """Guaranteed cleanup for cameras a scoping test creates in the shared
     cameras table, even if an assertion fails first. Uses a single batched

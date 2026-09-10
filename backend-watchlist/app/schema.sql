@@ -127,6 +127,44 @@ CREATE TABLE vehicle_daily_sightings (
 CREATE INDEX idx_vehicle_daily_sightings_plate
     ON vehicle_daily_sightings (plate_number, sighting_date);
 
+-- Congestion alerts (traffic-analysis Phase 3) -- a density/flow threshold
+-- breach, not a plate match, so this is deliberately its own table rather
+-- than forced into `alerts` above (which is keyed to watchlist_id/
+-- detection_id and carries a 1:1 plate-hit chain-of-custody model this
+-- doesn't need). A single `status` column with acknowledged_by/at is
+-- enough here -- no separate append-only history table, since the
+-- separation-of-duty workflow `alert_status_history` exists for doesn't
+-- apply to a density/corridor reading.
+--
+-- Exactly one of camera_id (a density breach) or
+-- from_camera_id/to_camera_id (a flow/corridor breach) is set, matching
+-- which of camera_density_counts/camera_flow_pairs produced the reading --
+-- see traffic_alerts_service.evaluate_and_broadcast.
+CREATE TABLE IF NOT EXISTS traffic_alerts (
+    id               SERIAL PRIMARY KEY,
+    alert_type       TEXT NOT NULL CHECK (alert_type IN ('density', 'flow')),
+    camera_id        INTEGER,
+    from_camera_id   INTEGER,
+    to_camera_id     INTEGER,
+    metric_value     REAL NOT NULL,
+    threshold_value  REAL NOT NULL,
+    district         TEXT,
+    status           TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW', 'ACKNOWLEDGED', 'DISMISSED')),
+    triggered_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    acknowledged_by  TEXT,
+    acknowledged_at  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_status ON traffic_alerts (status);
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_district ON traffic_alerts (district);
+-- The evaluation loop's cooldown check (skip re-firing for a camera/corridor
+-- that already has an unresolved alert) filters on these plus status/type,
+-- run every 5 minutes -- worth a real index rather than a sequential scan.
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_camera_open
+    ON traffic_alerts (camera_id, alert_type, status);
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_corridor_open
+    ON traffic_alerts (from_camera_id, to_camera_id, alert_type, status);
+
 -- Road-following path for a Flow-layer corridor between two cameras (see
 -- route_geometry_service.py) -- without this the Map page drew a straight
 -- line between two lat/longs, which cuts through buildings/parks/water
