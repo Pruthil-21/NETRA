@@ -10,6 +10,7 @@ import { TreeSelection } from '@/components/tree/DistrictCircleTree';
 import { CameraInfoOverlay } from '@/components/overlay/CameraInfoOverlay';
 import { MapFilterControl } from '@/components/map/MapFilterControl';
 import { DensityLoadStatus } from '@/components/map/DensityCanvasLayer';
+import { FlowLoadStatus } from '@/components/map/FlowCanvasLayer';
 import { circlesService, Circle } from '@/services/circlesService';
 
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
@@ -50,6 +51,8 @@ export default function MapPage() {
   // genuinely quiet window all render zero heat blobs but mean very
   // different things to an officer looking at the map.
   const [densityStatus, setDensityStatus] = useState<DensityLoadStatus | null>(null);
+  // Same lifted-status pattern as densityStatus above, for the Flow layer.
+  const [flowStatus, setFlowStatus] = useState<FlowLoadStatus | null>(null);
 
   useEffect(() => {
     circlesService.listCircles().then(setCircles).catch(() => {
@@ -141,8 +144,22 @@ export default function MapPage() {
                     }
                   : undefined
               }
+              flow={
+                filters.mapLayer === 'flow'
+                  ? {
+                      cameras: filteredCameras,
+                      mode: filters.flowMode,
+                      windowMinutes: filters.flowWindowMinutes,
+                      hour: filters.flowHour,
+                      onStatusChange: setFlowStatus,
+                    }
+                  : undefined
+              }
             />
-            <MapFilterControl densityStatus={filters.mapLayer === 'density' ? densityStatus : null} />
+            <MapFilterControl
+              densityStatus={filters.mapLayer === 'density' ? densityStatus : null}
+              flowStatus={filters.mapLayer === 'flow' ? flowStatus : null}
+            />
           </div>
         </div>
         <CameraDetailDrawer camera={selectedCamera} />

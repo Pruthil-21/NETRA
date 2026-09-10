@@ -6,8 +6,9 @@ import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { circlesService, Circle } from '@/services/circlesService';
 import { COVERAGE_LEGEND, COVERAGE_COLORS, COVERAGE_RADIUS_METERS } from '@/lib/coverageMath';
 import { DENSITY_WINDOW_OPTIONS, formatDensityHour } from '@/lib/densityMath';
-import { MapLayer } from '@/types/filters';
+import { LayerWindowMode, MapLayer } from '@/types/filters';
 import { DensityLoadStatus } from './DensityCanvasLayer';
+import { FlowLoadStatus } from './FlowCanvasLayer';
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'All' },
@@ -19,12 +20,99 @@ const LAYER_OPTIONS = [
   { value: 'none', label: 'None' },
   { value: 'coverage', label: 'Coverage' },
   { value: 'density', label: 'Density' },
+  { value: 'flow', label: 'Flow' },
 ] as const;
 
-const DENSITY_MODE_OPTIONS = [
+const WINDOW_MODE_OPTIONS = [
   { value: 'live', label: 'Live' },
   { value: 'hour', label: 'By hour' },
 ] as const;
+
+/** Live/By-hour toggle + the matching rolling-window pills or hour-of-day
+ * scrubber -- identical shape for Density and Flow (see CameraFilters'
+ * separate densityMode/densityWindowMinutes/densityHour and
+ * flowMode/flowWindowMinutes/flowHour), so this is shared rather than
+ * duplicated per layer. */
+function LayerWindowControls({
+  mode,
+  windowMinutes,
+  hour,
+  onModeChange,
+  onWindowMinutesChange,
+  onHourChange,
+}: {
+  mode: LayerWindowMode;
+  windowMinutes: 15 | 30 | 60;
+  hour: number;
+  onModeChange: (mode: LayerWindowMode) => void;
+  onWindowMinutesChange: (minutes: 15 | 30 | 60) => void;
+  onHourChange: (hour: number) => void;
+}) {
+  return (
+    <>
+      <div role="group" aria-label="Window mode" className="flex gap-1.5">
+        {WINDOW_MODE_OPTIONS.map((opt) => {
+          const isActive = mode === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={isActive}
+              onClick={() => onModeChange(opt.value)}
+              className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
+                isActive
+                  ? 'bg-command text-white border-command'
+                  : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+              }`}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {mode === 'live' ? (
+        <div role="group" aria-label="Rolling window" className="flex gap-1.5">
+          {DENSITY_WINDOW_OPTIONS.map((minutes) => {
+            const isActive = windowMinutes === minutes;
+            return (
+              <button
+                key={minutes}
+                type="button"
+                aria-pressed={isActive}
+                onClick={() => onWindowMinutesChange(minutes)}
+                className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
+                  isActive
+                    ? 'bg-command text-white border-command'
+                    : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+                }`}
+              >
+                {minutes}m
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-semibold text-slate-200">{formatDensityHour(hour)}</span>
+            <span className="text-[10px] text-slate-500">Today, IST</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={23}
+            step={1}
+            value={hour}
+            aria-label="Hour of day"
+            onChange={(e) => onHourChange(Number(e.target.value))}
+            className="w-full accent-command"
+          />
+        </div>
+      )}
+    </>
+  );
+}
 
 type LocationRow =
   | { kind: 'city'; key: string; label: string; searchText: string }
@@ -48,9 +136,11 @@ interface MapFilterControlProps {
    * Surfaced here so a permission error or network failure reads as an
    * explicit message instead of a silently empty map. */
   densityStatus?: DensityLoadStatus | null;
+  /** Same as densityStatus, for the Flow layer. */
+  flowStatus?: FlowLoadStatus | null;
 }
 
-export function MapFilterControl({ densityStatus }: MapFilterControlProps = {}) {
+export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControlProps = {}) {
   const { cameras, filters, setFilters } = useCameraRegistry();
   const [open, setOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
@@ -167,6 +257,9 @@ export function MapFilterControl({ densityStatus }: MapFilterControlProps = {}) 
       densityMode: 'live',
       densityWindowMinutes: 30,
       densityHour: new Date().getHours(),
+      flowMode: 'live',
+      flowWindowMinutes: 30,
+      flowHour: new Date().getHours(),
     }));
     setLocationSearch('');
     setLocationOpen(false);
@@ -297,70 +390,14 @@ export function MapFilterControl({ densityStatus }: MapFilterControlProps = {}) 
 
             {filters.mapLayer === 'density' && (
               <div className="space-y-1.5">
-                <div role="group" aria-label="Density mode" className="flex gap-1.5">
-                  {DENSITY_MODE_OPTIONS.map((opt) => {
-                    const isActive = filters.densityMode === opt.value;
-                    return (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        aria-pressed={isActive}
-                        onClick={() => setFilters((prev) => ({ ...prev, densityMode: opt.value }))}
-                        className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
-                          isActive
-                            ? 'bg-command text-white border-command'
-                            : 'bg-ink text-slate-300 border-line hover:border-slate-500'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {filters.densityMode === 'live' ? (
-                  <div role="group" aria-label="Rolling window" className="flex gap-1.5">
-                    {DENSITY_WINDOW_OPTIONS.map((minutes) => {
-                      const isActive = filters.densityWindowMinutes === minutes;
-                      return (
-                        <button
-                          key={minutes}
-                          type="button"
-                          aria-pressed={isActive}
-                          onClick={() => setFilters((prev) => ({ ...prev, densityWindowMinutes: minutes }))}
-                          className={`flex-1 py-1 rounded-full text-[11px] font-semibold border transition ${
-                            isActive
-                              ? 'bg-command text-white border-command'
-                              : 'bg-ink text-slate-300 border-line hover:border-slate-500'
-                          }`}
-                        >
-                          {minutes}m
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-[11px] font-semibold text-slate-200">
-                        {formatDensityHour(filters.densityHour)}
-                      </span>
-                      <span className="text-[10px] text-slate-500">Today, IST</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={23}
-                      step={1}
-                      value={filters.densityHour}
-                      aria-label="Hour of day"
-                      onChange={(e) =>
-                        setFilters((prev) => ({ ...prev, densityHour: Number(e.target.value) }))
-                      }
-                      className="w-full accent-command"
-                    />
-                  </div>
-                )}
+                <LayerWindowControls
+                  mode={filters.densityMode}
+                  windowMinutes={filters.densityWindowMinutes}
+                  hour={filters.densityHour}
+                  onModeChange={(m) => setFilters((prev) => ({ ...prev, densityMode: m }))}
+                  onWindowMinutesChange={(m) => setFilters((prev) => ({ ...prev, densityWindowMinutes: m }))}
+                  onHourChange={(h) => setFilters((prev) => ({ ...prev, densityHour: h }))}
+                />
 
                 <div
                   className="h-1.5 rounded-full"
@@ -380,6 +417,43 @@ export function MapFilterControl({ densityStatus }: MapFilterControlProps = {}) 
                 {!densityStatus?.error && !densityStatus?.loading && densityStatus?.pointCount === 0 && (
                   <p className="text-[10px] text-slate-500 leading-snug">
                     No detections in this window yet.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {filters.mapLayer === 'flow' && (
+              <div className="space-y-1.5">
+                <LayerWindowControls
+                  mode={filters.flowMode}
+                  windowMinutes={filters.flowWindowMinutes}
+                  hour={filters.flowHour}
+                  onModeChange={(m) => setFilters((prev) => ({ ...prev, flowMode: m }))}
+                  onWindowMinutesChange={(m) => setFilters((prev) => ({ ...prev, flowWindowMinutes: m }))}
+                  onHourChange={(h) => setFilters((prev) => ({ ...prev, flowHour: h }))}
+                />
+
+                <div
+                  className="h-1.5 rounded-full"
+                  style={{ background: 'linear-gradient(to right, #22c55e, #f59e0b, #ef4444)' }}
+                  aria-hidden
+                />
+                <div className="flex justify-between text-[10px] text-slate-500">
+                  <span>Free-flowing</span>
+                  <span>Congested</span>
+                </div>
+                <p className="text-[10px] text-slate-500 leading-snug">
+                  Line thickness shows traffic volume between two cameras.
+                </p>
+
+                {flowStatus?.error && (
+                  <p className="text-[10px] text-rose-400 leading-snug">
+                    Couldn&apos;t load flow data: {flowStatus.error}
+                  </p>
+                )}
+                {!flowStatus?.error && !flowStatus?.loading && flowStatus?.pointCount === 0 && (
+                  <p className="text-[10px] text-slate-500 leading-snug">
+                    No transitions in this window yet.
                   </p>
                 )}
               </div>

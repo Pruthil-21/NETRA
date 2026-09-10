@@ -285,4 +285,46 @@ describe('MapFilterControl', () => {
     expect(screen.getByRole('button', { name: 'Live' })).toBeInTheDocument();
     expect(screen.getByLabelText('Camera filters')).toHaveTextContent('1');
   });
+
+  it('selecting the Flow layer disables Status and shows live-window controls by default', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Flow' }));
+
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Offline' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '30m' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Free-flowing')).toBeInTheDocument();
+    expect(screen.getByText('Congested')).toBeInTheDocument();
+  });
+
+  it('switching Flow to "By hour" swaps the window pills for an hour scrubber', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Flow' }));
+    fireEvent.click(screen.getByRole('button', { name: 'By hour' }));
+
+    expect(screen.queryByRole('button', { name: '30m' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Hour of day')).toBeInTheDocument();
+  });
+
+  it('Density and Flow are mutually exclusive -- picking one drops the other, each keeping its own window state', async () => {
+    await openPanel();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Density' }));
+    fireEvent.click(screen.getByRole('button', { name: 'By hour' }));
+    expect(screen.getByLabelText('Hour of day')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Flow' }));
+    expect(screen.queryByText('Quiet')).not.toBeInTheDocument();
+    expect(screen.getByText('Free-flowing')).toBeInTheDocument();
+    // Flow's own window defaults to Live/30m, independent of Density's
+    // "By hour" selection made just above.
+    expect(screen.getByRole('button', { name: 'Live' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '30m' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Density' }));
+    expect(screen.getByLabelText('Hour of day')).toBeInTheDocument();
+  });
 });

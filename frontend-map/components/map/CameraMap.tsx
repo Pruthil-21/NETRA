@@ -13,7 +13,8 @@ import { buildSightingRoute } from '@/lib/buildSightingRoute';
 import { createHoverGraceController, HoverGraceController } from '@/lib/hoverGrace';
 import { CoverageCanvasLayer } from './CoverageCanvasLayer';
 import { DensityCanvasLayer, DensityLoadStatus } from './DensityCanvasLayer';
-import { DensityMode } from '@/types/filters';
+import { FlowCanvasLayer, FlowLoadStatus } from './FlowCanvasLayer';
+import { LayerWindowMode } from '@/types/filters';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
@@ -170,10 +171,20 @@ interface CameraMapProps {
    * in practice (the caller only ever sets one at a time). */
   density?: {
     cameras: Camera[];
-    mode: DensityMode;
+    mode: LayerWindowMode;
     windowMinutes: number;
     hour: number;
     onStatusChange?: (status: DensityLoadStatus) => void;
+  };
+  /** Renders the camera-to-camera traffic corridor layer -- see
+   * FlowCanvasLayer. Omit to render no flow layer at all; mutually
+   * exclusive with `coverage`/`density` in practice. */
+  flow?: {
+    cameras: Camera[];
+    mode: LayerWindowMode;
+    windowMinutes: number;
+    hour: number;
+    onStatusChange?: (status: FlowLoadStatus) => void;
   };
 }
 
@@ -188,6 +199,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   hideMarkers,
   coverage,
   density,
+  flow,
 }) => {
   // Police station pins -- a separate data source from cameras (backend-registry's
   // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
@@ -424,6 +436,15 @@ export const CameraMap: React.FC<CameraMapProps> = ({
             windowMinutes={density.windowMinutes}
             hour={density.hour}
             onStatusChange={density.onStatusChange}
+          />
+        )}
+        {flow && (
+          <FlowCanvasLayer
+            cameras={flow.cameras}
+            mode={flow.mode}
+            windowMinutes={flow.windowMinutes}
+            hour={flow.hour}
+            onStatusChange={flow.onStatusChange}
           />
         )}
 

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { useMap } from 'react-leaflet';
 import { Camera } from '@/types/camera';
-import { DensityMode } from '@/types/filters';
+import { LayerWindowMode } from '@/types/filters';
 import { fetchDensity } from '@/services/densityService';
 import { metersToPixelRadius } from '@/lib/coverageMath';
 import { DENSITY_MIN_RADIUS_PX, DENSITY_RADIUS_METERS, densityColorForRatio } from '@/lib/densityMath';
@@ -25,7 +25,7 @@ export interface DensityLoadStatus {
 
 interface DensityCanvasLayerProps {
   cameras: Camera[];
-  mode: DensityMode;
+  mode: LayerWindowMode;
   windowMinutes: number;
   hour: number;
   onStatusChange?: (status: DensityLoadStatus) => void;

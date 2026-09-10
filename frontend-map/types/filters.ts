@@ -3,11 +3,14 @@ import { ConnectivityStatus, HealthStatus } from './camera';
 /** The Map page's full-canvas overlays (MapFilterControl) -- mutually
  * exclusive with each other and with the plain per-camera pin view.
  * 'none' is the default: individual camera pins, Status filter active. */
-export type MapLayer = 'none' | 'coverage' | 'density';
+export type MapLayer = 'none' | 'coverage' | 'density' | 'flow';
 
-/** Which time window the density layer's camera counts come from -- see
- * lib/densityMath.ts and services/densityService.ts. */
-export type DensityMode = 'live' | 'hour';
+/** Which time window a layer's data comes from -- 'live': a rolling
+ * window ending now. 'hour': a single hour-of-day bucket for the playback
+ * scrubber. Shared shape for both Density and Flow, which each keep their
+ * own independent window state (see CameraFilters below) since an officer
+ * may want a different window per layer. */
+export type LayerWindowMode = 'live' | 'hour';
 
 export interface CameraFilters {
   /** Selected city/department names -- empty means "every city". A camera
@@ -24,11 +27,16 @@ export interface CameraFilters {
    * layer sees every camera and classifies each one itself, and the map
    * hides individual pins in favor of that layer's own rendering. */
   mapLayer: MapLayer;
-  /** 'live': a rolling window ending now (densityWindowMinutes wide).
-   * 'hour': a single hour-of-day bucket (densityHour) for the playback
-   * scrubber, always today's date. Only meaningful while mapLayer === 'density'. */
-  densityMode: DensityMode;
+  /** Only meaningful while mapLayer === 'density'. */
+  densityMode: LayerWindowMode;
   densityWindowMinutes: 15 | 30 | 60;
   /** 0-23, IST. Only meaningful while densityMode === 'hour'. */
   densityHour: number;
+  /** Flow's own window state, independent of density's -- see
+   * densityMode/densityWindowMinutes/densityHour above. Only meaningful
+   * while mapLayer === 'flow'. */
+  flowMode: LayerWindowMode;
+  flowWindowMinutes: 15 | 30 | 60;
+  /** 0-23, IST. Only meaningful while flowMode === 'hour'. */
+  flowHour: number;
 }

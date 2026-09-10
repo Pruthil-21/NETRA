@@ -173,6 +173,9 @@ const initialFilters: CameraFilters = {
   densityMode: 'live',
   densityWindowMinutes: 30,
   densityHour: new Date().getHours(),
+  flowMode: 'live',
+  flowWindowMinutes: 30,
+  flowHour: new Date().getHours(),
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
