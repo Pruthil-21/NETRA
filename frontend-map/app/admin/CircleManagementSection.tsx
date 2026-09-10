@@ -135,9 +135,9 @@ export function CircleManagementSection({ districtScope }: CircleManagementSecti
         </div>
       )}
 
-      <div className="mt-4 flex flex-col gap-4 max-w-2xl">
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {districts.map((district) => (
-          <div key={district} className="border border-line rounded-lg bg-panel p-4">
+          <div key={district} className="border border-line rounded-lg bg-panel p-4 h-fit">
             <h3 className="text-xs font-semibold text-white mb-2">{district}</h3>
             <ul className="space-y-1.5 mb-3">
               {(circlesByDistrict.get(district) ?? []).map((circle) => {

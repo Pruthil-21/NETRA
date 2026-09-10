@@ -142,7 +142,7 @@ export default function AdminPage() {
           <div className="h-full">{activeContent}</div>
         ) : (
           <div className="h-full overflow-y-auto">
-            <div className="max-w-5xl p-5 sm:p-7">{activeContent}</div>
+            <div className="max-w-[1600px] p-5 sm:p-7">{activeContent}</div>
           </div>
         )}
       </div>

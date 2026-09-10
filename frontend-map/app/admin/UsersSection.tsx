@@ -428,24 +428,26 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
                 {profileLoading ? (
                   <div className="text-xs text-slate-500 animate-pulse">Loading…</div>
                 ) : tab === 'overview' ? (
-                  <div className="max-w-xl border border-line rounded-lg bg-panel">
-                    <div className="px-5 py-3.5 border-b border-line text-xs font-semibold text-slate-300">Officer Details</div>
-                    {[
-                      ['Full name', selectedOfficer.name],
-                      ['Badge number', selectedOfficer.badge_number],
-                      ['Rank', selectedOfficer.rank ?? '—'],
-                      ['Status', profile?.status ?? '—'],
-                      ['Last login', profile?.last_login_at ? timeAgo(profile.last_login_at) : 'Never'],
-                    ].map(([label, value]) => (
-                      <div key={label} className="grid grid-cols-[160px_1fr] px-5 py-3 border-b border-line last:border-0 items-center">
-                        <span className="text-xs font-semibold text-slate-500">{label}</span>
-                        <span className="text-sm text-white">{value}</span>
-                      </div>
-                    ))}
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 max-w-5xl">
+                    <div className="border border-line rounded-lg bg-panel h-fit">
+                      <div className="px-5 py-3.5 border-b border-line text-xs font-semibold text-slate-300">Officer Details</div>
+                      {[
+                        ['Full name', selectedOfficer.name],
+                        ['Badge number', selectedOfficer.badge_number],
+                        ['Rank', selectedOfficer.rank ?? '—'],
+                        ['Status', profile?.status ?? '—'],
+                        ['Last login', profile?.last_login_at ? timeAgo(profile.last_login_at) : 'Never'],
+                      ].map(([label, value]) => (
+                        <div key={label} className="grid grid-cols-[160px_1fr] px-5 py-3 border-b border-line last:border-0 items-center">
+                          <span className="text-xs font-semibold text-slate-500">{label}</span>
+                          <span className="text-sm text-white">{value}</span>
+                        </div>
+                      ))}
+                    </div>
                     {profile && profile.recent_logins.length > 0 && (
-                      <div className="px-5 py-3.5">
-                        <p className="text-xs font-semibold text-slate-500 mb-2.5">Recent Logins</p>
-                        <div className="flex flex-col gap-1.5">
+                      <div className="border border-line rounded-lg bg-panel h-fit">
+                        <div className="px-5 py-3.5 border-b border-line text-xs font-semibold text-slate-300">Recent Logins</div>
+                        <div className="px-5 py-3.5 flex flex-col gap-1.5">
                           {profile.recent_logins.slice(0, 5).map((login, i) => (
                             <span key={i} className="text-xs text-slate-400">
                               {new Date(login).toLocaleString()}
