@@ -4376,3 +4376,336 @@ directly) -- all re-run after the default change.
   use of time once found, but it also wasn't tested on *this exact*
   dataset, so treat it as strong prior evidence, not absolute proof for
   this specific footage.
+
+# Session 40 -- pushing density/confidence further: no further gain, plus a real infra fix found along the way
+
+Two things happened this session: an infra bug that was silently costing
+test runs, and a follow-up A/B test on top of Session 39's `sample_every_n`
+win.
+
+## Infra fix: orphaned OCR worker subprocess on a killed parent
+
+`GpuOcrClient` (`ocr_gpu_worker.py`) starts PaddleOCR in a plain
+`subprocess.Popen` child, with no process-group linkage and no
+`atexit`/signal cleanup anywhere in the codebase (confirmed via grep --
+zero hits). Several background test runs this session were killed by the
+harness for unrelated reasons (job timeouts, output-buffering interactions)
+while a child OCR worker was still alive and potentially mid-inference
+inside `libpaddle.so`'s PIR executor. A macOS crash report obtained
+independently during this session showed a real `SIGSEGV` inside
+`libpaddle.so` (`phi::funcs::ElementwiseCompute`, via `PirInterpreter::
+RunInstructionBase`) in a `Python` process around the same time as one of
+these kills -- consistent with, though not proven to be caused by, an
+orphaned worker getting interrupted mid-inference.
+
+Fix: `ocr_gpu_worker.py` now tracks every `GpuOcrClient` instance in a
+module-level list and registers both `atexit` and an explicit `SIGTERM`
+handler that calls `shutdown()` on all of them before exiting. Plain
+`atexit.register` alone does not cover `SIGTERM` -- Python installs no
+default handler for it, so the OS just kills the process and skips atexit
+entirely; the explicit `signal.signal(SIGTERM, ...)` is what actually
+routes a terminate signal through clean shutdown first. `SIGKILL` remains
+uncatchable by any process, so this doesn't guarantee no orphan is ever
+possible, only that the catchable, common case (a graceful-terminate
+request) no longer leaves one behind.
+
+Verified: importing the module and constructing a client registers it in
+the tracked list and installs the `SIGTERM` handler (checked directly via
+`signal.getsignal`).
+
+## A/B test: sample_every_n=3 vs sample_every_n=5+lower confidence
+
+Same real 142_TOWNHALL.AVI footage, same full tracked pipeline as
+Session 39's density test, but a shorter 25-second window (compute-cost
+constrained after repeated background-task failures earlier in this
+session -- smaller sample than Session 39's 3-minute test, so treat this
+as a quicker, less statistically solid signal, not as conclusive).
+
+| condition | frames processed | elapsed | unique confirmed plates |
+|---|---|---|---|
+| `sample_every_n=3, conf=0.25` (denser) | 209 | 992.1s | 11 |
+| `sample_every_n=5, conf=0.15` (current default, lower confidence) | 125 | 273.0s | 11 |
+
+Tied confirmed-plate count, but the denser condition cost 3.6x more
+compute for the same result. Diffing the two plate lists directly: of the
+plates that differ between the two runs, several are the same physical
+plate read with a 1-2 character OCR wobble (`GJ23DO7174` vs
+`GJ23DO7124`, `BCH5944` vs `GJ23CH5944`) rather than genuinely new
+detections -- i.e. even the nominal difference is mostly voting noise on
+a small sample, not a real signal in either direction.
+
+**Verdict: neither change shipped.** `sample_every_n=5` /
+`LP_DETECT_CONFIDENCE=0.25` (Session 39's defaults) stand. Pushing
+density further has a clear, real compute cost and no demonstrated
+benefit on this test; lowering confidence at the current density showed
+no benefit either.
+
+## What's not done / open
+
+- This A/B used a 25s window vs. Session 39's 3-minute window -- a
+  smaller sample. If density/confidence tuning gets revisited, re-run at
+  the longer window now that the orphaned-worker fix above should make a
+  full run reliable in the background.
+- Next candidate lever, not yet tried: instead of feeding OCR every
+  sampled frame equally, select the sharpest/largest frame within each
+  track's lifetime for OCR (motion-blur/size-aware frame selection)
+  rather than blind density. WINK Engineering's cited production
+  approach votes across many crops per vehicle already, but doesn't
+  claim every crop is equally useful -- filtering out blurry samples
+  before they reach OCR could beat naive density on both accuracy and
+  compute cost. Not yet designed or tested.
+
+# Session 41 -- a real two-wheeler win: class-specific vehicle-box area floor, plus two more Paddle crash fixes
+
+## The actual win
+
+`MIN_VEHICLE_BOX_AREA_FRACTION` (0.03, `detection.py`) applied uniformly
+to every YOLO vehicle class (car/motorcycle/bus/truck) before this
+session. Measured directly on a real 3-minute Townhall window (4500
+frames, sequential read): cars are rejected by this floor at a *higher*
+rate (325/1004, 32%) than motorcycles (187/727, 25.7%) -- the floor isn't
+uniquely punishing motorcycles in raw rejection rate. But motorcycle box
+areas cluster much tighter and lower than cars' (median 0.038 vs 0.076,
+p75 0.049 vs 0.157) -- a motorcycle box just under 0.03 is a far more
+typical, central case for that class than a car box that size is for
+cars, since a motorcycle's plate is proportionally larger relative to its
+own vehicle box. Added `MOTORCYCLE_MIN_VEHICLE_BOX_AREA_FRACTION = 0.015`
+(half the shared floor, real percentile-informed starting point -- sits
+between motorcycles' measured min 0.0044 and p25 0.0264), applied only to
+`cls_id == 3` boxes; car/bus/truck behavior is completely unchanged
+(verified: same shared `min_area` computation, untouched code path).
+
+Real A/B, same full tracked pipeline, same 3-minute window, same
+`sample_every_n=5` default:
+- Baseline (motorcycle floor == shared 0.03): 41 unique confirmed plates,
+  1410.8s.
+- Motorcycle floor = 0.015: 42 unique confirmed plates, 1535.5s (+8.9%
+  compute).
+
+The diff is clean, not noise: all 41 of baseline's confirmed plates are
+byte-identical in the new run, plus exactly one new one --
+**`GJ23CH5944`** -- which is a real plate on the user's own hand-
+transcribed ground-truth list (not a false positive dressed up as a
+win). Modest (+1 plate, 2.4% relative), but real, verified, and
+low-risk (motorcycle-only, no car/bus/truck regression -- re-confirmed
+3/3 exact matches on `tests/test_pipeline_smoke.py` after the change).
+Shipped as the new default.
+
+## Two more real Paddle crashes, now with an actual fix
+
+Two independent macOS crash reports obtained during this session's
+testing, both genuine `SIGSEGV`s inside `libpaddle.so`'s PIR (new-IR)
+executor running a CPU kernel:
+1. `phi::funcs::ElementwiseCompute`, on a worker thread inside Paddle's
+   own thread pool (`ThreadPoolTempl::WorkerLoop`), occurring 23 seconds
+   after the machine woke from sleep mid-run.
+2. `phi::funcs::im2col_sh1sw1dh1dw1ph0pw0` (a conv kernel), on the main
+   thread, 40 minutes into a long-running orphaned worker process, with
+   no sleep/wake involved at all (confirmed via the crash report's own
+   "Time Since Wake" field).
+
+Different kernels, different threads, one with sleep/wake and one
+without -- not one specific trigger, but PIR-executor-on-CPU instability
+under sustained load in general. Two real fixes, both verified against
+`tests/test_pipeline_smoke.py` (still 3/3 exact matches, confidence
+unchanged) before shipping:
+
+- `ocr_gpu_worker.py`'s child process now sets
+  `FLAGS_enable_pir_in_executor=0` and `FLAGS_new_executor_serial_run=1`
+  before paddle is ever imported (must happen before import; paddle reads
+  `FLAGS_` env vars once at native-library init). Falls back to the
+  older, more mature executor and removes the worker-thread-pool crash
+  surface entirely (both crashes' stack traces run through this exact
+  executor path).
+- `ocr_gpu_worker.py`'s `GpuOcrClient` now tracks every instance and
+  registers both `atexit` and an explicit `SIGTERM` handler to shut all
+  of them down cleanly on exit. Confirmed directly: `kill -TERM` on a
+  running test's parent process now cleanly exits the child OCR worker
+  too (`ps aux` shows no orphan afterward), vs. before this fix where a
+  killed parent left the worker running as an orphan that then crashed
+  independently 40 minutes later (crash #2 above was exactly this
+  orphan). `SIGKILL` still can't be caught by any process -- this covers
+  the catchable case, not every case.
+- Also identified (not a code change): backgrounded test runs longer than
+  ~5 minutes outlive the harness's own per-command `caffeinate -i -t 300`
+  sleep-prevention window. Long tests now get their own
+  `caffeinate -i <command>` wrapper for the session's remaining tests.
+
+## What's not done / open
+
+- The area-floor A/B is a single 3-minute window with one net new plate
+  -- real, but a small sample. Worth re-checking on a longer window or
+  different footage before treating 0.015 as a final calibrated value
+  rather than a good first real data point.
+- The PIR/serial-execution fix is a workaround for a native library bug,
+  not a fix to Paddle's own code -- if PaddlePaddle ships a fixed PIR
+  executor in a future version, worth re-testing whether these flags are
+  still needed (they cost some inference speed by forcing serial
+  execution, a real trade against stability that's currently worth it
+  given two real crashes this session, but not necessarily forever).
+- Two crashes is still a small sample for "which specific factor causes
+  this" -- treat the sleep/wake link as a real contributing factor
+  demonstrated once, not the sole cause; the fix addresses the executor
+  path both crashes shared, not solely the sleep/wake trigger.
+
+# Session 42 -- two external components tried (RoadX detector, Awiros OCR), both real, both net-negative as tested; the real, honest bottom-line accuracy number
+
+Real, measured bottom line before any of this session's work: 29.2%
+(56/192) -- correct plate text, confirmed, as a fraction of every real
+plate in the manual ground truth, full 10-minute window, old
+sample_every_n=10 config. All the "44-46% recall" numbers quoted in
+earlier sessions only checked whether *something* got confirmed, not
+whether it was right -- this is the number that actually matters for the
+project's 90% goal, and it's the honest baseline this session's real
+experiments are measured against.
+
+## RoadX (github.com/i-am-Ankush/RoadX-traffic-enforcement)
+
+A real, unaffiliated open project -- full traffic-enforcement pipeline
+(helmet/triple-riding/wrong-way detection, auto-generated legal challans,
+no human review by design). Not adopted wholesale: no LICENSE file in the
+repo, its own README disclaims "not for production law enforcement use,"
+its OCR choice (EasyOCR) is one we already rejected on our own ground
+truth (0.45-0.93 confidence vs. PaddleOCR's 0.999-1.0), and "no human
+review before issuing a fine" is a real design concern independent of
+accuracy. Its custom plate detector (`Plate.pt`) was tested directly on
+our own footage instead, with explicit attribution (no confirmed
+open-source license, used per the project's own publicly-downloadable
+weights -- a real, disclosed risk, not routed around).
+
+Real detection-hit-rate comparison (900 sampled frames, real vehicle
+crops, both at default 0.25 confidence):
+
+| class | ours alone | RoadX alone | union (either) |
+|---|---|---|---|
+| car | 53.8% | 65.3% | 66.8% |
+| motorcycle | 53.3% | 39.6% | **64.1%** |
+| bus | 89.9% | 90.7% | 95.1% |
+| truck | 56.7% | 73.3% | 77.3% |
+
+RoadX's detector is worse than ours specifically on motorcycles (the
+project's stated hard case) but better on every other class; the union
+beats either alone on every class. First integration attempt (always-
+additive, same philosophy as the existing whole-crop/region/lp_region OCR
+passes) regressed real pipeline accuracy: 26->24 correct plates on the
+real 3-minute Townhall test, because extra candidate votes sometimes
+outranked an already-correct read. Revised to fallback-only (RoadX's
+detector tried only when ours finds nothing) and re-verified via the
+smoke test (3/3 exact matches, unchanged) -- **this fallback-only version
+is shipped in `detect_plate_box_crop()`, but its own real pipeline-level
+A/B was never completed** (interrupted mid-run by the Awiros
+investigation below, only reached 150/900 frames). Open item: finish that
+test before trusting it's actually a net win, not just assuming it is
+because the always-additive failure mode (vote pollution) is less likely
+in a fallback-only design.
+
+## Awiros/anpr-ocr (huggingface.co/Awiros/anpr-ocr)
+
+A real, well-documented 37M-param model, PP-OCRv5 SVTR_HGNet/PPHGNetV2_B4
+backbone, fine-tuned on 558,767 real Indian plates (incl. dual-row),
+Apache 2.0 licensed. Needed the raw `ppocr` model-construction API from a
+GitHub clone of PaddleOCR (not the pip-installed `paddleocr` package,
+which doesn't expose it) plus a safetensors weight load -- integration
+required bypassing `ppocr.postprocess`'s `__init__.py`, which
+unconditionally imports unrelated postprocessors needing scikit-image and
+scipy; fixed by loading `rec_postprocess.py` directly via `importlib`
+rather than through the package.
+
+Real crop-level A/B (same real crops, both engines, in-process, no
+subprocess ambiguity): tested on Mac CPU AND a real CUDA GPU server (the
+GPU test mattered because Paddle has no Apple-GPU backend at all -- every
+Awiros comparison before the GPU test ran on CPU regardless of intent).
+Both showed the same pattern: Awiros sometimes recovers plates our OCR
+completely misses (GPU test: baseline got `'L'` on one crop, Awiros got
+`GJ11AL4778`, very close to the real `GJ23AL4778`), but hallucinates
+short non-plate text on ambiguous/non-plate crops far more often than our
+OCR does (which correctly returns empty far more often).
+
+Two real pipeline-level integration attempts, both regressed real
+accuracy:
+- **Always-additive** (4th OCR pass alongside the existing 3): 42->55
+  confirmed but 61.9%->30.9% precision, net 26->~17 correct plates.
+- **Fallback-only** (tried only when the existing 3 passes found nothing
+  plate-shaped on a box): 43->61 confirmed but 55.8%->31.1% precision,
+  net 24->19 correct plates -- gained 1 real plate, lost 6. The
+  fallback-only gate doesn't fix the underlying problem: it's not the
+  crop that got recovered, it's a hallucinated vote entering a *track's
+  entire multi-frame voting pool* -- `PlateConfirmationTracker` votes
+  across a track's whole lifetime, so one bad Awiros vote on one frame of
+  a track can still outvote correct reads from that same track's other
+  frames, and Awiros's garbage sometimes coincidentally passes the loose
+  fallback-tier structural check (6-12 alphanumeric chars starting with 2
+  letters) even when it doesn't pass the strict plate pattern.
+
+**Reverted both integrations.** Awiros is not shipped in any form.
+
+## Real infra fix kept: inter-process Paddle CPU-thread contention
+
+Adding a second concurrent Paddle worker subprocess (the Awiros fallback
+client, alongside the existing primary OCR client) produced a new,
+*reproducible* SIGSEGV (same `FailureSignalHandler`/libpaddle.so
+signature as Session 41's crashes) at a consistent point in a real
+3-minute test, twice in a row. The existing `FLAGS_enable_pir_in_executor`
+/`FLAGS_new_executor_serial_run` fix only bounds contention *within* one
+process's own thread pool; it does nothing for two independent processes
+oversubscribing the same CPU cores, a well-known real trigger for native
+math-library instability. Capping each worker to `OMP_NUM_THREADS=1`,
+`MKL_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1` fixed it -- got past the
+crash point cleanly on retry. **This fix was reverted along with the rest
+of the Awiros integration** (`ocr_gpu_worker.py` restored to its
+Session-41 state) since reverting Awiros means there's only ever one
+Paddle worker process again, the same as before -- the fix is documented
+here in case a future multi-process Paddle scenario reintroduces the same
+contention, not because it's currently active.
+
+## RoadX fallback-only: finished and resolved (removed)
+
+The interrupted A/B above was completed properly: same 3-minute Townhall
+window, same shipped config, "without" condition monkeypatching
+`_get_roadx_lp_model` to always return `None`.
+
+| | confirmed | exact matches |
+|---|---|---|
+| without RoadX | 41 | 25 (61.0%) |
+| with RoadX | 44 | 25 (56.8%) |
+
+Gained: `GJ23CH5944`, `GJ23DK9193`. Lost: `GJ23DJ9885`, `GJ23EH9966`.
+**Net zero real accuracy change** -- 2 correct plates swapped for 2
+different correct plates, plus 3 extra confirmed candidates that weren't
+real plates (precision drops slightly purely from a bigger denominator,
+not a real gain). Unlike Awiros, not a regression -- but zero net
+benefit for a real, ongoing cost: a third-party model with no confirmed
+open-source license, extra compute on every box our own detector misses,
+and a second cached model to maintain. **Removed** --
+`_get_roadx_lp_model()`/`_detect_plate_box_crop_with_model()` reverted
+out of `detection.py`, `huggingface_hub` pin reverted out of
+`requirements.txt` (nothing else in the codebase used it once RoadX was
+gone). Re-verified via the smoke test after removal: still 3/3 exact
+matches, normal per-image timing (no RoadX overhead left running).
+
+This closes out Session 42: neither external component tried (RoadX
+detector, Awiros OCR) is in the shipped pipeline. Both were real,
+worth trying, and both taught something concrete (the detection-level
+union numbers looked promising for RoadX but didn't survive contact
+with the real voting pipeline -- the same lesson Awiros taught more
+sharply) -- but neither earned a permanent place in the codebase.
+
+## What's not done / open
+
+- Real, honest accuracy is still far from the 90% goal (29.2% on the
+  fairest full-window measurement). Every off-the-shelf component swap
+  tried across Sessions 39-42 (sharpening, CLAHE, two-line-split, further
+  density/confidence, English OCR model, server OCR model, bigger YOLO
+  detector, RoadX detector both ways, Awiros OCR both ways) has come back
+  flat or negative except sample density and the motorcycle area floor
+  (both small, single-digit-percent wins, both still shipped). The
+  honest strategic read given to the user this session: closing the
+  remaining gap most likely requires fine-tuning a recognition model on
+  labeled examples from this exact camera's real footage (real plan
+  discussed: automated hard-crop extraction across all 5 camera feeds,
+  human labeling ~2,000-5,000 crops, PaddleOCR fine-tune starting from
+  the existing PP-OCRv6 checkpoint, re-measured against the same real
+  A/B methodology used throughout this log) -- not another round of
+  component swaps. Estimated real cost: 3-5 days of dedicated
+  labeling+training effort, not something that fits alongside other
+  hackathon work without being treated as the primary task.
