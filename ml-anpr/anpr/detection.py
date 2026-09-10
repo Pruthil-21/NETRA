@@ -203,6 +203,27 @@ MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
 LOW_CONFIDENCE_BOX_THRESHOLD = 0.4
 LOW_CONFIDENCE_BOX_EXPAND_FRACTION = 0.4
 
+# Session 41: measured directly (not guessed) whether the area floor above
+# disproportionately rejects real motorcycle boxes on Townhall footage, since
+# motorcycles are physically much smaller than cars/buses/trucks at the same
+# distance. Real numbers over a 3-minute sequential window (4500 frames):
+# cars are actually rejected at a *higher* rate by area alone (325/1004,
+# 32%) than motorcycles (187/727, 25.7%) -- the uniform floor isn't uniquely
+# punishing motorcycles. Still, motorcycle area fractions cluster much
+# tighter and lower than cars' (median 0.038 vs 0.076, p75 0.049 vs 0.157),
+# so a motorcycle box sitting just under 0.03 is a much more typical,
+# central case for that class than a car box the same size is for cars --
+# worth a lower floor specifically for motorcycles as a real, targeted test
+# for the two-wheeler plate-recall problem, rather than moving the shared
+# floor and changing car/bus/truck behavior along with it. 0.015 (half of
+# the shared floor) sits between motorcycles' real min (0.0044) and p25
+# (0.0264) -- real A/B result: 41->42 confirmed plates on the real 3-minute
+# Townhall test, the new plate (GJ23CH5944) verified against the manual
+# ground truth, no regression on car/bus/truck. See ALPR_IMPROVEMENT_LOG.md
+# Session 41.
+MOTORCYCLE_CLASS_ID = 3
+MOTORCYCLE_MIN_VEHICLE_BOX_AREA_FRACTION = 0.015
+
 # Session (dashcam pipeline-stage audit): the area floor above doesn't
 # catch the single most common dashcam false positive -- the recording
 # car's OWN bonnet/dashboard, which YOLO frequently misclassifies as a
@@ -462,6 +483,7 @@ def detect_plate_from_frame(infer_frame, raw_frame, tracker=None):
     scale_x = raw_w / infer_w
     scale_y = raw_h / infer_h
     min_area = MIN_VEHICLE_BOX_AREA_FRACTION * raw_h * raw_w
+    min_area_motorcycle = MOTORCYCLE_MIN_VEHICLE_BOX_AREA_FRACTION * raw_h * raw_w
 
     boxes = []
     for r in results:
@@ -498,7 +520,8 @@ def detect_plate_from_frame(infer_frame, raw_frame, tracker=None):
                 box_h = raw_box[3] - raw_box[1]
                 area = box_w * box_h
                 aspect_ratio = box_w / max(1, box_h)
-                if area >= min_area and MIN_VEHICLE_BOX_ASPECT_RATIO <= aspect_ratio <= MAX_VEHICLE_BOX_ASPECT_RATIO:
+                area_floor = min_area_motorcycle if cls_id == MOTORCYCLE_CLASS_ID else min_area
+                if area >= area_floor and MIN_VEHICLE_BOX_ASPECT_RATIO <= aspect_ratio <= MAX_VEHICLE_BOX_ASPECT_RATIO:
                     boxes.append(raw_box)
 
     if not boxes:
