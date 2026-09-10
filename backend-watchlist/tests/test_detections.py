@@ -524,3 +524,190 @@ def test_flows_district_scoped_only_counts_own_district(client, internal_headers
     flows = {(row["from_camera_id"], row["to_camera_id"]) for row in resp.json()}
     assert (cam_a, cam_b) in flows
     assert (cam_c, cam_d) not in flows
+
+
+def test_density_trend_requires_view_analytics_permission(client):
+    token = _make_rbac_token("station_officer", "district", "Traffic Police")
+    resp = client.get(
+        "/detections/density/trend",
+        params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_density_trend_rejects_a_range_where_to_is_not_after_from(client):
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/density/trend",
+        params={"from": "2026-01-02T00:00:00Z", "to": "2026-01-01T00:00:00Z"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+
+
+def test_density_trend_buckets_counts_by_day_and_ranks_top_cameras(client, internal_headers, scoping_test_cameras):
+    from datetime import datetime, timedelta, timezone
+
+    cam = _insert_test_camera("Trend Test District")
+    scoping_test_cameras.append(cam)
+    plate = _random_plate()
+    now = datetime.now(timezone.utc)
+    today = now - timedelta(hours=1)
+    yesterday = now - timedelta(days=1, hours=1)
+    for _ in range(3):
+        client.post(
+            "/detections",
+            json={"camera_id": cam, "plate_number": plate, "detected_at": today.isoformat()},
+            headers=internal_headers,
+        )
+    client.post(
+        "/detections",
+        json={"camera_id": cam, "plate_number": plate, "detected_at": yesterday.isoformat()},
+        headers=internal_headers,
+    )
+
+    # District-scoped, not platform -- the shared dev DB has real ongoing
+    # traffic from other districts/cameras that a platform-wide query would
+    # pick up too, making an exact bucket-count assertion flaky.
+    token = _make_rbac_token("district_command", "district", "Trend Test District")
+    resp = client.get(
+        "/detections/density/trend",
+        params={
+            "from": (now - timedelta(days=2)).isoformat(),
+            "to": (now + timedelta(hours=1)).isoformat(),
+            "bucket": "day",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["trend"]) == 2  # two distinct IST calendar days
+    assert sum(b["count"] for b in body["trend"]) == 4
+    top = {row["camera_id"]: row["count"] for row in body["top_cameras"]}
+    assert top.get(cam) == 4
+
+
+def test_flows_trend_requires_view_analytics_permission(client):
+    token = _make_rbac_token("station_officer", "district", "Traffic Police")
+    resp = client.get(
+        "/detections/flows/trend",
+        params={"from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_flows_trend_ranks_top_corridors_with_speed(client, internal_headers, scoping_test_cameras):
+    from datetime import datetime, timedelta, timezone
+    from app.services import geo
+
+    cam_a = _insert_test_camera("Flow Trend District", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Trend District", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_b)
+    expected_km = geo.haversine_km(23.0, 72.5, 23.01, 72.5)
+
+    plate = _random_plate()
+    now = datetime.now(timezone.utc)
+    t_a = now - timedelta(hours=2)
+    t_b = now - timedelta(hours=1)
+    client.post(
+        "/detections",
+        json={"camera_id": cam_a, "plate_number": plate, "detected_at": t_a.isoformat()},
+        headers=internal_headers,
+    )
+    client.post(
+        "/detections",
+        json={"camera_id": cam_b, "plate_number": plate, "detected_at": t_b.isoformat()},
+        headers=internal_headers,
+    )
+
+    # District-scoped, not platform -- isolates from real ongoing traffic
+    # in the shared dev DB that would otherwise crowd this single-transition
+    # corridor out of the top_corridors ranking.
+    token = _make_rbac_token("district_command", "district", "Flow Trend District")
+    resp = client.get(
+        "/detections/flows/trend",
+        params={
+            "from": (now - timedelta(days=1)).isoformat(),
+            "to": (now + timedelta(hours=1)).isoformat(),
+            "bucket": "day",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert sum(b["count"] for b in body["trend"]) == 1
+    corridors = {(row["from_camera_id"], row["to_camera_id"]): row for row in body["top_corridors"]}
+    corridor = corridors[(cam_a, cam_b)]
+    assert corridor["transitions"] == 1
+    assert corridor["avg_speed_kmh"] == pytest.approx(expected_km, rel=0.02)
+
+
+def test_flows_route_is_none_when_osrm_is_unavailable(client, internal_headers, scoping_test_cameras):
+    # Under pytest, route_geometry_service skips the real network call
+    # entirely (see its PYTEST_CURRENT_TEST guard) -- every flow's route
+    # comes back None rather than making a live external HTTP call on every
+    # test run. This is the "no regression" half of that guard; the
+    # positive case (a route actually attached) is covered below by
+    # mocking the fetch directly.
+    cam_a = _insert_test_camera("Flow Route District", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Route District", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_b)
+
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": cam_a, "plate_number": plate}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_b, "plate_number": plate}, headers=internal_headers)
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    flows = {(row["from_camera_id"], row["to_camera_id"]): row for row in resp.json()}
+    assert flows[(cam_a, cam_b)]["route"] is None
+
+
+def test_flows_attaches_a_road_route_when_osrm_resolves_one(
+    client, internal_headers, scoping_test_cameras, monkeypatch
+):
+    from app.services import route_geometry_service
+
+    fake_geometry = [[23.0, 72.5], [23.005, 72.502], [23.01, 72.5]]
+    monkeypatch.setattr(
+        route_geometry_service, "_fetch_route",
+        lambda *a, **k: {"geometry": fake_geometry, "distance_meters": 1200.0, "duration_seconds": 240.0},
+    )
+
+    cam_a = _insert_test_camera("Flow Route Mocked District", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Route Mocked District", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_b)
+
+    plate = _random_plate()
+    client.post("/detections", json={"camera_id": cam_a, "plate_number": plate}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_b, "plate_number": plate}, headers=internal_headers)
+
+    # District-scoped, not platform -- _fetch_route is mocked globally for
+    # this test, so a platform-wide query would also process (and cache
+    # fake geometry against) any real ambient flow pairs already in the
+    # shared dev DB, exactly the traffic_alerts leak fixed earlier this
+    # session for the same underlying reason.
+    token = _make_rbac_token("district_command", "district", "Flow Route Mocked District")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    flows = {(row["from_camera_id"], row["to_camera_id"]): row for row in resp.json()}
+    assert flows[(cam_a, cam_b)]["route"] == fake_geometry
+
+    with _direct_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT geometry FROM flow_route_cache WHERE from_camera_id = %s AND to_camera_id = %s",
+            (cam_a, cam_b),
+        )
+        cached = cur.fetchone()
+        assert cached is not None
+        cur.execute("DELETE FROM flow_route_cache WHERE from_camera_id = %s AND to_camera_id = %s", (cam_a, cam_b))

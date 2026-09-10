@@ -4,3 +4,4 @@ pydantic
 psycopg2-binary
 pyjwt
 python-dotenv
+tzdata

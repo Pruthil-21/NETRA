@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Target, MapPinOff, AlertTriangle } from 'lucide-react';
+import { Target, MapPinOff, AlertTriangle, ShieldCheck } from 'lucide-react';
 import {
   fetchGapAnalysisReport,
   fetchCoverageTargets,
@@ -10,6 +10,53 @@ import {
   CoverageTarget,
 } from '@/services/coverageTargetsService';
 import { usePermissions } from '@/hooks/usePermissions';
+
+// Reserve red/amber specifically for severity (not decoration) against the
+// dark panel background -- slate is the neutral/"fine" state. Same
+// three-tone vocabulary TrafficAlertsSection's NEW/ACKNOWLEDGED/DISMISSED
+// pills already use, applied here to priority/distance/degradation instead
+// of an alert lifecycle.
+type Tone = 'red' | 'amber' | 'slate';
+
+const TONE_STYLES: Record<Tone, string> = {
+  red: 'bg-signal-red/15 text-signal-red border-signal-red/30',
+  amber: 'bg-amber-500/15 text-amber-400 border-amber-500/30',
+  slate: 'bg-slate-700/30 text-slate-400 border-slate-600/40',
+};
+
+function SeverityBadge({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-semibold whitespace-nowrap ${TONE_STYLES[tone]}`}>
+      {children}
+    </span>
+  );
+}
+
+// A small at-a-glance scale next to the raw distance number, not a
+// replacement for it -- capped at 1km, since anything past that is equally
+// "far" for a coverage gap and a linear bar would just look pegged.
+function DistanceBar({ meters, tone }: { meters: number | null; tone: Tone }) {
+  const pct = meters === null ? 100 : Math.min(100, Math.round((meters / 1000) * 100));
+  const barColor = tone === 'red' ? 'bg-signal-red' : tone === 'amber' ? 'bg-amber-500' : 'bg-slate-500';
+  return (
+    <span className="inline-block w-14 h-1.5 rounded-full bg-ink overflow-hidden align-middle">
+      <span className={`block h-full rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+    </span>
+  );
+}
+
+function priorityBadge(priority: string) {
+  const tone: Tone = priority === 'high' ? 'red' : priority === 'medium' ? 'amber' : 'slate';
+  return <SeverityBadge tone={tone}>{priority}</SeverityBadge>;
+}
+
+function distanceTone(meters: number | null): Tone {
+  return meters === null || meters >= 500 ? 'red' : 'amber';
+}
+
+function degradedTone(count: number): Tone {
+  return count >= 3 ? 'red' : count >= 1 ? 'amber' : 'slate';
+}
 
 function SectionCard({
   icon: Icon,
@@ -29,6 +76,15 @@ function SectionCard({
         {title} <span className="text-slate-500 normal-case font-normal">({count})</span>
       </h3>
       {children}
+    </div>
+  );
+}
+
+function EmptyState({ icon: Icon, message }: { icon: React.ElementType; message: string }) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 py-6 text-center">
+      <Icon size={18} className="text-slate-600" />
+      <p className="text-slate-500 text-xs">{message}</p>
     </div>
   );
 }
@@ -86,24 +142,46 @@ export function GapAnalysisSection() {
   if (error) return <p className="text-signal-red text-xs">{error}</p>;
   if (!report) return <p className="text-slate-500 text-xs">Loading gap analysis…</p>;
 
+  // A single headline number before the detail tables below -- the same
+  // progressive-disclosure shape ReportsSummarySection's KPI cards already
+  // establish for the Overview tab (one number to read at a glance, tables
+  // for the deep dive).
+  const coveredCount = targets ? Math.max(0, targets.length - report.uncovered_zones.length) : null;
+  const coveragePct =
+    targets && targets.length > 0 && coveredCount !== null ? Math.round((coveredCount / targets.length) * 100) : null;
+
   return (
     <div className="flex flex-col gap-3">
+      {coveragePct !== null && (
+        <div className="bg-panel border border-line rounded-lg p-4 flex items-center gap-3">
+          <span className="inline-flex p-2 bg-command/10 border border-command/30 text-command rounded-lg shrink-0">
+            <ShieldCheck size={16} />
+          </span>
+          <div>
+            <p className="text-2xl font-semibold text-white font-mono leading-none">
+              {coveredCount} / {targets!.length} <span className="text-sm text-slate-400 font-sans font-normal">targets covered</span>
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1">{coveragePct}% of coverage targets have a camera within range</p>
+          </div>
+        </div>
+      )}
+
       <SectionCard icon={Target} title="Coverage Targets" count={targets?.length ?? 0}>
         {targetsError ? (
           <p className="text-signal-red text-xs">{targetsError}</p>
         ) : !targets ? (
           <p className="text-slate-500 text-xs">Loading coverage targets…</p>
         ) : targets.length === 0 ? (
-          <p className="text-slate-500 text-xs">No coverage targets defined.</p>
+          <EmptyState icon={Target} message="No coverage targets defined." />
         ) : (
           <table className="w-full text-xs">
             <TableHead columns={['Name', 'District', 'Priority', '']} />
             <tbody>
               {targets.map((t) => (
-                <tr key={t.id} className="border-t border-line text-slate-300">
+                <tr key={t.id} className="border-t border-line text-slate-300 hover:bg-panel-raised/60">
                   <td className="py-2 text-white">{t.name}</td>
                   <td className="py-2 text-slate-400">{t.district}</td>
-                  <td className="py-2 text-slate-400 capitalize">{t.priority}</td>
+                  <td className="py-2">{priorityBadge(t.priority)}</td>
                   <td className="py-2 text-right">
                     {has('manage_cameras') && (
                       <button
@@ -125,20 +203,29 @@ export function GapAnalysisSection() {
 
       <SectionCard icon={MapPinOff} title="Uncovered Zones" count={report.uncovered_zones.length}>
         {report.uncovered_zones.length === 0 ? (
-          <p className="text-slate-500 text-xs">No coverage gaps found.</p>
+          <EmptyState icon={MapPinOff} message="No coverage gaps found." />
         ) : (
           <table className="w-full text-xs">
-            <TableHead columns={['Target', 'District', 'Nearest Camera Distance']} />
+            <TableHead columns={['Target', 'District', 'Nearest Camera']} />
             <tbody>
-              {report.uncovered_zones.map((z) => (
-                <tr key={z.target_id} className="border-t border-line">
-                  <td className="py-2 text-white">{z.name}</td>
-                  <td className="py-2 text-slate-400">{z.district}</td>
-                  <td className="py-2 text-signal-red">
-                    {z.distance_meters !== null ? `${Math.round(z.distance_meters)}m` : 'No cameras at all'}
-                  </td>
-                </tr>
-              ))}
+              {report.uncovered_zones.map((z) => {
+                const tone = distanceTone(z.distance_meters);
+                return (
+                  <tr key={z.target_id} className="border-t border-line hover:bg-panel-raised/60">
+                    <td className="py-2 text-white">{z.name}</td>
+                    <td className="py-2 text-slate-400">{z.district}</td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-2">
+                        <SeverityBadge tone={tone}>{tone === 'red' ? 'Critical' : 'Gap'}</SeverityBadge>
+                        <DistanceBar meters={z.distance_meters} tone={tone} />
+                        <span className="font-mono text-slate-400">
+                          {z.distance_meters !== null ? `${Math.round(z.distance_meters)}m` : 'no camera'}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -146,19 +233,29 @@ export function GapAnalysisSection() {
 
       <SectionCard icon={AlertTriangle} title="Ageing Infrastructure" count={report.ageing_infrastructure.length}>
         {report.ageing_infrastructure.length === 0 ? (
-          <p className="text-slate-500 text-xs">No ageing cameras flagged.</p>
+          <EmptyState icon={AlertTriangle} message="No ageing cameras flagged." />
         ) : (
           <table className="w-full text-xs">
             <TableHead columns={['Camera', 'District', 'Age', 'Degraded Events (90d)']} />
             <tbody>
-              {report.ageing_infrastructure.map((c) => (
-                <tr key={c.camera_id} className="border-t border-line">
-                  <td className="py-2 text-white">{c.name}</td>
-                  <td className="py-2 text-slate-400">{c.district}</td>
-                  <td className="py-2 text-slate-400">{Math.floor(c.age_days / 365)}y</td>
-                  <td className="py-2 text-amber-400">{c.degraded_transition_count_90d}</td>
-                </tr>
-              ))}
+              {report.ageing_infrastructure.map((c) => {
+                const tone = degradedTone(c.degraded_transition_count_90d);
+                return (
+                  <tr key={c.camera_id} className="border-t border-line hover:bg-panel-raised/60">
+                    <td className="py-2 text-white">{c.name}</td>
+                    <td className="py-2 text-slate-400">{c.district}</td>
+                    <td className="py-2 text-slate-400">{Math.floor(c.age_days / 365)}y</td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-2">
+                        <SeverityBadge tone={tone}>
+                          {tone === 'red' ? 'Degrading' : tone === 'amber' ? 'Watch' : 'Stable'}
+                        </SeverityBadge>
+                        <span className="font-mono text-slate-400">{c.degraded_transition_count_90d}</span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

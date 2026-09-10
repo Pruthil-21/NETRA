@@ -93,6 +93,30 @@ class CorridorFlow(BaseModel):
     to_camera_id: int
     transitions: int
     avg_speed_kmh: Optional[float] = None
+    # Road-following [[lat, lon], ...] path between the two cameras (see
+    # route_geometry_service.get_or_fetch_route) -- None when OSRM couldn't
+    # resolve one, which the frontend falls back to a straight line for.
+    route: Optional[list[list[float]]] = None
+
+
+class TrendBucket(BaseModel):
+    """One time bucket in a historical trends chart -- see
+    detections_service.camera_density_trend/camera_flow_trend. bucket_start
+    is an IST calendar boundary (midnight or the top of the hour), matching
+    the hour-of-day playback convention the live density/flow endpoints
+    already use."""
+    bucket_start: datetime
+    count: int
+
+
+class DensityTrendResponse(BaseModel):
+    trend: list[TrendBucket]
+    top_cameras: list[DensityPoint]
+
+
+class FlowTrendResponse(BaseModel):
+    trend: list[TrendBucket]
+    top_corridors: list[CorridorFlow]
 
 
 class DetectionResult(BaseModel):

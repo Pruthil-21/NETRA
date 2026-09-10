@@ -126,3 +126,22 @@ CREATE TABLE vehicle_daily_sightings (
 
 CREATE INDEX idx_vehicle_daily_sightings_plate
     ON vehicle_daily_sightings (plate_number, sighting_date);
+
+-- Road-following path for a Flow-layer corridor between two cameras (see
+-- route_geometry_service.py) -- without this the Map page drew a straight
+-- line between two lat/longs, which cuts through buildings/parks/water
+-- with no regard for the actual road network. Computed via OSRM at most
+-- ONCE per camera pair, ever, and cached here permanently: two fixed
+-- points' shortest road path doesn't change over this project's lifetime,
+-- so this table is what keeps real call volume against OSRM's public demo
+-- server (rate-limited, best-effort) far under its 1 req/sec policy
+-- regardless of how many officers view the layer.
+CREATE TABLE IF NOT EXISTS flow_route_cache (
+    from_camera_id   INTEGER NOT NULL,
+    to_camera_id     INTEGER NOT NULL,
+    geometry         JSONB NOT NULL,
+    distance_meters  REAL,
+    duration_seconds REAL,
+    computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (from_camera_id, to_camera_id)
+);

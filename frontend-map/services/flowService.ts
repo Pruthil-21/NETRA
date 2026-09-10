@@ -9,6 +9,10 @@ export interface CorridorFlow {
   to_camera_id: number;
   transitions: number;
   avg_speed_kmh: number | null;
+  /** Road-following [lat, lon] path between the two cameras (OSRM, cached
+   * server-side) -- null when no route could be resolved, in which case
+   * FlowCanvasLayer falls back to a straight line between the endpoints. */
+  route: [number, number][] | null;
 }
 
 export type FlowQuery = { mode: 'live'; windowMinutes: number } | { mode: 'hour'; hour: number };

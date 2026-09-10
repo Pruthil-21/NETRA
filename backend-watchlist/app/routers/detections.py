@@ -10,8 +10,8 @@ frontend route/timeline view.
 """
 import csv
 import io
-from datetime import date, datetime
-from typing import Optional
+from datetime import date, datetime, timedelta
+from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -20,7 +20,16 @@ from psycopg2.extras import RealDictCursor
 from ..auth import has_permission, require_internal_key, require_permission
 from ..database import get_db
 from ..logging_config import logger
-from ..schemas import CorridorFlow, DensityPoint, DetectionIn, DetectionOut, DetectionResult
+from ..schemas import (
+    CorridorFlow,
+    DensityPoint,
+    DensityTrendResponse,
+    DetectionIn,
+    DetectionOut,
+    DetectionResult,
+    FlowTrendResponse,
+    TrendBucket,
+)
 from ..services import alerts_service, audit_service, detections_service
 
 _IST = ZoneInfo("Asia/Kolkata")
@@ -124,6 +133,59 @@ def get_flows(
         db, window_minutes=window_minutes, hour=hour, on_date=resolved_date, dept=dept
     )
     return [CorridorFlow(**r).model_dump(mode="json") for r in results]
+
+
+# Bounds a trend query to a comfortably-covered range rather than an
+# unbounded multi-year scan -- 400 days comfortably covers "the last year"
+# while still catching an obviously-wrong request (e.g. a swapped from/to).
+MAX_TREND_RANGE_DAYS = 400
+
+
+def _validate_trend_range(date_from: datetime, date_to: datetime) -> None:
+    if date_to <= date_from:
+        raise HTTPException(status_code=400, detail="`to` must be after `from`")
+    if date_to - date_from > timedelta(days=MAX_TREND_RANGE_DAYS):
+        raise HTTPException(status_code=400, detail=f"Range cannot exceed {MAX_TREND_RANGE_DAYS} days")
+
+
+@router.get("/density/trend", response_model=DensityTrendResponse)
+def get_density_trend(
+    date_from: datetime = Query(..., alias="from"),
+    date_to: datetime = Query(..., alias="to"),
+    bucket: Literal["hour", "day"] = Query("day"),
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_permission("view_analytics")),
+):
+    """Bucketed detection-count trend over an arbitrary date range -- the
+    historical-trends counterpart to GET /detections/density's live/hour
+    snapshot. See detections_service.camera_density_trend."""
+    _validate_trend_range(date_from, date_to)
+    dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+    result = detections_service.camera_density_trend(db, date_from, date_to, bucket, dept=dept)
+    return DensityTrendResponse(
+        trend=[TrendBucket(**r) for r in result["trend"]],
+        top_cameras=[DensityPoint(**r) for r in result["top_cameras"]],
+    )
+
+
+@router.get("/flows/trend", response_model=FlowTrendResponse)
+def get_flows_trend(
+    date_from: datetime = Query(..., alias="from"),
+    date_to: datetime = Query(..., alias="to"),
+    bucket: Literal["hour", "day"] = Query("day"),
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_permission("view_analytics")),
+):
+    """Bucketed transition-volume trend over an arbitrary date range -- the
+    historical-trends counterpart to GET /detections/flows's live/hour
+    snapshot. See detections_service.camera_flow_trend."""
+    _validate_trend_range(date_from, date_to)
+    dept = user.get("scope_value") if user.get("scope_type") == "district" else None
+    result = detections_service.camera_flow_trend(db, date_from, date_to, bucket, dept=dept)
+    return FlowTrendResponse(
+        trend=[TrendBucket(**r) for r in result["trend"]],
+        top_corridors=[CorridorFlow(**r) for r in result["top_corridors"]],
+    )
 
 
 @router.post("", response_model=DetectionResult, status_code=201)
