@@ -1,0 +1,27 @@
+# Build only source/configuration; recordings and secrets are runtime mounts.
+.git
+.env
+.env.*
+!.env.example
+.organizer-*
+*.key
+*.crt
+go2rtc
+go2rtc.zip
+go2rtc.yaml
+mediamtx
+mediamtx_*.tar.gz
+logs/
+videos/
+*.mp4
+*.AVI
+*.avi
+*.ts
+*.m3u8
+cookies.txt
+cameras.json
+valid_cameras.json
+snmp/targets.json
+__pycache__/
+**/__pycache__/
+.DS_Store

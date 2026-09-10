@@ -10,6 +10,7 @@ cloudflare_protocol="${CLOUDFLARE_PROTOCOL:-http2}"
 mediamtx_pid=""
 cloudflared_pid=""
 caffeinate_pid=""
+organizer_pid=""
 
 mkdir -p "$log_dir"
 
@@ -21,6 +22,9 @@ cleanup() {
   trap - EXIT INT TERM
   echo
   echo "Stopping NETRA organizer stack..."
+  if [[ -n "$organizer_pid" ]]; then
+    kill -TERM "$organizer_pid" 2>/dev/null || true
+  fi
 
   if [[ -n "$cloudflared_pid" ]] &&
     kill -0 "$cloudflared_pid" 2>/dev/null; then
@@ -46,7 +50,9 @@ fail() {
   exit 1
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 [[ "$camera_limit" =~ ^[1-9][0-9]*$ ]] ||
   fail "CAMERA_LIMIT must be a positive integer."
@@ -68,9 +74,7 @@ if pgrep -x mediamtx >/dev/null 2>&1; then
   fail "MediaMTX is already running. Stop it before starting this stack."
 fi
 
-if pgrep -x cloudflared >/dev/null 2>&1; then
-  fail "cloudflared is already running. Stop it before starting this stack."
-fi
+# Other tunnels (for example the backend) may run independently.
 
 if pgrep -f 'ffmpeg.*stream/direct-cam' >/dev/null 2>&1; then
   fail "Direct-camera relays are already running."
@@ -144,4 +148,6 @@ echo "Starting organizer relays."
 echo "Press Control+C once to stop everything."
 echo
 export CAMERA_LIMIT="$camera_limit"
-"$script_dir/organizer_remote_feeds.sh" stream
+"$script_dir/organizer_remote_feeds.sh" stream &
+organizer_pid=$!
+wait "$organizer_pid"

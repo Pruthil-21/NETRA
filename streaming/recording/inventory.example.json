@@ -1,0 +1,4 @@
+[
+  {"path":"stream/direct-cam01", "source":"rtsp://REPLACE_PRIVATE_RELAY:8554/stream/direct-cam01", "codec":"copy"},
+  {"path":"stream/demo-cam67", "source":"rtsp://REPLACE_PRIVATE_RELAY:8554/stream/demo-cam67", "codec":"copy"}
+]

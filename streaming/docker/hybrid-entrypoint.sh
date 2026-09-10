@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 ARCHIVE_DIR="${ARCHIVE_DIR:-/recordings}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
@@ -9,6 +10,7 @@ STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
 PORTAL_URL="${PORTAL_URL:-https://cctv.corp8.cloud}"
 PASSWORD_FILE="${ORGANIZER_PASSWORD_FILE:-/run/secrets/organizer_password}"
+EMAIL_FILE="${ORGANIZER_EMAIL_FILE:-/run/secrets/organizer_email}"
 CHECK_SECONDS="${LIVE_CHECK_INTERVAL:-20}"
 REQUIRED_SUCCESSES="${LIVE_REQUIRED_SUCCESSES:-2}"
 PROBE_TIMEOUT="${LIVE_PROBE_TIMEOUT:-12}"
@@ -35,7 +37,9 @@ cleanup() {
   done
   wait 2>/dev/null || true
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 for name in CAMERA_LIMIT CHECK_SECONDS REQUIRED_SUCCESSES PROBE_TIMEOUT \
   AUTH_REFRESH_SECONDS AUTH_RETRY_SECONDS; do
@@ -52,6 +56,10 @@ done
 }
 [[ -s "$PASSWORD_FILE" ]] || {
   echo "Organizer password file is missing or empty: $PASSWORD_FILE" >&2
+  exit 1
+}
+[[ -s "$EMAIL_FILE" ]] || {
+  echo "Organizer email file is missing or empty: $EMAIL_FILE" >&2
   exit 1
 }
 
@@ -74,7 +82,8 @@ done
 }
 
 authenticate() {
-  local password temp_cookie temp_manifest
+  local email password temp_cookie temp_manifest
+  email="$(<"$EMAIL_FILE")"
   password="$(<"$PASSWORD_FILE")"
   temp_cookie="$RUNTIME_DIR/cookies.tmp"
   temp_manifest="$RUNTIME_DIR/cameras.tmp"
@@ -84,9 +93,10 @@ authenticate() {
     -c "$temp_cookie" -o /dev/null "$PORTAL_URL/" || return 1
   curl -fsSL --connect-timeout 10 --max-time 20 \
     -b "$temp_cookie" -c "$temp_cookie" \
+    --data-urlencode "email=$email" \
     --data-urlencode "password=$password" \
     -o /dev/null "$PORTAL_URL/auth/login" || return 1
-  unset password
+  unset email password
   curl -fsSL --connect-timeout 10 --max-time 30 \
     -b "$temp_cookie" -c "$temp_cookie" \
     -o "$temp_manifest" "$PORTAL_URL/cameras.json" || return 1
@@ -144,7 +154,7 @@ probe_live() {
 publish_recording() {
   local camera_id="$1" input_file="$2" target="$3"
   if [[ "$camera_id" =~ $TRANSCODE_CAMERAS ]]; then
-    ffmpeg -nostdin -hide_banner -loglevel warning \
+    exec ffmpeg -nostdin -hide_banner -loglevel warning \
       -re -stream_loop -1 -fflags +genpts -i "$input_file" \
       -map 0:v:0 -an -vf fps=20 \
       -c:v libx264 -preset veryfast -tune zerolatency \
@@ -152,7 +162,7 @@ publish_recording() {
       -pix_fmt yuv420p -g 20 -keyint_min 20 -sc_threshold 0 -threads 2 \
       -f rtsp -rtsp_transport tcp "$target"
   else
-    ffmpeg -nostdin -hide_banner -loglevel warning \
+    exec ffmpeg -nostdin -hide_banner -loglevel warning \
       -re -stream_loop -1 -fflags +genpts -i "$input_file" \
       -map 0:v:0 -an -c:v copy \
       -f rtsp -rtsp_transport tcp "$target"
@@ -167,7 +177,7 @@ publish_live() {
 
   if [[ ! "$camera_id" =~ $TRANSCODE_CAMERAS ]]; then
     log "[$camera_id] live mode=stream-copy."
-    ffmpeg -nostdin -hide_banner -loglevel warning \
+    exec ffmpeg -nostdin -hide_banner -loglevel warning \
       -rw_timeout 15000000 -http_persistent 0 \
       -user_agent "$USER_AGENT" \
       -headers "Cookie: $cookies"$'\r\n'"Referer: $PORTAL_URL/"$'\r\n' \
@@ -175,7 +185,7 @@ publish_live() {
       -f rtsp -rtsp_transport tcp "$target"
   else
     log "[$camera_id] live mode=H.264-transcode."
-    ffmpeg -nostdin -hide_banner -loglevel warning \
+    exec ffmpeg -nostdin -hide_banner -loglevel warning \
       -rw_timeout 15000000 -http_persistent 0 \
       -user_agent "$USER_AGENT" \
       -headers "Cookie: $cookies"$'\r\n'"Referer: $PORTAL_URL/"$'\r\n' \
@@ -183,16 +193,18 @@ publish_live() {
       -vf "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black,fps=15" \
       -c:v libx264 -preset ultrafast -tune zerolatency \
       -b:v 1000k -maxrate 1200k -bufsize 2000k \
-      -pix_fmt yuv420p -g 30 -keyint_min 30 -sc_threshold 0 -threads 1 \
+      -pix_fmt yuv420p -g 15 -keyint_min 15 -bf 0 -sc_threshold 0 -threads 1 \
       -f rtsp -rtsp_transport tcp "$target"
   fi
 }
 
 camera_supervisor() (
-  local input_file="$1" camera_id target publisher_pid=""
+  local input_file="$1" camera_id target
+  publisher_pid=""
   local camera_number initial_delay
   local successes=0 switch_to_live=0
   camera_id="$(basename "$input_file" .mp4)"
+  [[ "$camera_id" =~ ^cam[0-9]+$ ]] || { log "Invalid archive camera ID"; exit 1; }
   camera_number="${camera_id#cam}"
   initial_delay=$((10#$camera_number % CHECK_SECONDS))
   target="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
@@ -204,7 +216,9 @@ camera_supervisor() (
       wait "$publisher_pid" 2>/dev/null || true
     fi
   }
-  trap stop_publisher EXIT INT TERM
+  trap stop_publisher EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   while true; do
     log "[$camera_id] source=recorded"
@@ -271,4 +285,6 @@ for input_file in "${FILES[@]}"; do
 done
 
 log "Hybrid camera supervisors launched: ${#FILES[@]}"
-wait
+wait -n || true
+log "A hybrid supervisor exited unexpectedly."
+exit 1

@@ -10,17 +10,21 @@ PIDS=()
 mkdir -p "$LOG_DIR"
 
 cleanup() {
+  trap - EXIT INT TERM
   echo
   echo "Stopping downloaded-feed streams..."
 
   for pid in "${PIDS[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
 
   wait 2>/dev/null || true
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -141,6 +145,10 @@ done
 
 echo
 echo "Downloaded-feed publishers launched: $valid_count"
+if (( valid_count == 0 )); then
+  echo "No valid recording could be published." >&2
+  exit 1
+fi
 echo
 echo "RTSP pattern:"
 echo "  rtsp://$MEDIAMTX_HOST:8554/stream/organizer-cam01"

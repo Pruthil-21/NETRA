@@ -1,0 +1,31 @@
+logLevel: warn
+rtspAddress: :8554
+rtspTransports: [tcp]
+rtmp: false
+hls: false
+webrtc: false
+srt: false
+moq: false
+api: false
+playback: false
+metrics: true
+metricsAddress: :9998
+# Ingest runs in the same pod. No public read/publish surface.
+authInternalUsers:
+- user: any
+  ips: [127.0.0.1, '::1']
+  permissions:
+  - action: publish
+- user: any
+  permissions:
+  - action: metrics
+pathDefaults:
+  record: true
+  recordPath: /spool/segments/%path/%Y-%m-%d_%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 60s
+  recordDeleteAfter: 0s
+  runOnRecordSegmentComplete: python /app/hook.py
+paths:
+  all_others:

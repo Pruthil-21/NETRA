@@ -1,0 +1,6 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+psycopg[binary,pool]==3.2.9
+boto3==1.38.23
+httpx==0.28.1
+PyYAML==6.0.2

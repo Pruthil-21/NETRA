@@ -1,0 +1,8 @@
+# Opt-in: validate the actual browser/tunnel before using this for a demo.
+services:
+  mediamtx:
+    environment:
+      MTX_HLSVARIANT: lowLatency
+      MTX_HLSSEGMENTDURATION: 1s
+      MTX_HLSPARTDURATION: 200ms
+      MTX_HLSSEGMENTCOUNT: '7'

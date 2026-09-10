@@ -27,14 +27,16 @@ command -v ffmpeg >/dev/null 2>&1 || {
   echo "Error: ffmpeg is not installed." >&2
   exit 1
 }
+[[ "$RETRY_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid retry interval" >&2; exit 1; }
+[[ "$INPUT_URL" != "$OUTPUT_URL" ]] || { echo "Input and output must differ" >&2; exit 1; }
 
 while true; do
-  echo "Relaying phone camera: $INPUT_URL -> $OUTPUT_URL"
+  echo "Starting phone camera relay."
 
   ffmpeg -hide_banner -loglevel warning -nostdin \
     -rtsp_transport tcp \
+    -timeout 15000000 \
     -fflags nobuffer -flags low_delay \
-    -use_wallclock_as_timestamps 1 \
     -i "$INPUT_URL" \
     -map 0:v:0 -an \
     -vf "fps=15" \

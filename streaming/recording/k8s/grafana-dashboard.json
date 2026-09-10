@@ -1,0 +1,10 @@
+{
+  "title": "DIGDHRISHTI Recording Fleet", "uid": "digdhrishti-recording", "schemaVersion": 39,
+  "version": 1, "refresh": "30s", "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Camera recording health", "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8}, "targets": [{"expr":"recording_cameras","legendFormat":"{{state}}"}]},
+    {"id": 2, "title": "Pending notifications", "type": "timeseries", "gridPos": {"x":12,"y":0,"w":12,"h":8}, "targets": [{"expr":"recording_notifications_pending"}]},
+    {"id": 3, "title": "Persistent spool available bytes", "type": "timeseries", "gridPos": {"x":0,"y":8,"w":12,"h":8}, "targets": [{"expr":"kubelet_volume_stats_available_bytes{namespace=\"recording\"}","legendFormat":"{{persistentvolumeclaim}}"}]},
+    {"id": 4, "title": "Notification delay seconds", "type": "timeseries", "gridPos": {"x":12,"y":8,"w":12,"h":8}, "targets": [{"expr":"recording_notification_delay_seconds"}]}
+  ]
+}

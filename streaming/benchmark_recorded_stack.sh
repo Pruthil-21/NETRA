@@ -14,22 +14,23 @@ if [[ ! "$EXPECTED_CAMERAS" =~ ^[0-9]+$ ]] ||
   exit 1
 fi
 
-if ! docker compose -f "$COMPOSE_FILE" ps --status running replay \
-  --format json >/dev/null 2>&1; then
+replay_id="$(docker compose -f "$COMPOSE_FILE" ps -q replay)"
+if [[ -z "$replay_id" ]] || [[ "$(docker inspect --format '{{.State.Running}}' "$replay_id")" != true ]]; then
   echo "The recorded replay stack is not running." >&2
   exit 1
 fi
 
 timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-publisher_count="$(docker top netra-replay | grep -c '[f]fmpeg' || true)"
+publisher_count="$(docker top "$replay_id" | grep -c '[f]fmpeg' || true)"
 replay_health="$(docker inspect --format '{{.State.Health.Status}}' \
-  netra-replay 2>/dev/null || echo unavailable)"
+  "$replay_id" 2>/dev/null || echo unavailable)"
 
 working=0
 failed=0
 feed_results=""
 
-for number in $(seq -w 1 "$EXPECTED_CAMERAS"); do
+for index in $(seq 1 "$EXPECTED_CAMERAS"); do
+  number="$(printf '%02d' "$index")"
   url="$HLS_BASE_URL/stream/direct-cam${number}/index.m3u8?cookieCheck=1"
   code="$(curl -LsS -o /dev/null -w '%{http_code}' --max-time 15 \
     "$url" 2>/dev/null || true)"
@@ -85,9 +86,9 @@ fi
   echo
   echo "## Scope statement"
   echo
-  echo "NETRA validated $working concurrent prerecorded HLS streams on one "
-  echo "containerized prototype edge node. This report does not represent "
-  echo "80,000 simultaneous video streams."
+  echo "This snapshot observed $working HTTP-200 playlist URLs and $publisher_count publisher processes."
+  echo "It does not verify video decoding, playlist advancement, sustained concurrency or glass-to-glass latency."
+  echo "Run tests/benchmark_streaming.py for isolated decoding and recovery checks."
 } > "$REPORT_FILE"
 
 echo "Evidence report: $REPORT_FILE"

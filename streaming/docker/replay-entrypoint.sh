@@ -24,7 +24,9 @@ cleanup() {
   wait 2>/dev/null || true
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ ! "$CAMERA_LIMIT" =~ ^[0-9]+$ ]] ||
    (( CAMERA_LIMIT < 1 )); then
@@ -63,10 +65,20 @@ if (( mediamtx_ready == 0 )); then
   exit 1
 fi
 
-stream_file() {
+stream_file() (
   local input_file="$1"
   local camera_id
   local target_url
+  publisher_pid=""
+  stop_publisher() {
+    if [[ -n "$publisher_pid" ]]; then
+      kill -TERM "$publisher_pid" 2>/dev/null || true
+      wait "$publisher_pid" 2>/dev/null || true
+    fi
+  }
+  trap stop_publisher EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   camera_id="$(basename "$input_file" .mp4)"
   target_url="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
@@ -83,19 +95,22 @@ stream_file() {
         -b:v 2500k -maxrate 3000k -bufsize 5000k \
         -pix_fmt yuv420p -g 20 -keyint_min 20 \
         -sc_threshold 0 -threads 2 \
-        -f rtsp -rtsp_transport tcp "$target_url"
+        -f rtsp -rtsp_transport tcp "$target_url" &
     else
       ffmpeg -nostdin -hide_banner -loglevel warning \
         -re -stream_loop -1 -fflags +genpts \
         -i "$input_file" -map 0:v:0 -an \
         -c:v copy \
-        -f rtsp -rtsp_transport tcp "$target_url"
+        -f rtsp -rtsp_transport tcp "$target_url" &
     fi
+    publisher_pid=$!
+    wait "$publisher_pid" || true
+    publisher_pid=""
 
     echo "[$camera_id] publisher stopped; retrying in 5 seconds"
     sleep 5
   done
-}
+)
 
 mapfile -t FILES < <(
   find "$ARCHIVE_DIR" \
@@ -118,4 +133,6 @@ for input_file in "${FILES[@]}"; do
 done
 
 echo "Recorded publishers launched: ${#PIDS[@]}"
-wait
+wait -n || true
+echo "A recorded-feed supervisor exited unexpectedly." >&2
+exit 1

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 PORTAL_URL="${PORTAL_URL:-https://cctv.corp8.cloud}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
@@ -10,6 +11,8 @@ CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
 STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 RETRY_SECONDS="${RETRY_SECONDS:-10}"
 AUTH_REFRESH_SECONDS="${AUTH_REFRESH_SECONDS:-600}"
+STALL_SECONDS="${STALL_SECONDS:-45}"
+RELAY_FPS="${RELAY_FPS:-15}"
 TRANSCODE_CAMERAS="${TRANSCODE_CAMERAS:-^(cam09|cam15|cam18|cam24|cam27|cam29|cam30)$}"
 USER_AGENT="${SOURCE_USER_AGENT:-Mozilla/5.0}"
 
@@ -34,9 +37,11 @@ cleanup() {
   wait 2>/dev/null || true
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-for variable_name in CAMERA_LIMIT RETRY_SECONDS AUTH_REFRESH_SECONDS; do
+for variable_name in CAMERA_LIMIT RETRY_SECONDS AUTH_REFRESH_SECONDS STALL_SECONDS RELAY_FPS; do
   value="${!variable_name}"
 
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
@@ -44,6 +49,7 @@ for variable_name in CAMERA_LIMIT RETRY_SECONDS AUTH_REFRESH_SECONDS; do
     exit 1
   fi
 done
+(( RELAY_FPS <= 60 )) || { echo "RELAY_FPS must be at most 60." >&2; exit 1; }
 
 if [[ ! -s "$EMAIL_FILE" ]]; then
   echo "Organizer email file is missing or empty: $EMAIL_FILE" >&2
@@ -120,12 +126,15 @@ authenticate() {
 
   jq -e \
     --argjson camera_limit "$CAMERA_LIMIT" \
-    'type == "array" and length >= $camera_limit' \
+    'type == "array" and length > 0 and
+     (.[0:$camera_limit] | all(.[]; (.id | type == "string") and (.id | test("^cam[0-9]+$")))) and
+     (.[0:$camera_limit] | map(.id) | length == (unique | length))' \
     "$temporary_manifest" >/dev/null || return 1
 
   chmod 600 "$temporary_cookie" "$temporary_manifest"
   mv -f "$temporary_cookie" "$COOKIE_JAR"
   mv -f "$temporary_manifest" "$MANIFEST"
+  date +%s > "$RUNTIME_DIR/auth-success"
 }
 
 authentication_loop() {
@@ -193,7 +202,7 @@ publish_camera() {
   if [[ "$camera_id" =~ $TRANSCODE_CAMERAS ]]; then
     log "[$camera_id] relay mode=H.264 transcode"
 
-    ffmpeg \
+    exec ffmpeg \
       -nostdin \
       -hide_banner \
       -loglevel warning \
@@ -204,7 +213,7 @@ publish_camera() {
       -i "$source_url" \
       -map 0:v:0 \
       -an \
-      -vf "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black,fps=15" \
+      -vf "scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2:black,fps=$RELAY_FPS" \
       -c:v libx264 \
       -preset ultrafast \
       -tune zerolatency \
@@ -212,8 +221,9 @@ publish_camera() {
       -maxrate 1200k \
       -bufsize 2000k \
       -pix_fmt yuv420p \
-      -g 30 \
-      -keyint_min 30 \
+      -g "$RELAY_FPS" \
+      -keyint_min "$RELAY_FPS" \
+      -bf 0 \
       -sc_threshold 0 \
       -threads 1 \
       -f rtsp \
@@ -222,7 +232,7 @@ publish_camera() {
   else
     log "[$camera_id] relay mode=stream copy"
 
-    ffmpeg \
+    exec ffmpeg \
       -nostdin \
       -hide_banner \
       -loglevel warning \
@@ -243,11 +253,23 @@ publish_camera() {
 hls_available() {
   local camera_id="$1"
 
-  curl -fsS     --max-time 6     -o /dev/null     "http://${MEDIAMTX_HOST}:8888/stream/${STREAM_PREFIX}-${camera_id}/index.m3u8?cookieCheck=1"
+  /usr/local/bin/hls-probe \
+    "http://${MEDIAMTX_HOST}:8888/stream/${STREAM_PREFIX}-${camera_id}/index.m3u8?cookieCheck=1" \
+    "$STATUS_DIR/$camera_id" "$STALL_SECONDS"
 }
 
 camera_supervisor() (
   local camera_id="$1"
+  publisher_pid=""
+  stop_publisher() {
+    if [[ -n "$publisher_pid" ]]; then
+      kill -TERM "$publisher_pid" 2>/dev/null || true
+      wait "$publisher_pid" 2>/dev/null || true
+    fi
+  }
+  trap stop_publisher EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   local cookies
   local camera_number
   local initial_delay
@@ -264,7 +286,7 @@ camera_supervisor() (
     cookies="$(cookie_header 2>/dev/null || true)"
 
     if [[ -z "$cookies" ]]; then
-      sleep "$RETRY_SECONDS"
+      sleep "$((RETRY_SECONDS + RANDOM % 5))"
       continue
     fi
 
@@ -354,4 +376,6 @@ done
 
 log "Live-only Organizer camera supervisors launched: ${#CAMERA_IDS[@]}"
 log "Recorded fallback is disabled."
-wait
+wait -n || true
+log "A required supervisor exited; restarting the container is required."
+exit 1

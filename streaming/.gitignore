@@ -13,3 +13,12 @@ mediamtx_*.tar.gz
 go2rtc
 go2rtc.zip
 go2rtc.yaml
+.organizer-email
+.organizer-password
+.env
+.env.local
+.env.*
+!.env.example
+!.env.federation-api.example
+__pycache__/
+.DS_Store
