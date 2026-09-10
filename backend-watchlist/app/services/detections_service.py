@@ -187,6 +187,30 @@ def search_detections(
     return db.fetchall()
 
 
+def _time_window_clauses(window_minutes: int | None, hour: int | None, on_date) -> tuple[list[str], list]:
+    """The live-vs-hour window filter shared by every Map-layer analytics
+    query below -- exactly one of the two, chosen by the caller (see the
+    router's own validation that exactly one is set):
+
+    - window_minutes: a rolling "right now" window (e.g. the last 30
+      minutes).
+    - hour + on_date: every detection whose IST calendar hour matches
+      `hour` on `on_date`, for the time-of-day playback scrubber -- reusing
+      the same append-only `detections` history rather than a separate
+      hourly rollup, since an hour-bucketed scan is cheap enough at this
+      table's current scale and the index above keeps it cheap as it grows.
+    """
+    if window_minutes is not None:
+        return ["detected_at >= now() - (%s || ' minutes')::interval"], [window_minutes]
+    return (
+        [
+            "(detected_at AT TIME ZONE 'Asia/Kolkata')::date = %s",
+            "EXTRACT(HOUR FROM detected_at AT TIME ZONE 'Asia/Kolkata') = %s",
+        ],
+        [on_date, hour],
+    )
+
+
 def camera_density_counts(
     db: RealDictCursor,
     window_minutes: int | None = None,
@@ -194,34 +218,12 @@ def camera_density_counts(
     on_date=None,
     dept: str | None = None,
 ):
-    """Per-camera detection counts for the Map page's density layer --
-    exactly one of two windows, chosen by the caller (see the router's own
-    validation that exactly one is set):
-
-    - window_minutes: a rolling "right now" window (e.g. the last 30
-      minutes) for the live density view.
-    - hour + on_date: every detection whose IST calendar hour matches
-      `hour` on `on_date`, for the time-of-day playback scrubber -- reusing
-      the same append-only `detections` history rather than a separate
-      hourly rollup, since an hour-bucketed scan is cheap enough at this
-      table's current scale and the index above keeps it cheap as it grows.
-
+    """Per-camera detection counts for the Map page's density layer.
     Cameras with zero detections in the window are simply absent from the
     result -- the frontend only paints where there's actual activity, so an
-    idle camera contributing nothing here isn't a special case.
-    """
+    idle camera contributing nothing here isn't a special case."""
     joins = ""
-    clauses = []
-    params: list = []
-
-    if window_minutes is not None:
-        clauses.append("detected_at >= now() - (%s || ' minutes')::interval")
-        params.append(window_minutes)
-    else:
-        clauses.append("(detected_at AT TIME ZONE 'Asia/Kolkata')::date = %s")
-        params.append(on_date)
-        clauses.append("EXTRACT(HOUR FROM detected_at AT TIME ZONE 'Asia/Kolkata') = %s")
-        params.append(hour)
+    clauses, params = _time_window_clauses(window_minutes, hour, on_date)
 
     if dept is not None:
         joins = "JOIN cameras c ON c.id = detections.camera_id"
@@ -239,6 +241,108 @@ def camera_density_counts(
         params,
     )
     return db.fetchall()
+
+
+# A "transition" pairs a plate's two consecutive sightings network-wide (see
+# predict_next_camera above for the same LEAD-window pattern) -- capped to
+# this gap so a plate that vanishes for hours before resurfacing elsewhere
+# doesn't get counted as a same-trip corridor between two otherwise
+# unrelated visits.
+MAX_FLOW_TRANSITION_GAP_HOURS = 3
+
+
+def camera_flow_pairs(
+    db: RealDictCursor,
+    window_minutes: int | None = None,
+    hour: int | None = None,
+    on_date=None,
+    dept: str | None = None,
+    limit: int = 200,
+):
+    """Camera-to-camera transition volume and average travel speed for the
+    Map page's Flow layer, within the same live/hour window
+    camera_density_counts uses. Every plate's two consecutive sightings in
+    the window count as one transition from the first camera to the
+    second; grouped by (from, to) pair, this is a network-wide flow matrix,
+    not any one vehicle's route.
+
+    Average speed is computed here, not in SQL: it needs each camera's
+    real lat/long (backend-registry's `cameras` table, via
+    camera_metadata.lookup) and geo.haversine_km, mirroring how
+    get_vehicle_trace already derives speed for a single plate's route.
+    A pair where either camera's coordinates are unknown is dropped rather
+    than returned with a null speed -- the frontend draws every returned
+    pair as a colored corridor, and a corridor with no speed to color by
+    isn't renderable.
+    """
+    joins = ""
+    clauses, params = _time_window_clauses(window_minutes, hour, on_date)
+
+    if dept is not None:
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    db.execute(
+        f"""
+        WITH ordered AS (
+            SELECT detections.plate_number, detections.camera_id, detections.detected_at,
+                   LEAD(detections.camera_id) OVER (
+                       PARTITION BY detections.plate_number ORDER BY detections.detected_at
+                   ) AS next_camera_id,
+                   LEAD(detections.detected_at) OVER (
+                       PARTITION BY detections.plate_number ORDER BY detections.detected_at
+                   ) AS next_detected_at
+            FROM detections {joins}
+            {where}
+        ),
+        transitions AS (
+            SELECT camera_id AS from_camera_id, next_camera_id AS to_camera_id,
+                   EXTRACT(EPOCH FROM (next_detected_at - detected_at)) AS gap_seconds
+            FROM ordered
+            WHERE next_camera_id IS NOT NULL
+              AND next_camera_id != camera_id
+              AND next_detected_at > detected_at
+              AND next_detected_at - detected_at <= (%s || ' hours')::interval
+        )
+        SELECT from_camera_id, to_camera_id,
+               COUNT(*) AS transitions, AVG(gap_seconds) AS avg_gap_seconds
+        FROM transitions
+        GROUP BY from_camera_id, to_camera_id
+        ORDER BY transitions DESC
+        LIMIT %s
+        """,
+        [*params, MAX_FLOW_TRANSITION_GAP_HOURS, limit],
+    )
+    pairs = db.fetchall()
+
+    metadata_cache: dict[int, dict] = {}
+
+    def _metadata(camera_id: int) -> dict:
+        if camera_id not in metadata_cache:
+            metadata_cache[camera_id] = camera_metadata.lookup(db, camera_id)
+        return metadata_cache[camera_id]
+
+    flows = []
+    for pair in pairs:
+        from_meta = _metadata(pair["from_camera_id"])
+        to_meta = _metadata(pair["to_camera_id"])
+        if None in (from_meta["latitude"], from_meta["longitude"], to_meta["latitude"], to_meta["longitude"]):
+            continue
+        distance_km = geo.haversine_km(
+            from_meta["latitude"], from_meta["longitude"], to_meta["latitude"], to_meta["longitude"]
+        )
+        avg_gap_hours = float(pair["avg_gap_seconds"]) / 3600
+        flows.append(
+            {
+                "from_camera_id": pair["from_camera_id"],
+                "to_camera_id": pair["to_camera_id"],
+                "transitions": pair["transitions"],
+                "avg_speed_kmh": round(distance_km / avg_gap_hours, 1) if avg_gap_hours > 0 else None,
+            }
+        )
+    return flows
 
 
 def get_vehicle_trace(

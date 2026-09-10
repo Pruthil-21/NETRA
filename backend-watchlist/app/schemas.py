@@ -84,6 +84,17 @@ class DensityPoint(BaseModel):
     count: int
 
 
+class CorridorFlow(BaseModel):
+    """One camera-to-camera transition pair for the Map page's Flow layer --
+    see detections_service.camera_flow_pairs. avg_speed_kmh is the average
+    inferred travel speed across every plate that made this transition in
+    the window, not any single vehicle's speed."""
+    from_camera_id: int
+    to_camera_id: int
+    transitions: int
+    avg_speed_kmh: Optional[float] = None
+
+
 class DetectionResult(BaseModel):
     """Response for POST /detections — the detection is always recorded;
     alert is populated only when the plate matched the watchlist."""

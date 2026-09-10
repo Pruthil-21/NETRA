@@ -3,6 +3,7 @@ import uuid
 
 import psycopg2
 import psycopg2.extras
+import pytest
 from app.config import settings
 
 
@@ -225,10 +226,12 @@ def _make_rbac_token(role: str, scope_type: str, scope_value=None, badge_number=
     )
 
 
-def _insert_test_camera(dept: str) -> int:
+def _insert_test_camera(dept: str, lat: float = 23.0, long: float = 72.5) -> int:
     """Creates a real, isolated camera row in a controlled department, so
     scoping tests never depend on what dept ambient seed data happens to
-    have at some fixed id."""
+    have at some fixed id. lat/long default to a fixed point (every prior
+    caller's behavior, unchanged); flow tests override them to control the
+    distance between two cameras precisely."""
     import psycopg2
     import psycopg2.extras
     from app.config import settings
@@ -238,10 +241,10 @@ def _insert_test_camera(dept: str) -> int:
         cur.execute(
             """
             INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days)
-            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'fixed', 'govt', 'cloud', 30)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 'fixed', 'govt', 'cloud', 30)
             RETURNING id
             """,
-            (f"Scoping Test Cam ({dept})", dept),
+            (f"Scoping Test Cam ({dept})", dept, long, lat),
         )
         camera_id = cur.fetchone()["id"]
         conn.commit()
@@ -404,3 +407,120 @@ def test_density_district_scoped_only_counts_own_district(client, internal_heade
     counted_ids = {row["camera_id"] for row in resp.json()}
     assert cam_a in counted_ids
     assert cam_b not in counted_ids
+
+
+def test_flows_requires_view_analytics_permission(client):
+    token = _make_rbac_token("station_officer", "district", "Traffic Police")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+
+
+def test_flows_requires_exactly_one_window_param(client):
+    token = _make_rbac_token("super_admin", "platform")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    neither = client.get("/detections/flows", headers=headers)
+    assert neither.status_code == 400
+
+    both = client.get("/detections/flows", params={"window_minutes": 30, "hour": 5}, headers=headers)
+    assert both.status_code == 400
+
+
+def test_flows_counts_a_transition_with_correct_average_speed(client, internal_headers, scoping_test_cameras):
+    from datetime import datetime, timedelta, timezone
+    from app.services import geo
+
+    # ~1.11km apart (0.01 degrees latitude) with an exact 1-hour gap between
+    # the two sightings -- gives a known, checkable speed rather than a
+    # real-world value that could drift with unrelated seed data.
+    cam_a = _insert_test_camera("Flow Test District", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Test District", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_b)
+    expected_km = geo.haversine_km(23.0, 72.5, 23.01, 72.5)
+
+    plate = _random_plate()
+    now = datetime.now(timezone.utc)
+    t_a = now - timedelta(hours=1)
+    t_b = now
+    client.post(
+        "/detections",
+        json={"camera_id": cam_a, "plate_number": plate, "detected_at": t_a.isoformat()},
+        headers=internal_headers,
+    )
+    client.post(
+        "/detections",
+        json={"camera_id": cam_b, "plate_number": plate, "detected_at": t_b.isoformat()},
+        headers=internal_headers,
+    )
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 180}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    flows = {(row["from_camera_id"], row["to_camera_id"]): row for row in resp.json()}
+    flow = flows[(cam_a, cam_b)]
+    assert flow["transitions"] == 1
+    assert flow["avg_speed_kmh"] == pytest.approx(expected_km, rel=0.02)
+
+
+def test_flows_excludes_transitions_past_the_gap_cap(client, internal_headers, scoping_test_cameras):
+    from datetime import datetime, timedelta, timezone
+
+    cam_a = _insert_test_camera("Flow Test District")
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Test District")
+    scoping_test_cameras.append(cam_b)
+
+    plate = _random_plate()
+    now = datetime.now(timezone.utc)
+    t_a = now - timedelta(hours=4)  # past MAX_FLOW_TRANSITION_GAP_HOURS (3h)
+    t_b = now
+    client.post(
+        "/detections",
+        json={"camera_id": cam_a, "plate_number": plate, "detected_at": t_a.isoformat()},
+        headers=internal_headers,
+    )
+    client.post(
+        "/detections",
+        json={"camera_id": cam_b, "plate_number": plate, "detected_at": t_b.isoformat()},
+        headers=internal_headers,
+    )
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 300}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    flows = {(row["from_camera_id"], row["to_camera_id"]) for row in resp.json()}
+    assert (cam_a, cam_b) not in flows
+
+
+def test_flows_district_scoped_only_counts_own_district(client, internal_headers, scoping_test_cameras):
+    cam_a = _insert_test_camera("Flow Scoping District A", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_a)
+    cam_b = _insert_test_camera("Flow Scoping District A", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_b)
+    cam_c = _insert_test_camera("Flow Scoping District B", lat=23.0, long=72.5)
+    scoping_test_cameras.append(cam_c)
+    cam_d = _insert_test_camera("Flow Scoping District B", lat=23.01, long=72.5)
+    scoping_test_cameras.append(cam_d)
+
+    plate_ab = _random_plate()
+    client.post("/detections", json={"camera_id": cam_a, "plate_number": plate_ab}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_b, "plate_number": plate_ab}, headers=internal_headers)
+    plate_cd = _random_plate()
+    client.post("/detections", json={"camera_id": cam_c, "plate_number": plate_cd}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": cam_d, "plate_number": plate_cd}, headers=internal_headers)
+
+    token = _make_rbac_token("district_command", "district", "Flow Scoping District A")
+    resp = client.get(
+        "/detections/flows", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    flows = {(row["from_camera_id"], row["to_camera_id"]) for row in resp.json()}
+    assert (cam_a, cam_b) in flows
+    assert (cam_c, cam_d) not in flows
