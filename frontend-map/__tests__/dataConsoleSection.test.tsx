@@ -156,6 +156,36 @@ describe('DataConsoleSection', () => {
     await waitFor(() => expect(dataConsoleService.resubmitFailed).toHaveBeenCalledWith(7));
   });
 
+  it('offers sample CSV/JSON downloads for an entity that supports import', async () => {
+    mockPermissions(['manage_cameras']);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    render(<DataConsoleSection />);
+    await screen.findByText('42');
+
+    fireEvent.click(screen.getByRole('button', { name: /download sample csv/i }));
+    expect(createUrlSpy).toHaveBeenCalledTimes(1);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /download sample json/i }));
+    expect(createUrlSpy).toHaveBeenCalledTimes(2);
+
+    vi.restoreAllMocks();
+  });
+
+  it('does not offer sample downloads for an entity with no import support', async () => {
+    mockPermissions(['manage_cameras']);
+    render(<DataConsoleSection />);
+    await screen.findByText('42');
+
+    fireEvent.click(screen.getByText('Coverage Targets'));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /download sample csv/i })).not.toBeInTheDocument()
+    );
+  });
+
   it('offers a link to the full history in Audit Log only when the officer can see it', async () => {
     mockPermissions(['manage_cameras', 'view_audit_logs']);
     const onViewAuditLog = vi.fn();
