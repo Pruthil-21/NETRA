@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { ChevronDown, ChevronRight, Plus, Navigation, Search, Check, ArrowUpCircle, X, ShieldAlert, History } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { alertsService } from '@/services/alertsService';
@@ -46,8 +46,16 @@ function timeAgo(iso: string): string {
 
 export default function AlertsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // The registry tree's right-click "View Alerts for this Camera" lands
+  // here as ?camera=<id> -- narrows both tabs to that one camera instead of
+  // an officer having to hunt for it through the city/district groupings.
+  const cameraFilterId = useMemo(() => {
+    const raw = searchParams.get('camera');
+    return raw ? Number(raw) : null;
+  }, [searchParams]);
   const { cameras } = useCameraRegistry();
-  const { scopeValue: homeDistrict, permissions } = usePermissions();
+  const { scopeType, scopeValue: homeDistrict, permissions } = usePermissions();
   const canViewTraffic = permissions.includes('view_analytics');
   const [tab, setTab] = useState<'plate' | 'traffic'>('plate');
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -114,6 +122,9 @@ export default function AlertsPage() {
   };
 
   const camerasById = useMemo(() => new Map(cameras.map((c) => [c.id, c])), [cameras]);
+  const cameraFilterName = cameraFilterId != null
+    ? camerasById.get(cameraFilterId)?.name ?? `Camera #${cameraFilterId}`
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -152,7 +163,8 @@ export default function AlertsPage() {
   // Circle"), too granular for a city-level view like "Ahmedabad".
   const groupedByCity = useMemo(() => {
     const groups = new Map<string, Alert[]>();
-    for (const alert of alerts) {
+    const source = cameraFilterId == null ? alerts : alerts.filter((a) => a.camera_id === cameraFilterId);
+    for (const alert of source) {
       const camera = camerasById.get(alert.camera_id);
       const city = camera ? getCameraCity(camera) : 'Unknown location';
       if (!groups.has(city)) groups.set(city, []);
@@ -251,11 +263,39 @@ export default function AlertsPage() {
             ))}
           </div>
         )}
+
+        {cameraFilterName && (
+          <div className="flex items-center gap-2 mt-3 px-2.5 py-1.5 rounded bg-command/10 border border-command/30 text-[11px] text-command w-fit">
+            <ShieldAlert size={12} />
+            Filtered to <span className="font-semibold">{cameraFilterName}</span>
+            <button
+              type="button"
+              onClick={() => router.push('/alerts')}
+              className="ml-1 text-slate-400 hover:text-white"
+              aria-label="Clear camera filter"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+
+        {/* The backend now only ever returns alerts this officer's postings
+            are in scope for (detected in their district, or flagged by it --
+            see backend-watchlist's dual-criteria alert rule). Nothing here
+            filters the list client-side; this is purely so a district-scoped
+            officer understands why the list is narrower than a platform
+            view, rather than assuming something's broken. */}
+        {scopeType === 'district' && homeDistrict && (
+          <p className="mt-2 text-[10px] text-slate-500">
+            Scoped to <span className="font-semibold text-slate-400">{homeDistrict}</span> — alerts detected in or
+            flagged by your district.
+          </p>
+        )}
       </div>
 
       {tab === 'traffic' && canViewTraffic ? (
         <div className="flex-1 flex min-h-0 overflow-hidden">
-          <TrafficAlertsSection />
+          <TrafficAlertsSection cameraId={cameraFilterId} />
         </div>
       ) : (
         <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -275,10 +315,14 @@ export default function AlertsPage() {
 
             <div className="flex-1 overflow-y-auto">
               {error && <p className="text-signal-red text-xs px-3 py-2">{error}</p>}
-              {!error && alerts.length === 0 && (
-                <p className="text-slate-500 text-xs p-3">No alerts yet — they appear here the moment a blacklisted plate is detected.</p>
+              {!error && groupedByCity.length === 0 && (
+                <p className="text-slate-500 text-xs p-3">
+                  {cameraFilterName
+                    ? `No alerts for ${cameraFilterName} yet.`
+                    : 'No alerts yet — they appear here the moment a blacklisted plate is detected.'}
+                </p>
               )}
-              {alerts.length > 0 && visibleGroups.length === 0 && (
+              {groupedByCity.length > 0 && visibleGroups.length === 0 && (
                 <p className="text-slate-500 text-xs p-3">No cities match &quot;{citySearch}&quot;.</p>
               )}
 

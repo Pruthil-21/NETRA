@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { watchlistService } from '@/services/watchlistService';
+import { locationsService, District } from '@/services/locationsService';
+import { usePermissions } from '@/hooks/usePermissions';
 import { WatchlistPriority } from '@/types/alert';
 
 interface AddToWatchlistModalProps {
@@ -14,15 +15,20 @@ interface AddToWatchlistModalProps {
 }
 
 export function AddToWatchlistModal({ onClose, onAdded, initialPlate }: AddToWatchlistModalProps) {
-  const { cameras } = useCameraRegistry();
-  const cities = useMemo(
-    () => Array.from(new Set(cameras.map((c) => c.dept).filter(Boolean))).sort(),
-    [cameras]
-  );
+  const { scopeType, scopeValue } = usePermissions();
+  const districtLocked = scopeType === 'district';
+
+  // Canonical district list -- was previously derived from the live camera
+  // registry's `dept` values, which drift from the reference district names
+  // used everywhere else (areas, cameras, coverage targets).
+  const [districts, setDistricts] = useState<District[]>([]);
+  useEffect(() => {
+    locationsService.listDistricts().then(setDistricts).catch(() => setDistricts([]));
+  }, []);
 
   const [plateNumber, setPlateNumber] = useState(initialPlate || '');
   const [reason, setReason] = useState('');
-  const [deptFlagged, setDeptFlagged] = useState(cities[0] || '');
+  const [deptFlagged, setDeptFlagged] = useState(districtLocked && scopeValue ? scopeValue : '');
   const [priority, setPriority] = useState<WatchlistPriority>('medium');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,27 +89,21 @@ export function AddToWatchlistModal({ onClose, onAdded, initialPlate }: AddToWat
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-slate-400">City / area flagged</span>
-            {cities.length > 0 ? (
-              <select
-                value={deptFlagged}
-                onChange={(e) => setDeptFlagged(e.target.value)}
-                className="bg-panel-raised border border-line rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-command"
-              >
-                {cities.map((city) => (
-                  <option key={city} value={city}>
-                    {city}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                value={deptFlagged}
-                onChange={(e) => setDeptFlagged(e.target.value)}
-                placeholder="City or area name"
-                className="bg-panel-raised border border-line rounded px-2.5 py-1.5 text-white placeholder:text-slate-600 focus:outline-none focus:border-command"
-              />
-            )}
+            <span className="text-slate-400">District flagged</span>
+            <select
+              value={deptFlagged}
+              onChange={(e) => setDeptFlagged(e.target.value)}
+              disabled={districtLocked}
+              title={districtLocked ? 'Locked to your own district' : undefined}
+              className="bg-panel-raised border border-line rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-command disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <option value="" disabled>Select a district…</option>
+              {districts.map((d) => (
+                <option key={d.id} value={d.name}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label className="flex flex-col gap-1">
