@@ -16,6 +16,24 @@ const LOGIN_LOG = {
   actor_name: 'Demo Super Admin', camera_name: null, camera_district: null, camera_area: null,
 };
 
+const CAMERA_OFFLINE_LOG = {
+  id: 3, badge_number: 'system', action: 'camera_offline', resource_type: 'camera', resource_id: 7,
+  reason_code: 'was online for 3h 12m', timestamp: '2026-09-05T11:00:00Z', category: 'camera_registry',
+  actor_name: null, camera_name: 'Ring Road Cam', camera_district: 'Traffic Police', camera_area: 'Ring Road Circle',
+};
+
+const UNCATEGORIZED_LOG_A = {
+  id: 4, badge_number: 'GJ-SO-002', action: 'weird_action', resource_type: 'widget', resource_id: 5,
+  reason_code: null, timestamp: '2026-09-05T12:00:00Z', category: 'other',
+  actor_name: null, camera_name: null, camera_district: null, camera_area: null,
+};
+
+const UNCATEGORIZED_LOG_B = {
+  id: 5, badge_number: 'GJ-SO-003', action: 'another_action', resource_type: 'gadget', resource_id: 6,
+  reason_code: null, timestamp: '2026-09-05T13:00:00Z', category: 'other',
+  actor_name: null, camera_name: null, camera_district: null, camera_area: null,
+};
+
 function renderSection() {
   return render(
     <CameraRegistryProvider>
@@ -102,5 +120,51 @@ describe('AuditLogSection', () => {
     await waitFor(() =>
       expect(calls.some((u) => u.includes('/audit-logs?') && u.includes('camera_id=7'))).toBe(true)
     );
+  });
+
+  it('labels a system-attributed connectivity transition instead of "Unknown officer", with its reason', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/audit-logs/categories')) {
+          return Promise.resolve({ ok: true, json: async () => ({ categories: ['camera_registry'] }) });
+        }
+        if (url.includes('/audit-logs')) {
+          return Promise.resolve({ ok: true, json: async () => ({ logs: [CAMERA_OFFLINE_LOG], next_cursor: null }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    renderSection();
+
+    expect(await screen.findByText('Camera went offline')).toBeInTheDocument();
+    expect(screen.getByText('System (automated)')).toBeInTheDocument();
+    expect(screen.queryByText('Unknown officer')).not.toBeInTheDocument();
+    expect(screen.getByText('was online for 3h 12m')).toBeInTheDocument();
+  });
+
+  it('groups the Other category by its actual action/resource_type instead of one flat list', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) => {
+        if (url.includes('/audit-logs/categories')) {
+          return Promise.resolve({ ok: true, json: async () => ({ categories: ['other'] }) });
+        }
+        if (url.includes('/audit-logs')) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ logs: [UNCATEGORIZED_LOG_A, UNCATEGORIZED_LOG_B], next_cursor: null }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => [] });
+      })
+    );
+
+    renderSection();
+    fireEvent.click(await screen.findByRole('button', { name: /^other$/i }));
+
+    expect(await screen.findByText('weird_action · widget (1)')).toBeInTheDocument();
+    expect(screen.getByText('another_action · gadget (1)')).toBeInTheDocument();
   });
 });
