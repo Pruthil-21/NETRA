@@ -27,14 +27,17 @@ const RETRY_BASE_DELAY_MS = 1000;
 // sitting on "Connecting…" forever. It only clears on a genuine decoded
 // frame (see onFirstFrame below) — not on MANIFEST_PARSED — because a flaky
 // source can keep re-parsing its manifest successfully forever without ever
-// actually delivering playable media.
-const CONNECT_WATCHDOG_MS = 20000;
+// actually delivering playable media. Kept well under the map hover
+// preview's own connect time for the same URL (usually well under 3s) so a
+// genuinely-live camera never sits here longer than it takes the exact same
+// stream to already be playing in the hover preview.
+const CONNECT_WATCHDOG_MS = 9000;
 
 // hls.js firing MANIFEST_PARSED only means the playlist was readable — on a
 // flaky LL-HLS source (part requests 503ing) no actual frame data may ever
 // arrive, leaving the video element stuck at readyState 0 while we claim
 // "Live". If no real frame shows up shortly after, treat it as a failure.
-const PLAYBACK_STALL_MS = 8000;
+const PLAYBACK_STALL_MS = 4000;
 
 // The organizer's upstream cameras are highly dynamic — a publisher can drop
 // and come back within 10-30s. Once a camera settles into a terminal offline

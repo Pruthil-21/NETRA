@@ -7,8 +7,13 @@ import { connectWhep, type WhepSession } from '@/lib/webrtc';
 
 // One negotiation round trip; if it hasn't resolved by here, give up and let
 // the caller (CameraLivePlayer) fall back to the LL-HLS path instead of
-// leaving the drawer stuck on "Connecting…" forever.
-const CONNECT_WATCHDOG_MS = 8000;
+// leaving the drawer stuck on "Connecting…" forever. Short on purpose: WebRTC
+// here is only ever reachable over Tailscale (see cameras.py's live-check
+// docstring), so for any officer not on the Tailnet this timeout is pure
+// dead time before the HLS fallback even starts -- a real WHEP handshake on
+// a reachable network resolves in well under a second, so this still leaves
+// generous headroom for the success case.
+const CONNECT_WATCHDOG_MS = 2500;
 
 export default function WebRTCPlayer({
   whepUrl,
