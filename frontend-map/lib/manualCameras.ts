@@ -124,6 +124,50 @@ export function parseCameraCsv(text: string): ParseResult {
   return { rows, errors };
 }
 
+// Column order here is deliberately "flow-wise" -- identity first (id/name/
+// location, what an officer types without a second thought), then position
+// (lat/long), then the streaming fields (stream_path/hls_url/rtsp_url,
+// whatever a technician actually hands over), then the least-often-filled
+// signal hints (width/height/status) last. Every column matches coerceRow
+// above exactly -- this is the one place both the parser and the sample
+// template must stay in sync, so add a column here whenever coerceRow gains
+// one, not the other way around.
+const SAMPLE_ROWS: Record<string, string>[] = [
+  {
+    id: '101', name: 'Airport Circle Cam', location: 'Airport Circle, Ahmedabad',
+    lat: '23.0733', long: '72.6314', stream_path: '12', hls_url: '', rtsp_url: 'rtsp://192.168.1.50:554/stream1',
+    width: '1920', height: '1080', status: '',
+  },
+  {
+    // Shows the "add now, connect the video later" case -- every streaming
+    // column left blank is valid, the camera is just registry-only until
+    // one is filled in (see AddCameraModal's same option).
+    id: '102', name: 'Temporary Cam (no feed yet)', location: 'Ring Road, Ahmedabad',
+    lat: '23.03', long: '72.58', stream_path: '', hls_url: '', rtsp_url: '',
+    width: '', height: '', status: '',
+  },
+];
+const SAMPLE_COLUMNS = ['id', 'name', 'location', 'lat', 'long', 'stream_path', 'hls_url', 'rtsp_url', 'width', 'height', 'status'];
+
+/** Downloadable template for Bulk Import, in both accepted formats -- shows
+ * the exact column set coerceRow understands, one fully-populated example
+ * row and one "no live feed yet" example row, so the blank/optional columns
+ * are obvious rather than only documented in prose above the upload button. */
+export function buildSampleCsv(): string {
+  const escape = (value: string) => (value.includes(',') || value.includes('"') ? `"${value.replace(/"/g, '""')}"` : value);
+  const lines = [SAMPLE_COLUMNS.join(',')];
+  for (const row of SAMPLE_ROWS) lines.push(SAMPLE_COLUMNS.map((col) => escape(row[col] ?? '')).join(','));
+  return lines.join('\r\n');
+}
+
+export function buildSampleJson(): string {
+  return JSON.stringify(
+    SAMPLE_ROWS.map((row) => Object.fromEntries(SAMPLE_COLUMNS.map((col) => [col, row[col]]).filter(([, v]) => v !== ''))),
+    null,
+    2
+  );
+}
+
 /** Accepts a JSON array of objects using the same field names as the CSV/API shape. */
 export function parseCameraJson(text: string): ParseResult {
   let parsed: unknown;
