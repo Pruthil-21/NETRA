@@ -2,10 +2,12 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
-import { MapContainer, TileLayer, CircleMarker, Popup, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import { GeoPosition } from '@/lib/geolocation';
 import { fetchDrivingRoute, formatDistance, formatDuration, formatEta, DrivingRoute } from '@/lib/routing';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
+import { POLICE_STATION_ICON } from './MapCustomMarker';
+import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
 
 // Re-requesting the road route on every GPS tick (watchPosition can fire
 // far more often than this) would hammer OSRM's public demo server for no
@@ -61,6 +63,19 @@ const FollowOfficer: React.FC<{ officerPosition: GeoPosition }> = ({ officerPosi
 export const LiveRouteMap: React.FC<LiveRouteMapProps> = ({ officerPosition, destination }) => {
   const [route, setRoute] = useState<DrivingRoute | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
+  // Nearby stations matter most exactly here -- an officer following a live
+  // route to a sighting needs to know where backup could come from, not
+  // just where the vehicle was last seen. Fetched once on mount, same
+  // non-fatal-on-failure treatment as CameraMap's own station fetch: a
+  // failed load just means no station pins, never a broken route view.
+  const [stations, setStations] = useState<PoliceStation[]>([]);
+  useEffect(() => {
+    fetchPoliceStations()
+      .then(setStations)
+      .catch(() => {
+        // Non-fatal -- the route itself is the primary thing this view exists for.
+      });
+  }, []);
   const officerPositionRef = useRef(officerPosition);
   useEffect(() => {
     officerPositionRef.current = officerPosition;
@@ -130,6 +145,18 @@ export const LiveRouteMap: React.FC<LiveRouteMapProps> = ({ officerPosition, des
         >
           <Popup className="dark-gis-popup">{destination.name} — last sighting</Popup>
         </CircleMarker>
+
+        {stations.map((station) => (
+          <Marker key={`station-${station.id}`} position={[station.lat, station.long]} icon={POLICE_STATION_ICON}>
+            <Popup className="dark-gis-popup">
+              <div className="p-1 min-w-[160px] text-slate-100 text-xs">
+                <p className="font-semibold text-white mb-1">{station.name}</p>
+                <p className="text-slate-400">{station.district}</p>
+                <p className="text-slate-500 mt-1">{station.contact || 'No contact on file'}</p>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
       </MapContainer>
 
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[1000] px-4 py-2.5 rounded bg-panel/95 border border-line shadow-xl flex items-center gap-5 text-xs">
