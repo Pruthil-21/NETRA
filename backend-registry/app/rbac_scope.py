@@ -7,7 +7,7 @@ proxy's own single-scope_value bug happened in the first place (see
 federation_proxy.py's module docstring)."""
 from fastapi import HTTPException
 
-from .services import rbac_service
+from .services import audit_service, rbac_service
 
 
 def effective_district_scopes(user: dict) -> list[str] | None:
@@ -54,6 +54,32 @@ def resolve_district_scoped(dept_scopes: list[str] | None, fetch_all, fetch_by_d
         for row in fetch_by_district(district):
             merged[row["id"]] = row
     return list(merged.values())
+
+
+def guard_dept_in_scope(
+    conn, user: dict, dept: str, resource_type: str, resource_id: int | None = None
+) -> None:
+    """District-scoped officers may only create/edit/delete a dept-owned
+    resource (camera, police station, coverage target -- anything with its
+    own plain district/dept column) within one of their own effective
+    jurisdictions -- the same guard areas.py's own _guard_area_district
+    already applies to areas (kept local there since it needs a village
+    lookup first; every other entity here already has dept as a plain
+    field, so this one shared helper covers them).
+
+    A denied attempt is itself audited (AWS CloudTrail's AccessDenied
+    convention: a cross-district write attempt is a security-relevant
+    event worth a record, not just a bare 403), reusing the same
+    audit_service.log call shape every route already uses for successful
+    writes."""
+    scopes = effective_district_scopes(user)
+    if scopes is None or dept in scopes:
+        return
+    audit_service.log(
+        conn, user.get("badge_number", user.get("sub")), "access_denied_scope", resource_type, resource_id,
+        reason_code=f"attempted {dept}, scoped to {', '.join(scopes) or 'none'}",
+    )
+    raise HTTPException(status_code=403, detail=f"Cannot manage this {resource_type} outside your own district")
 
 
 def guard_delegated_posting_assignment(conn, user: dict, role: dict, scope_type: str, scope_value: str | None) -> None:

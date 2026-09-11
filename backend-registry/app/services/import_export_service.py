@@ -25,10 +25,10 @@ from pydantic import ValidationError
 
 from ..schemas import CameraCreate
 from . import (
+    areas_service,
     audit_logs_service,
     auth_service,
     cameras_service,
-    circles_service,
     coverage_targets_service,
     police_stations_service,
     registration_service,
@@ -208,7 +208,7 @@ def _export_camera_status_history(conn, filters: dict) -> list[dict]:
 
 
 def _filter_by_district(rows: list[dict], filters: dict) -> list[dict]:
-    """Shared by the small reference-data exports below (circles/police
+    """Shared by the small reference-data exports below (areas/police
     stations/coverage targets) -- none of their own list_* functions
     support server-side district filtering, and at this table size (tens
     to low hundreds of rows) filtering the already-fetched list in Python
@@ -220,11 +220,46 @@ def _filter_by_district(rows: list[dict], filters: dict) -> list[dict]:
     return [r for r in rows if r.get("district") == district]
 
 
-def _export_circles(conn, filters: dict) -> list[dict]:
-    # circles_service.list_circles already filters server-side -- no need
+def _export_areas(conn, filters: dict) -> list[dict]:
+    # areas_service.list_areas already filters server-side -- no need
     # for the Python-side _filter_by_district helper the two tables below
     # (which have no such support) rely on.
-    return circles_service.list_circles(conn, filters.get("district"))
+    return areas_service.list_areas(conn, filters.get("district"))
+
+
+_REQUIRED_AREA_FIELDS = {"name", "district", "taluka", "village"}
+
+
+def _validate_area_row(conn, row: dict):
+    """Bulk area import takes human-readable district/taluka/village names
+    (a spreadsheet author has no reason to know internal village_id numbers),
+    resolved here against the seeded reference hierarchy -- an unmatched
+    triple is reported back as this row's specific error, not a generic
+    foreign-key failure at commit time."""
+    missing = _REQUIRED_AREA_FIELDS - {k for k in row if str(row.get(k) or "").strip()}
+    if missing:
+        return None, f"missing required field(s): {', '.join(sorted(missing))}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT v.id FROM villages v
+            JOIN talukas t ON t.id = v.taluka_id
+            JOIN districts d ON d.id = t.district_id
+            WHERE d.name = %s AND t.name = %s AND v.name = %s
+            """,
+            (row["district"].strip(), row["taluka"].strip(), row["village"].strip()),
+        )
+        match = cur.fetchone()
+    if match is None:
+        return None, (
+            f"no village '{row['village']}' found in taluka '{row['taluka']}', "
+            f"district '{row['district']}' -- check spelling against the Areas page's pickers"
+        )
+    return {"name": row["name"].strip(), "village_id": match[0]}, None
+
+
+def _commit_area_row(conn, data: dict) -> dict:
+    return areas_service.create_area(conn, data)
 
 
 def _export_police_stations(conn, filters: dict) -> list[dict]:
@@ -432,7 +467,7 @@ ENTITY_HANDLERS = {
     "postings": {"export": _export_postings},
     "registration_requests": {"export": _export_registration_requests},
     "camera_status_history": {"export": _export_camera_status_history},
-    "circles": {"export": _export_circles},
+    "areas": {"validate": _validate_area_row, "commit": _commit_area_row, "export": _export_areas},
     "police_stations": {"export": _export_police_stations},
     "coverage_targets": {"export": _export_coverage_targets},
     "plate_sightings": {"export": _export_plate_sightings},

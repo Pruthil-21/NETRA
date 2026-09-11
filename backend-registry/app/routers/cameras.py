@@ -14,7 +14,7 @@ from ..auth import (
 from ..config import settings
 from ..db import get_conn
 from ..logging_config import logger
-from ..rbac_scope import effective_district_scopes, resolve_district_scoped
+from ..rbac_scope import effective_district_scopes, guard_dept_in_scope, resolve_district_scoped
 from ..schemas import (
     CameraBulkResult,
     CameraCreate,
@@ -23,11 +23,13 @@ from ..schemas import (
     CameraUptimeReport,
     SyntheticDetectionEventAccepted,
     SyntheticDetectionEventIn,
+    TestStreamIn,
+    TestStreamOut,
 )
 from ..services import (
+    areas_service,
     audit_service,
     cameras_service,
-    circles_service,
     push_service,
     recording_health_events_service,
     recordings_service,
@@ -128,33 +130,31 @@ def camera_summary(
 @router.get("/cameras/{camera_id}", response_model=CameraOut)
 def get_camera(camera_id: int, user=Depends(get_current_user)):
     with get_conn() as conn:
-        camera = cameras_service.get_camera(conn, camera_id)
-        if camera is None:
-            raise HTTPException(status_code=404, detail="Camera not found")
-        return camera
+        return _require_camera_in_scope(conn, camera_id, user)
 
 
-def _validate_circle_for_dept(conn, circle_id: int | None, dept: str) -> None:
-    """Shared cross-district guard: a camera's circle_id (when set) must
-    belong to a circle whose district matches the camera's own dept --
-    otherwise the camera ends up "in" a circle that lives in a different
+def _validate_area_for_dept(conn, area_id: int | None, dept: str) -> None:
+    """Shared cross-district guard: a camera's area_id (when set) must
+    belong to an area whose district matches the camera's own dept --
+    otherwise the camera ends up "in" an area that lives in a different
     district, which is the exact corrupted state the global constraint
     forbids. Raises HTTPException(404/400) same as the inline checks this
     replaces in create_camera/update_camera; also used by the bulk-import
     loop below."""
-    if circle_id is None:
+    if area_id is None:
         return
-    circle = circles_service.get_circle(conn, circle_id)
-    if circle is None:
-        raise HTTPException(status_code=404, detail="Circle not found")
-    if circle["district"] != dept:
-        raise HTTPException(status_code=400, detail="Circle belongs to a different district than this camera")
+    area = areas_service.get_area(conn, area_id)
+    if area is None:
+        raise HTTPException(status_code=404, detail="Area not found")
+    if area["district"] != dept:
+        raise HTTPException(status_code=400, detail="Area belongs to a different district than this camera")
 
 
 @router.post("/cameras", response_model=CameraOut, status_code=201)
 def create_camera(camera: CameraCreate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
-        _validate_circle_for_dept(conn, camera.circle_id, camera.dept)
+        guard_dept_in_scope(conn, user, camera.dept, "camera")
+        _validate_area_for_dept(conn, camera.area_id, camera.dept)
         created = cameras_service.create_camera(conn, camera.model_dump())
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
         return created
@@ -177,7 +177,8 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("ma
                 continue
 
             try:
-                _validate_circle_for_dept(conn, validated.circle_id, validated.dept)
+                guard_dept_in_scope(conn, user, validated.dept, "camera")
+                _validate_area_for_dept(conn, validated.area_id, validated.dept)
             except HTTPException as e:
                 results.append(CameraBulkResult(index=index, status="error", reason=str(e.detail)))
                 continue
@@ -198,13 +199,22 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("ma
 def update_camera(camera_id: int, camera: CameraUpdate, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
         fields = camera.model_dump(exclude_unset=True)
-        if "circle_id" in fields or "dept" in fields:
-            existing = cameras_service.get_camera(conn, camera_id)
-            if existing is None:
-                raise HTTPException(status_code=404, detail="Camera not found")
-            effective_circle_id = fields.get("circle_id", existing.get("circle_id"))
+        # Every edit -- not just ones touching area_id/dept -- first confirms
+        # the camera itself is in the officer's own jurisdiction; a
+        # district-scoped officer must not be able to rename/reconfigure a
+        # camera outside their district just because dept/area_id weren't
+        # part of this particular PUT.
+        existing = _require_camera_in_scope(conn, camera_id, user, audit_denial=True)
+
+        if "area_id" in fields or "dept" in fields:
+            effective_area_id = fields.get("area_id", existing.get("area_id"))
             effective_dept = fields.get("dept", existing["dept"])
-            _validate_circle_for_dept(conn, effective_circle_id, effective_dept)
+            if "dept" in fields and effective_dept != existing["dept"]:
+                # Reassigning a camera INTO a different district is itself a
+                # cross-district write -- the new dept must also be within
+                # the officer's own scope, not just the camera's current one.
+                guard_dept_in_scope(conn, user, effective_dept, "camera", camera_id)
+            _validate_area_for_dept(conn, effective_area_id, effective_dept)
 
         updated, connectivity_changed = cameras_service.update_camera(conn, camera_id, fields)
         if updated is None:
@@ -255,6 +265,10 @@ def camera_snmp_health(camera_id: int, user=Depends(get_current_user)):
     return device
 
 
+def _hls_url_for(hls_url: str | None, stream_id: str | None) -> str | None:
+    return hls_url or (f"{settings.mediamtx_hls_url}/stream/{stream_id}/index.m3u8" if stream_id else None)
+
+
 @router.get("/cameras/{camera_id}/live-check")
 def camera_live_check(camera_id: int, user=Depends(get_current_user)):
     """Real reachability for this camera's HLS stream -- a server-to-server
@@ -267,26 +281,48 @@ def camera_live_check(camera_id: int, user=Depends(get_current_user)):
         camera = cameras_service.get_camera(conn, camera_id)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
-    url = camera["hls_url"] or (
-        f"{settings.mediamtx_hls_url}/stream/{camera['stream_id']}/index.m3u8" if camera["stream_id"] else None
-    )
+    url = _hls_url_for(camera["hls_url"], camera["stream_id"])
     if not url:
         return {"reachable": False}
     return {"reachable": stream_health_service.check_hls_reachable(url)}
 
 
-def _require_camera_in_scope(conn, camera_id: int, user: dict) -> dict:
-    """Shared by the recordings endpoints below: 404 for a camera that
-    doesn't exist, 403 for one outside the officer's own jurisdiction. The
-    plain GET /cameras/{camera_id} endpoint above doesn't scope-check (a
-    pre-existing gap, out of scope here) -- these two do, since they're new
-    surface and Dhruv's recording-service integration explicitly asked for
-    "login and camera RBAC" before proxying through."""
+@router.post("/cameras/test-stream", response_model=TestStreamOut)
+def test_stream(body: TestStreamIn, user=Depends(get_current_user)):
+    """Same reachability check as live-check above, but for a stream_id/
+    hls_url that isn't attached to any camera row yet -- backs the Add
+    Camera modal's "Test Connection" button, so an officer finds out a
+    video address doesn't resolve before saving instead of after, when it
+    would otherwise just show up as "Feed unavailable" in the grid."""
+    url = _hls_url_for(body.hls_url, body.stream_id)
+    if not url:
+        return {"reachable": False}
+    return {"reachable": stream_health_service.check_hls_reachable(url)}
+
+
+def _require_camera_in_scope(conn, camera_id: int, user: dict, *, audit_denial: bool = False) -> dict:
+    """404 for a camera that doesn't exist, 403 for one outside the
+    officer's own jurisdiction. Shared by the read-only recordings
+    endpoints below (Dhruv's recording-service integration explicitly
+    asked for "login and camera RBAC" before proxying through) and now by
+    get/update/delete camera too, closing what was a pre-existing gap on
+    those.
+
+    audit_denial=True additionally logs a denied cross-district WRITE
+    attempt as its own audit_logs entry (AWS CloudTrail's AccessDenied
+    convention) -- left off by default for the read-only call sites below,
+    where a scope miss is common/low-signal (e.g. a stale bookmark), not
+    the deliberate action a failed create/update/delete represents."""
     camera = cameras_service.get_camera(conn, camera_id)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
     dept_scopes = effective_district_scopes(user)
     if dept_scopes is not None and camera["dept"] not in dept_scopes:
+        if audit_denial:
+            audit_service.log(
+                conn, user.get("badge_number", user.get("sub")), "access_denied_scope", "camera", camera_id,
+                reason_code=f"camera in {camera['dept']}, scoped to {', '.join(dept_scopes) or 'none'}",
+            )
         raise HTTPException(status_code=403, detail="Camera outside your jurisdiction")
     return camera
 
@@ -335,6 +371,7 @@ def camera_recording_health_events(camera_id: int, limit: int = 20, user=Depends
 @router.delete("/cameras/{camera_id}", status_code=204)
 def delete_camera(camera_id: int, user=Depends(require_permission("manage_cameras"))):
     with get_conn() as conn:
+        _require_camera_in_scope(conn, camera_id, user, audit_denial=True)
         deleted = cameras_service.delete_camera(conn, camera_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Camera not found")

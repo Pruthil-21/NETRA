@@ -55,15 +55,15 @@ def test_bulk_create_empty_list(client, officer_headers):
     assert resp.json() == []
 
 
-def test_bulk_create_rejects_cross_district_circle(client, officer_headers, circle_test_rows):
-    circle_resp = client.post(
-        "/circles", json={"name": "Bulk Cross-District Circle", "district": "Vadodara"},
+def test_bulk_create_rejects_cross_district_area(client, officer_headers, area_test_rows, village_for_district):
+    area_resp = client.post(
+        "/areas", json={"name": "Bulk Cross-District Area", "village_id": village_for_district("Vadodara")},
         headers=officer_headers,
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
-    cross_district_camera = {**VALID_CAMERA, "dept": "Anand", "circle_id": circle_id}
+    cross_district_camera = {**VALID_CAMERA, "dept": "Anand", "area_id": area_id}
     resp = client.post(
         "/cameras/bulk",
         json=[cross_district_camera],

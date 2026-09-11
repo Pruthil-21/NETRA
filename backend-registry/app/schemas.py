@@ -35,7 +35,7 @@ class CameraCreate(BaseModel):
     # Playback identity, decoupled from the registry's own `id` — see schema.sql.
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
-    circle_id: Optional[int] = None
+    area_id: Optional[int] = None
 
 
 class CameraUpdate(BaseModel):
@@ -52,7 +52,7 @@ class CameraUpdate(BaseModel):
     rtsp_url: Optional[str] = None
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
-    circle_id: Optional[int] = None
+    area_id: Optional[int] = None
 
 
 class CameraOut(CameraCreate):
@@ -485,6 +485,18 @@ class ArchiveResult(BaseModel):
     archived: int
 
 
+class TestStreamIn(BaseModel):
+    """Same two ways of pointing at a stream as CameraCreate/CameraUpdate --
+    checked here before a camera exists at all, so the Add Camera modal can
+    tell an officer "can't reach this feed" before they save, not after."""
+    stream_id: Optional[str] = None
+    hls_url: Optional[str] = None
+
+
+class TestStreamOut(BaseModel):
+    reachable: bool
+
+
 class RecordingHealthEventIn(BaseModel):
     event_id: str
     # The recording service's own camera path (matches cameras.stream_id) --
@@ -542,19 +554,45 @@ class PoliceStationOut(PoliceStationCreate):
     id: int
 
 
-class CircleCreate(BaseModel):
+class AreaCreate(BaseModel):
     name: str
-    district: str
+    village_id: int
 
 
-class CircleUpdate(BaseModel):
+class AreaUpdate(BaseModel):
     name: Optional[str] = None
-    district: Optional[str] = None
+    village_id: Optional[int] = None
 
 
-class CircleOut(CircleCreate):
+class AreaOut(AreaCreate):
     id: int
     created_at: datetime
+    # Denormalized via areas_service's join -- where this area actually is,
+    # without a separate villages/talukas/districts round trip per area.
+    village: str
+    taluka: str
+    district: str
+    district_id: int
+
+
+class DistrictOut(BaseModel):
+    id: int
+    name: str
+    lgd_code: Optional[str] = None
+
+
+class TalukaOut(BaseModel):
+    id: int
+    name: str
+    district_id: int
+    no_lgd_data: bool
+
+
+class VillageOut(BaseModel):
+    id: int
+    name: str
+    taluka_id: int
+    is_urban: bool
 
 
 class UncoveredZone(BaseModel):

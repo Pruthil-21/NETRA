@@ -35,7 +35,7 @@ CREATE INDEX idx_cameras_location ON cameras USING GIST (location);
 -- for nothing.
 CREATE INDEX IF NOT EXISTS idx_cameras_stream_id ON cameras (stream_id) WHERE stream_id IS NOT NULL;
 
-CREATE TABLE circles (
+CREATE TABLE areas (
     id          SERIAL PRIMARY KEY,
     name        TEXT NOT NULL,
     district    TEXT NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE circles (
     UNIQUE (district, name)
 );
 
-ALTER TABLE cameras ADD COLUMN circle_id INTEGER REFERENCES circles(id);
+ALTER TABLE cameras ADD COLUMN area_id INTEGER REFERENCES areas(id);
 
 -- Mirrors backend-watchlist's alert_status_history: append-only, one row per
 -- real connectivity transition. Written by cameras_service.update_camera()
@@ -477,3 +477,154 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_push_subscriptions_badge ON push_subscriptions (badge_number);
+
+-- Rename circles -> areas (the concept was named "circle" by mistake early
+-- on; renamed everywhere in code, this is the matching data migration for
+-- an existing database that already ran the old CREATE TABLE circles above
+-- as its own fresh install). Guarded so it's a no-op on a database that
+-- either never had the old names or has already been migrated.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'circles') THEN
+        ALTER TABLE circles RENAME TO areas;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns WHERE table_name = 'cameras' AND column_name = 'circle_id'
+    ) THEN
+        ALTER TABLE cameras RENAME COLUMN circle_id TO area_id;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'cameras_circle_id_fkey') THEN
+        ALTER TABLE cameras RENAME CONSTRAINT cameras_circle_id_fkey TO cameras_area_id_fkey;
+    END IF;
+    -- Cosmetic only (Postgres doesn't auto-rename these when a table is
+    -- renamed) -- kept in step so a fresh look at \d areas doesn't still
+    -- say "circles_..." everywhere.
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'circles_pkey') THEN
+        ALTER TABLE areas RENAME CONSTRAINT circles_pkey TO areas_pkey;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'circles_district_name_key') THEN
+        ALTER INDEX circles_district_name_key RENAME TO areas_district_name_key;
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'circles_id_seq') THEN
+        ALTER SEQUENCE circles_id_seq RENAME TO areas_id_seq;
+    END IF;
+END $$;
+
+-- Same rename for the manage_circles permission string already seeded into
+-- existing role/duty grants -- role_permissions.permission and
+-- duty_permissions.permission are free-text, not a foreign key to a
+-- permissions catalog, so a code-level rename alone wouldn't update rows
+-- an admin already granted.
+UPDATE role_permissions SET permission = 'manage_areas' WHERE permission = 'manage_circles';
+UPDATE duty_permissions SET permission = 'manage_areas' WHERE permission = 'manage_circles';
+
+-- District -> Taluka -> Village reference hierarchy (Government of India's
+-- Local Government Directory -- lgdirectory.gov.in -- the dataset every
+-- Indian e-governance system has been mandated to key location data off
+-- since a 2016 Cabinet Secretariat order). Read-only reference data, seeded
+-- once by scripts/seed_locations.py from app/data/gujarat_locations.json --
+-- never created/edited/deleted through the app itself. "Area" (the table
+-- above) is the user-managed layer that sits on top of a real village/town
+-- instead of a free-text district string, which is what this whole
+-- hierarchy exists to fix: at Gujarat-wide scale (34 districts, ~270
+-- talukas, ~19,000 villages) a free-text district column can't be searched,
+-- paginated, or trusted not to typo-duplicate.
+CREATE TABLE IF NOT EXISTS districts (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE,
+    lgd_code   TEXT UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS talukas (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    district_id INTEGER NOT NULL REFERENCES districts(id) ON DELETE CASCADE,
+    lgd_code    TEXT UNIQUE,
+    -- true for the 2 talukas (Rah, Dharnidhar, under Vav-Tharad) that don't
+    -- exist in the source LGD dump at all -- a real taluka split newer than
+    -- the dataset's 2022 retrieval date, added here without guessed village
+    -- data rather than silently omitted. Surfaced in the admin UI so a
+    -- reviewer knows to fill these in later, not left to look like any
+    -- other empty-of-villages taluka.
+    no_lgd_data BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (district_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_talukas_district ON talukas (district_id);
+
+CREATE TABLE IF NOT EXISTS villages (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT NOT NULL,
+    taluka_id  INTEGER NOT NULL REFERENCES talukas(id) ON DELETE CASCADE,
+    lgd_code   TEXT UNIQUE,
+    -- LGD's "Village Status" -- distinguishes an actual revenue village from
+    -- a census town/municipal body, shown as a badge in the picker so
+    -- officers can tell "Ahmedabad (city)" apart from a same-named village
+    -- elsewhere in the same taluka.
+    is_urban   BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (taluka_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_villages_taluka ON villages (taluka_id);
+
+-- Backs the type-to-search village picker (areasService-style UX) at
+-- 19,000+ rows -- a trigram GIN index keeps "contains" search (not just
+-- prefix, which a plain btree would give) fast at this scale.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX IF NOT EXISTS idx_villages_name_trgm ON villages USING GIN (name gin_trgm_ops);
+
+ALTER TABLE areas ADD COLUMN IF NOT EXISTS village_id INTEGER REFERENCES villages(id);
+CREATE INDEX IF NOT EXISTS idx_areas_village ON areas (village_id);
+
+-- Backfills existing areas.district free text -> the real village row it
+-- actually belongs to, then retires the free-text column -- mirrors the
+-- circle->area rename's own guarded-DO-block migration style above. Only a
+-- handful of areas existed pre-migration, so this hand-verified mapping
+-- covers all of them: most map straight to their district's headquarter
+-- town of the same name; "Petlad, Gujarat" and "Viramgam, Ahmedabad" were
+-- never real district names to begin with (Petlad is a town in Anand
+-- district, Viramgam a town in Ahmedabad district) -- exactly the
+-- free-text-district problem this migration exists to fix. No-ops until
+-- scripts/seed_locations.py has actually populated the villages table.
+DO $$
+DECLARE
+    mapping RECORD;
+    v_id INTEGER;
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'areas' AND column_name = 'district')
+       AND EXISTS (SELECT 1 FROM villages LIMIT 1) THEN
+        FOR mapping IN
+            SELECT * FROM (VALUES
+                ('Ahmedabad', 'Ahmedabad'),
+                ('Anand', 'Anand'),
+                ('Junagadh', 'Junagadh'),
+                ('Petlad, Gujarat', 'Petlad'),
+                ('Vadodara', 'Vadodara'),
+                ('Viramgam, Ahmedabad', 'Viramgam (Rural)')
+            ) AS m(old_district, village_name)
+        LOOP
+            SELECT v.id INTO v_id FROM villages v WHERE v.name = mapping.village_name LIMIT 1;
+            IF v_id IS NOT NULL THEN
+                UPDATE areas SET village_id = v_id WHERE district = mapping.old_district AND village_id IS NULL;
+            END IF;
+        END LOOP;
+
+        -- Only retire the free-text column once every existing row was
+        -- successfully mapped -- if some area's district string didn't
+        -- match anything above, district stays in place (and village_id
+        -- stays nullable) rather than silently dropping unmapped data.
+        IF NOT EXISTS (SELECT 1 FROM areas WHERE village_id IS NULL) THEN
+            ALTER TABLE areas ALTER COLUMN village_id SET NOT NULL;
+            ALTER TABLE areas DROP COLUMN IF EXISTS district;
+            IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'areas_district_name_key') THEN
+                ALTER TABLE areas DROP CONSTRAINT areas_district_name_key;
+            END IF;
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'areas_village_name_key') THEN
+                ALTER TABLE areas ADD CONSTRAINT areas_village_name_key UNIQUE (village_id, name);
+            END IF;
+        END IF;
+    END IF;
+END $$;

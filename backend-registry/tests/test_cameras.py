@@ -71,149 +71,149 @@ def test_delete_missing_camera_404(client, officer_headers):
     assert resp.status_code == 404
 
 
-def test_create_camera_with_circle_id(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
-    circle_resp = client.post(
-        "/circles", json={"name": "Circle Field Test", "district": "Traffic Police"}, headers=officer_headers
+def test_create_camera_with_area_id(client, officer_headers, area_test_rows, gap_analysis_test_cameras, village_for_district):
+    area_resp = client.post(
+        "/areas", json={"name": "Area Field Test", "village_id": village_for_district("Traffic Police")}, headers=officer_headers
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
     camera_resp = client.post(
         "/cameras",
-        json={**NEW_CAMERA, "circle_id": circle_id},
+        json={**NEW_CAMERA, "area_id": area_id},
         headers=officer_headers,
     )
     assert camera_resp.status_code == 201
     camera_id = camera_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
-    assert camera_resp.json()["circle_id"] == circle_id
+    assert camera_resp.json()["area_id"] == area_id
 
     get_resp = client.get(f"/cameras/{camera_id}", headers=officer_headers)
-    assert get_resp.json()["circle_id"] == circle_id
+    assert get_resp.json()["area_id"] == area_id
 
 
-def test_create_camera_with_circle_from_different_district_rejected(
-    client, officer_headers, gap_analysis_test_cameras, circle_test_rows
+def test_create_camera_with_area_from_different_district_rejected(
+    client, officer_headers, gap_analysis_test_cameras, area_test_rows, village_for_district
 ):
-    circle_resp = client.post(
-        "/circles", json={"name": "Wrong District Circle", "district": "Some Other District"}, headers=officer_headers
+    area_resp = client.post(
+        "/areas", json={"name": "Wrong District Area", "village_id": village_for_district("Some Other District")}, headers=officer_headers
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
     camera_resp = client.post(
-        "/cameras", json={**NEW_CAMERA, "circle_id": circle_id}, headers=officer_headers
+        "/cameras", json={**NEW_CAMERA, "area_id": area_id}, headers=officer_headers
     )
     assert camera_resp.status_code == 400
 
 
-def test_create_camera_with_missing_circle_404(client, officer_headers):
+def test_create_camera_with_missing_area_404(client, officer_headers):
     camera_resp = client.post(
-        "/cameras", json={**NEW_CAMERA, "circle_id": 999999}, headers=officer_headers
+        "/cameras", json={**NEW_CAMERA, "area_id": 999999}, headers=officer_headers
     )
     assert camera_resp.status_code == 404
 
 
-def test_update_camera_circle_id(client, officer_headers, circle_test_rows, gap_analysis_test_cameras):
-    """circle_id set alone, dept unchanged -- exercises the
+def test_update_camera_area_id(client, officer_headers, area_test_rows, gap_analysis_test_cameras, village_for_district):
+    """area_id set alone, dept unchanged -- exercises the
     effective_dept = fields.get("dept", existing["dept"]) fallback branch."""
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
 
-    circle_resp = client.post(
-        "/circles", json={"name": "Update Circle Test", "district": NEW_CAMERA["dept"]}, headers=officer_headers
+    area_resp = client.post(
+        "/areas", json={"name": "Update Area Test", "village_id": village_for_district(NEW_CAMERA["dept"])}, headers=officer_headers
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
-    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": circle_id}, headers=officer_headers)
+    update_resp = client.put(f"/cameras/{camera_id}", json={"area_id": area_id}, headers=officer_headers)
     assert update_resp.status_code == 200
-    assert update_resp.json()["circle_id"] == circle_id
+    assert update_resp.json()["area_id"] == area_id
 
 
-def test_update_camera_circle_id_with_dept_change_same_request(
-    client, officer_headers, circle_test_rows, gap_analysis_test_cameras
+def test_update_camera_area_id_with_dept_change_same_request(
+    client, officer_headers, area_test_rows, gap_analysis_test_cameras, village_for_district
 ):
-    """circle_id and dept set together in the same PUT -- exercises the
+    """area_id and dept set together in the same PUT -- exercises the
     effective_dept = fields["dept"] branch (the new dept, not the camera's
-    existing one, is what the circle's district must match)."""
+    existing one, is what the area's district must match)."""
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
 
-    circle_resp = client.post(
-        "/circles", json={"name": "Retitled District Circle", "district": "Ahmedabad"}, headers=officer_headers
+    area_resp = client.post(
+        "/areas", json={"name": "Retitled District Area", "village_id": village_for_district("Ahmedabad")}, headers=officer_headers
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
     update_resp = client.put(
         f"/cameras/{camera_id}",
-        json={"dept": "Ahmedabad", "circle_id": circle_id},
+        json={"dept": "Ahmedabad", "area_id": area_id},
         headers=officer_headers,
     )
     assert update_resp.status_code == 200
     body = update_resp.json()
-    assert body["circle_id"] == circle_id
+    assert body["area_id"] == area_id
     assert body["dept"] == "Ahmedabad"
 
 
-def test_update_camera_circle_from_different_district_rejected(
-    client, officer_headers, gap_analysis_test_cameras, circle_test_rows
+def test_update_camera_area_from_different_district_rejected(
+    client, officer_headers, gap_analysis_test_cameras, area_test_rows, village_for_district
 ):
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
 
-    circle_resp = client.post(
-        "/circles", json={"name": "Mismatched District Circle", "district": "Some Other District"},
+    area_resp = client.post(
+        "/areas", json={"name": "Mismatched District Area", "village_id": village_for_district("Some Other District")},
         headers=officer_headers,
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
-    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": circle_id}, headers=officer_headers)
+    update_resp = client.put(f"/cameras/{camera_id}", json={"area_id": area_id}, headers=officer_headers)
     assert update_resp.status_code == 400
 
 
-def test_update_camera_with_missing_circle_404(client, officer_headers, gap_analysis_test_cameras):
+def test_update_camera_with_missing_area_404(client, officer_headers, gap_analysis_test_cameras):
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
 
-    update_resp = client.put(f"/cameras/{camera_id}", json={"circle_id": 999999}, headers=officer_headers)
+    update_resp = client.put(f"/cameras/{camera_id}", json={"area_id": 999999}, headers=officer_headers)
     assert update_resp.status_code == 404
 
 
-def test_update_camera_dept_change_alone_rejected_when_it_orphans_existing_circle_id(
-    client, officer_headers, circle_test_rows, gap_analysis_test_cameras
+def test_update_camera_dept_change_alone_rejected_when_it_orphans_existing_area_id(
+    client, officer_headers, area_test_rows, gap_analysis_test_cameras, village_for_district
 ):
-    """A camera already has a circle_id whose district matches its current
-    dept. A PUT that changes ONLY dept (circle_id absent from the body
+    """A camera already has a area_id whose district matches its current
+    dept. A PUT that changes ONLY dept (area_id absent from the body
     entirely) must still be validated against the camera's existing
-    circle_id -- otherwise the camera ends up with a dept that no longer
-    matches its circle's district."""
-    circle_resp = client.post(
-        "/circles", json={"name": "Dept Change Guard Circle", "district": NEW_CAMERA["dept"]},
+    area_id -- otherwise the camera ends up with a dept that no longer
+    matches its area's district."""
+    area_resp = client.post(
+        "/areas", json={"name": "Dept Change Guard Area", "village_id": village_for_district(NEW_CAMERA["dept"])},
         headers=officer_headers,
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
     create_resp = client.post(
-        "/cameras", json={**NEW_CAMERA, "circle_id": circle_id}, headers=officer_headers
+        "/cameras", json={**NEW_CAMERA, "area_id": area_id}, headers=officer_headers
     )
     camera_id = create_resp.json()["id"]
     gap_analysis_test_cameras.append(camera_id)
-    assert create_resp.json()["circle_id"] == circle_id
+    assert create_resp.json()["area_id"] == area_id
 
     update_resp = client.put(
         f"/cameras/{camera_id}", json={"dept": "Some Other District"}, headers=officer_headers
     )
     assert update_resp.status_code == 400
 
-    # the rejected update must not have partially applied -- dept and circle_id are unchanged
+    # the rejected update must not have partially applied -- dept and area_id are unchanged
     get_resp = client.get(f"/cameras/{camera_id}", headers=officer_headers)
     assert get_resp.json()["dept"] == NEW_CAMERA["dept"]
-    assert get_resp.json()["circle_id"] == circle_id
+    assert get_resp.json()["area_id"] == area_id

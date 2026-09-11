@@ -18,12 +18,13 @@ from .logging_config import configure_logging
 from .services import recording_health_stream
 from .routers import (
     admin_ops,
+    areas,
     audit_logs,
     auth,
     cameras,
-    circles,
     coverage_targets,
     duties,
+    locations,
     notifications,
     police_stations,
     postings,
@@ -69,7 +70,8 @@ app.include_router(coverage_targets.router)
 app.include_router(reports.router)
 app.include_router(audit_logs.router)
 app.include_router(police_stations.router)
-app.include_router(circles.router)
+app.include_router(areas.router)
+app.include_router(locations.router)
 app.include_router(recording_webhooks.router)
 
 

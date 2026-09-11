@@ -80,7 +80,19 @@ def test_updating_a_non_connectivity_field_does_not_write_history(
     assert _history_rows(camera_id) == []
 
 
-def test_connectivity_only_update_does_not_write_audit_log(client, officer_headers, gap_analysis_test_cameras):
+def _latest_audit_row(conn, camera_id):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT badge_number, action, reason_code FROM audit_logs "
+            "WHERE resource_type = 'camera' AND resource_id = %s ORDER BY id DESC LIMIT 1",
+            (camera_id,),
+        )
+        return cur.fetchone()
+
+
+def test_connectivity_only_update_writes_a_system_attributed_audit_log(
+    client, officer_headers, gap_analysis_test_cameras
+):
     from tests.test_audit_cleanup import _audit_count
 
     resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
@@ -93,7 +105,43 @@ def test_connectivity_only_update_does_not_write_audit_log(client, officer_heade
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
 
     after = _audit_count(conn)
-    assert after == before, "connectivity-only PUT must not write to audit_logs (camera_status_history covers it)"
+    assert after == before + 1, "a connectivity transition must write its own audit_logs entry"
+    badge_number, action, reason_code = _latest_audit_row(conn, camera_id)
+    assert action == "camera_offline"
+    # "system", not the officer whose browser happened to have the PUT open --
+    # a health-check-driven status flip isn't something that officer DID.
+    assert badge_number == "system"
+    # No prior camera_status_history row exists yet for a brand-new camera,
+    # so there's nothing to measure a held-duration against.
+    assert reason_code is None
+    conn.close()
+
+
+def test_a_later_transition_reports_how_long_the_previous_status_held(
+    client, officer_headers, gap_analysis_test_cameras
+):
+    resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
+    camera_id = resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
+
+    client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
+
+    conn = psycopg.connect(os.environ["DATABASE_URL"])
+    # Backdate the row the PUT above just inserted, so "how long did it hold"
+    # has something real to measure instead of a near-zero test-runtime gap.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE camera_status_history SET changed_at = now() - interval '45 minutes' "
+            "WHERE camera_id = %s",
+            (camera_id,),
+        )
+        conn.commit()
+
+    client.put(f"/cameras/{camera_id}", json={"connectivity_status": "online"}, headers=officer_headers)
+
+    _, action, reason_code = _latest_audit_row(conn, camera_id)
+    assert action == "camera_online"
+    assert reason_code == "was offline for 45m"
     conn.close()
 
 
