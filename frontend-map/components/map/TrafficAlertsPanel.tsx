@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Gauge, Waypoints, Check, X, Loader2 } from 'lucide-react';
+import { Gauge, Waypoints, VideoOff, Check, X, Loader2 } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAlertsStream } from '@/hooks/useAlertsStream';
 import { trafficAlertsService, TrafficAlert } from '@/services/trafficAlertsService';
@@ -15,8 +15,9 @@ interface StreamMessage extends Partial<TrafficAlert> {
   kind?: string;
 }
 
-/** Compact live panel for density/flow threshold breaches (see
- * backend-watchlist's traffic_alerts table) -- placed on the Map page
+/** Compact live panel for density/flow threshold breaches and sustained
+ * camera_offline alerts (see backend-watchlist's traffic_alerts table) --
+ * placed on the Map page
  * itself, opposite MapFilterControl, since an officer looking at the
  * Density/Flow layer is exactly who a congestion alert is for. The full
  * acknowledge/dismiss history lives on the /alerts page's Traffic tab;
@@ -73,13 +74,17 @@ export function TrafficAlertsPanel() {
         {alerts.map((alert) => (
           <div key={alert.id} className="px-3 py-2 text-xs">
             <div className="flex items-center gap-1.5 text-slate-200 font-medium">
-              {alert.alert_type === 'density' ? <Gauge size={12} className="text-signal-amber shrink-0" /> : (
-                <Waypoints size={12} className="text-signal-amber shrink-0" />
-              )}
-              {alert.alert_type === 'density' ? (
+              {alert.alert_type === 'density' && <Gauge size={12} className="text-signal-amber shrink-0" />}
+              {alert.alert_type === 'flow' && <Waypoints size={12} className="text-signal-amber shrink-0" />}
+              {alert.alert_type === 'camera_offline' && <VideoOff size={12} className="text-signal-amber shrink-0" />}
+              {alert.alert_type === 'density' && (
                 <span>Camera {alert.camera_id} &middot; {alert.metric_value} detections</span>
-              ) : (
+              )}
+              {alert.alert_type === 'flow' && (
                 <span>Cam {alert.from_camera_id}&rarr;{alert.to_camera_id} &middot; {alert.metric_value} km/h</span>
+              )}
+              {alert.alert_type === 'camera_offline' && (
+                <span>Camera {alert.camera_id} &middot; offline {Math.round(alert.metric_value)}m</span>
               )}
             </div>
             {alert.district && <p className="text-[10px] text-slate-500 mt-0.5">{alert.district}</p>}

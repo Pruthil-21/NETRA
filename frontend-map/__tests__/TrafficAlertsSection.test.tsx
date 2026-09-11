@@ -19,6 +19,12 @@ const FLOW_ALERT = {
   triggered_at: new Date().toISOString(), acknowledged_by: null, acknowledged_at: null,
 };
 
+const OFFLINE_ALERT = {
+  id: 7, alert_type: 'camera_offline' as const, camera_id: 42, from_camera_id: null, to_camera_id: null,
+  metric_value: 45, threshold_value: 30, district: 'Junagadh', status: 'NEW' as const,
+  triggered_at: new Date().toISOString(), acknowledged_by: null, acknowledged_at: null,
+};
+
 function mockPermissions(permissions: string[]) {
   (usePermissions as any).mockReturnValue({ permissions, loading: false });
 }
@@ -79,5 +85,24 @@ describe('TrafficAlertsSection', () => {
 
     fireEvent.click(await screen.findByText(/Camera 3 → Camera 9/));
     expect(screen.queryByRole('button', { name: 'Acknowledge' })).not.toBeInTheDocument();
+  });
+
+  it('renders a camera_offline alert with its own icon, label, and reading text', async () => {
+    mockPermissions(['view_analytics']);
+    (trafficAlertsService.list as any).mockResolvedValue([OFFLINE_ALERT]);
+    render(<TrafficAlertsSection />);
+
+    fireEvent.click(await screen.findByText('Camera 42'));
+    expect(screen.getByText(/Camera offline/)).toBeInTheDocument();
+    expect(screen.getByText(/Offline for 45 min \(threshold 30 min\)/)).toBeInTheDocument();
+  });
+
+  it('filters the list down to one camera when cameraId is supplied', async () => {
+    mockPermissions(['view_analytics']);
+    (trafficAlertsService.list as any).mockResolvedValue([FLOW_ALERT, OFFLINE_ALERT]);
+    render(<TrafficAlertsSection cameraId={42} />);
+
+    expect(await screen.findByText('Camera 42')).toBeInTheDocument();
+    expect(screen.queryByText(/Camera 3 → Camera 9/)).not.toBeInTheDocument();
   });
 });

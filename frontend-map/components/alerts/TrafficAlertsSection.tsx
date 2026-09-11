@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Check, X, Gauge, Waypoints, ShieldAlert } from 'lucide-react';
+import { Check, X, Gauge, Waypoints, ShieldAlert, VideoOff } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAlertsStream } from '@/hooks/useAlertsStream';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
@@ -33,16 +33,34 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
-/** How far past the threshold this reading is -- density breaches trip when
- * the metric rises ABOVE the threshold (too many vehicles), flow breaches
- * trip when it falls BELOW it (too slow); a bare "value vs threshold" pair
- * doesn't tell an officer which direction is bad, so this collapses both
- * into one "Nx over threshold" severity number. */
+/** How far past the threshold this reading is -- density and camera_offline
+ * breaches trip when the metric rises ABOVE the threshold (too many
+ * vehicles, too many minutes down), flow breaches trip when it falls BELOW
+ * it (too slow); a bare "value vs threshold" pair doesn't tell an officer
+ * which direction is bad, so this collapses both into one "Nx over
+ * threshold" severity number. */
 function severityRatio(alert: TrafficAlert): number {
-  if (alert.alert_type === 'density') {
-    return alert.threshold_value > 0 ? alert.metric_value / alert.threshold_value : 1;
+  if (alert.alert_type === 'flow') {
+    return alert.metric_value > 0 ? alert.threshold_value / alert.metric_value : 2;
   }
-  return alert.metric_value > 0 ? alert.threshold_value / alert.metric_value : 2;
+  return alert.threshold_value > 0 ? alert.metric_value / alert.threshold_value : 1;
+}
+
+const ALERT_TYPE_ICON: Record<TrafficAlert['alert_type'], typeof Gauge> = {
+  density: Gauge,
+  flow: Waypoints,
+  camera_offline: VideoOff,
+};
+
+const ALERT_TYPE_LABEL: Record<TrafficAlert['alert_type'], string> = {
+  density: 'Density breach',
+  flow: 'Flow (corridor) breach',
+  camera_offline: 'Camera offline',
+};
+
+function AlertTypeIcon({ type, size, className }: { type: TrafficAlert['alert_type']; size: number; className?: string }) {
+  const Icon = ALERT_TYPE_ICON[type];
+  return <Icon size={size} className={className} />;
 }
 
 /** The full congestion-alert history + acknowledge/dismiss workflow -- the
@@ -51,7 +69,7 @@ function severityRatio(alert: TrafficAlert): number {
  * list has to Audit Log. Master-detail split (list grouped by district,
  * detail + actions on the right) mirrors the plate-alerts tab next door,
  * rather than the flat capped-width list this used to be. */
-export function TrafficAlertsSection() {
+export function TrafficAlertsSection({ cameraId }: { cameraId?: number | null } = {}) {
   const { permissions } = usePermissions();
   const canAcknowledge = permissions.includes('acknowledge_alerts');
   const { cameras } = useCameraRegistry();
@@ -117,15 +135,20 @@ export function TrafficAlertsSection() {
     }
   };
 
-  const sorted = useMemo(
-    () => [...alerts].sort((a, b) => new Date(b.triggered_at).getTime() - new Date(a.triggered_at).getTime()),
-    [alerts]
-  );
+  const sorted = useMemo(() => {
+    const source =
+      cameraId == null
+        ? alerts
+        : alerts.filter((a) => a.camera_id === cameraId || a.from_camera_id === cameraId || a.to_camera_id === cameraId);
+    return [...source].sort((a, b) => new Date(b.triggered_at).getTime() - new Date(a.triggered_at).getTime());
+  }, [alerts, cameraId]);
 
   const stats = useMemo(() => {
     const density = sorted.filter((a) => a.alert_type === 'density').length;
+    const flow = sorted.filter((a) => a.alert_type === 'flow').length;
+    const offline = sorted.filter((a) => a.alert_type === 'camera_offline').length;
     const districts = new Set(sorted.map((a) => a.district ?? 'Unknown district'));
-    return { total: sorted.length, density, flow: sorted.length - density, districts: districts.size };
+    return { total: sorted.length, density, flow, offline, districts: districts.size };
   }, [sorted]);
 
   const groupedByDistrict = useMemo(() => {
@@ -141,11 +164,11 @@ export function TrafficAlertsSection() {
   const selected = useMemo(() => sorted.find((a) => a.id === selectedId) ?? null, [sorted, selectedId]);
 
   const locationLabel = (alert: TrafficAlert): string =>
-    alert.alert_type === 'density'
-      ? camerasById.get(alert.camera_id ?? -1)?.name || `Camera ${alert.camera_id}`
-      : `${camerasById.get(alert.from_camera_id ?? -1)?.name || `Camera ${alert.from_camera_id}`} → ${
+    alert.alert_type === 'flow'
+      ? `${camerasById.get(alert.from_camera_id ?? -1)?.name || `Camera ${alert.from_camera_id}`} → ${
           camerasById.get(alert.to_camera_id ?? -1)?.name || `Camera ${alert.to_camera_id}`
-        }`;
+        }`
+      : camerasById.get(alert.camera_id ?? -1)?.name || `Camera ${alert.camera_id}`;
 
   return (
     <div className="flex-1 flex h-full min-h-0 w-full">
@@ -173,6 +196,7 @@ export function TrafficAlertsSection() {
               { label: 'Shown', value: stats.total },
               { label: 'Density', value: stats.density },
               { label: 'Flow', value: stats.flow },
+              { label: 'Offline', value: stats.offline },
               { label: 'Districts', value: stats.districts },
             ].map((tile) => (
               <div key={tile.label} className="border border-line rounded bg-ink px-2 py-1.5">
@@ -205,11 +229,7 @@ export function TrafficAlertsSection() {
                     selectedId === alert.id ? 'bg-command/10 border-l-command' : 'border-l-transparent hover:bg-panel-raised'
                   }`}
                 >
-                  {alert.alert_type === 'density' ? (
-                    <Gauge size={13} className="text-signal-amber shrink-0 mt-0.5" />
-                  ) : (
-                    <Waypoints size={13} className="text-signal-amber shrink-0 mt-0.5" />
-                  )}
+                  <AlertTypeIcon type={alert.alert_type} size={13} className="text-signal-amber shrink-0 mt-0.5" />
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-semibold text-white truncate">{locationLabel(alert)}</p>
                     <p className="text-[11px] text-slate-500 truncate">{timeAgo(alert.triggered_at)}</p>
@@ -236,15 +256,11 @@ export function TrafficAlertsSection() {
             <div className="max-w-3xl">
               <div className="flex items-start justify-between gap-3 flex-wrap">
                 <div className="flex items-start gap-2.5">
-                  {selected.alert_type === 'density' ? (
-                    <Gauge size={22} className="text-signal-amber shrink-0 mt-0.5" />
-                  ) : (
-                    <Waypoints size={22} className="text-signal-amber shrink-0 mt-0.5" />
-                  )}
+                  <AlertTypeIcon type={selected.alert_type} size={22} className="text-signal-amber shrink-0 mt-0.5" />
                   <div>
                     <p className="text-xl font-bold text-white">{locationLabel(selected)}</p>
                     <p className="text-xs text-slate-500 mt-1">
-                      {selected.alert_type === 'density' ? 'Density breach' : 'Flow (corridor) breach'} &middot;{' '}
+                      {ALERT_TYPE_LABEL[selected.alert_type]} &middot;{' '}
                       {selected.district ?? 'Unknown district'} &middot; {new Date(selected.triggered_at).toLocaleString()}
                     </p>
                   </div>
@@ -282,9 +298,12 @@ export function TrafficAlertsSection() {
                   <div className="px-4 py-3 border-b border-line text-xs font-semibold text-slate-300">Reading</div>
                   <div className="px-4 py-3">
                     <p className="text-xs text-slate-400 mb-1.5">
-                      {selected.alert_type === 'density'
-                        ? `${selected.metric_value.toLocaleString()} detections (threshold ${selected.threshold_value.toLocaleString()})`
-                        : `${selected.metric_value.toLocaleString()} km/h avg speed (threshold ${selected.threshold_value.toLocaleString()})`}
+                      {selected.alert_type === 'density' &&
+                        `${selected.metric_value.toLocaleString()} detections (threshold ${selected.threshold_value.toLocaleString()})`}
+                      {selected.alert_type === 'flow' &&
+                        `${selected.metric_value.toLocaleString()} km/h avg speed (threshold ${selected.threshold_value.toLocaleString()})`}
+                      {selected.alert_type === 'camera_offline' &&
+                        `Offline for ${Math.round(selected.metric_value).toLocaleString()} min (threshold ${selected.threshold_value.toLocaleString()} min)`}
                     </p>
                     <div className="h-1.5 rounded-full bg-ink overflow-hidden">
                       <div

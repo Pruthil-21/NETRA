@@ -62,6 +62,19 @@ describe('TrafficAlertsPanel', () => {
     expect(screen.queryByRole('button', { name: /acknowledge/i })).not.toBeInTheDocument();
   });
 
+  it('renders a camera_offline alert with its own text, not the flow corridor shape', async () => {
+    mockPermissions(['view_analytics']);
+    (trafficAlertsService.list as any).mockResolvedValue([
+      {
+        id: 3, alert_type: 'camera_offline' as const, camera_id: 42, from_camera_id: null, to_camera_id: null,
+        metric_value: 45, threshold_value: 30, district: 'Junagadh', status: 'NEW' as const,
+        triggered_at: new Date().toISOString(), acknowledged_by: null, acknowledged_at: null,
+      },
+    ]);
+    render(<TrafficAlertsPanel />);
+    expect(await screen.findByText(/Camera 42.*offline 45m/)).toBeInTheDocument();
+  });
+
   it('adds a live-pushed congestion alert and ignores watchlist-kind messages', async () => {
     mockPermissions(['view_analytics']);
     (trafficAlertsService.list as any).mockResolvedValue([]);

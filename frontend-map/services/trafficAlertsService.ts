@@ -1,4 +1,5 @@
-// Congestion alerts (density/flow threshold breaches) -- see
+// Congestion alerts (density/flow threshold breaches) plus camera_offline
+// (a camera that's stayed offline past a threshold) -- see
 // backend-watchlist/app/routers/traffic_alerts.py. A separate model from
 // alertsService.ts's watchlist plate-match alerts (see schema.sql's
 // traffic_alerts table for why), though delivery is pushed over the same
@@ -11,7 +12,7 @@ export type TrafficAlertStatus = 'NEW' | 'ACKNOWLEDGED' | 'DISMISSED';
 
 export interface TrafficAlert {
   id: number;
-  alert_type: 'density' | 'flow';
+  alert_type: 'density' | 'flow' | 'camera_offline';
   camera_id: number | null;
   from_camera_id: number | null;
   to_camera_id: number | null;
