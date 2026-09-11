@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent, screen } from '@testing-library/react';
-import { DistrictCircleTree } from '@/components/tree/DistrictCircleTree';
+import { DistrictAreaTree } from '@/components/tree/DistrictAreaTree';
 import { CameraGrid } from '@/components/dashboard/CameraGrid';
 import { FeedCard } from '@/components/dashboard/FeedCard';
 import { CameraFeed } from '@/types/stream';
@@ -23,32 +23,61 @@ function fakeDataTransfer() {
   } as unknown as DataTransfer;
 }
 
-const CIRCLES = [{ id: 1, name: 'APC Circle', district: 'Anand', created_at: '2026-01-01T00:00:00Z' }];
+const AREAS = [{ id: 1, name: 'APC Area', district: 'Anand', district_id: 1, village: 'Village', taluka: 'Taluka', village_id: 1, created_at: '2026-01-01T00:00:00Z' }];
 const CAMERAS: any[] = [
-  { id: 101, name: 'Camera 01', dept: 'Anand', circle_id: 1 },
-  { id: 102, name: 'Camera 02', dept: 'Anand', circle_id: 1 },
+  { id: 101, name: 'Camera 01', dept: 'Anand', area_id: 1 },
+  { id: 102, name: 'Camera 02', dept: 'Anand', area_id: 1 },
 ];
 
-describe('dragging a camera out of DistrictCircleTree', () => {
+describe('dragging a camera out of DistrictAreaTree', () => {
   it('a camera row drags just its own id', () => {
-    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
+    render(<DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
     const dataTransfer = fakeDataTransfer();
     fireEvent.dragStart(screen.getByText('Camera 01'), { dataTransfer });
     expect(JSON.parse(dataTransfer.getData(CAMERA_DRAG_MIME))).toEqual([101]);
   });
 
-  it('an area (circle) row drags every camera under it', () => {
-    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
+  it('an area (area) row drags every camera under it', () => {
+    render(<DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
     const dataTransfer = fakeDataTransfer();
-    fireEvent.dragStart(screen.getByText('APC Circle'), { dataTransfer });
+    fireEvent.dragStart(screen.getByText('APC Area'), { dataTransfer });
     expect(JSON.parse(dataTransfer.getData(CAMERA_DRAG_MIME))).toEqual([101, 102]);
   });
 
   it('a district row drags every camera in it', () => {
-    render(<DistrictCircleTree districts={['Anand']} circles={CIRCLES} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
+    render(<DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={null} onSelect={() => {}} />);
     const dataTransfer = fakeDataTransfer();
     fireEvent.dragStart(screen.getByText('Anand'), { dataTransfer });
     expect(JSON.parse(dataTransfer.getData(CAMERA_DRAG_MIME))).toEqual([101, 102]);
+  });
+
+  // enableDrag={false} -- the Map page's own setting, since it has no
+  // watch-grid drop target at all: dragging there used to be a pure
+  // cursor/UX bug (a grab cursor promising an interaction that did nothing).
+  it('enableDrag={false} makes every row non-draggable with a normal cursor, no drag payload', () => {
+    render(
+      <DistrictAreaTree
+        districts={['Anand']}
+        areas={AREAS}
+        cameras={CAMERAS}
+        selected={null}
+        onSelect={() => {}}
+        enableDrag={false}
+      />
+    );
+
+    const districtRow = screen.getByText('Anand').closest('button') as HTMLButtonElement;
+    const areaRow = screen.getByText('APC Area').closest('button') as HTMLButtonElement;
+    const cameraRow = screen.getByText('Camera 01').closest('button') as HTMLButtonElement;
+
+    for (const row of [districtRow, areaRow, cameraRow]) {
+      expect(row).not.toHaveAttribute('draggable', 'true');
+      expect(row.className).not.toMatch(/cursor-grab/);
+    }
+
+    const dataTransfer = fakeDataTransfer();
+    fireEvent.dragStart(cameraRow, { dataTransfer });
+    expect(dataTransfer.getData(CAMERA_DRAG_MIME)).toBe('');
   });
 });
 

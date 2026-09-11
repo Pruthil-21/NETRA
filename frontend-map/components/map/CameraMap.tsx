@@ -5,7 +5,7 @@ import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
-import { createCustomMarkerIcon, createDirectionArrowIcon, createVehicleTraceIcon } from './MapCustomMarker';
+import { createCustomMarkerIcon, createDirectionArrowIcon, createVehicleTraceIcon, POLICE_STATION_ICON } from './MapCustomMarker';
 import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
@@ -55,7 +55,7 @@ const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePosi
     }
   }, [routePositions, map]);
 
-  // Selecting a district/circle in the tree pans/zooms to frame its cameras --
+  // Selecting a district/area in the tree pans/zooms to frame its cameras --
   // it never hides any marker (see Global Constraints: every camera in scope
   // stays visible/clickable regardless of tree selection). Mirrors the
   // routePositions effect above: a single camera gets a flyTo, several get a
@@ -139,10 +139,10 @@ interface CameraMapProps {
   sightings?: Detection[];
   /** Reports which camera (if any) should currently show the shared
    * CameraInfoOverlay -- the map page owns that overlay's actual rendering
-   * (and the circleName lookup it needs), this component only tells it
+   * (and the areaName lookup it needs), this component only tells it
    * which camera id is being hovered. */
   onHoverChange?: (cameraId: number | null) => void;
-  /** Camera ids belonging to the tree's currently selected district/circle.
+  /** Camera ids belonging to the tree's currently selected district/area.
    * Purely a "pan/zoom + visually distinguish" signal (see MapController's
    * highlightedPositions effect and createCustomMarkerIcon's isHighlighted
    * ring) -- never used to filter which markers render below. */
@@ -156,12 +156,19 @@ interface CameraMapProps {
    * keeps every existing caller's continuous auto-looping animation
    * unchanged. */
   timelineIndex?: number;
-  /** Suppresses the individual camera pin markers/clusters and the police
-   * station markers below -- used while a full-canvas layer (coverage or
-   * density, see `coverage`/`density` below) is active, since point
-   * markers would just clutter a region-colored view. The sighting route
-   * (if any) still renders. */
+  /** Suppresses the individual camera pin markers/clusters -- used while a
+   * full-canvas layer (coverage or density, see `coverage`/`density` below)
+   * is active, since point markers would just clutter a region-colored
+   * view. The sighting route (if any) still renders. Police station
+   * markers are a separate layer (see `showPoliceStations`) and aren't
+   * affected by this -- a station's location has no relationship to
+   * whichever camera-focused overlay happens to be on. */
   hideMarkers?: boolean;
+  /** Independent visibility toggle for police station pins -- the Map
+   * page's Filters panel controls this so an officer can declutter without
+   * touching camera pins. Defaults to true (shown) so every other caller
+   * (the vehicle-tracking view, etc.) keeps its current behavior unchanged. */
+  showPoliceStations?: boolean;
   /** Renders the canvas coverage-radius layer for the given cameras/tier
    * instead of (or alongside) pins -- see CoverageCanvasLayer. Omit to
    * render no coverage layer at all. */
@@ -197,6 +204,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   highlightedCameraIds,
   timelineIndex,
   hideMarkers,
+  showPoliceStations = true,
   coverage,
   density,
   flow,
@@ -571,13 +579,12 @@ export const CameraMap: React.FC<CameraMapProps> = ({
           </CircleMarker>
         ))}
 
-        {!hideMarkers &&
+        {showPoliceStations &&
           stations.map((station: PoliceStation) => (
-            <CircleMarker
+            <Marker
               key={`station-${station.id}`}
-              center={[station.lat, station.long]}
-              radius={8}
-              pathOptions={{ color: '#F59E0B', fillColor: '#FBBF24', fillOpacity: 0.85, weight: 2 }}
+              position={[station.lat, station.long]}
+              icon={POLICE_STATION_ICON}
             >
               <Popup className="dark-gis-popup">
                 <div className="p-1 min-w-[160px] text-slate-100 text-xs">
@@ -586,7 +593,7 @@ export const CameraMap: React.FC<CameraMapProps> = ({
                   <p className="text-slate-500 mt-1">{station.contact || 'No contact on file'}</p>
                 </div>
               </Popup>
-            </CircleMarker>
+            </Marker>
           ))}
       </MapContainer>
     </div>

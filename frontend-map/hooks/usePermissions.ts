@@ -32,6 +32,7 @@ interface UsePermissionsResult {
   email: string | null;
   lastLogin: string | null;
   status: string | null;
+  scopeType: string | null;
   scopeValue: string | null;
   permissions: string[];
   loading: boolean;
@@ -85,6 +86,7 @@ export function usePermissions(): UsePermissionsResult {
     email: me?.email ?? null,
     lastLogin: me?.last_login ?? null,
     status: me?.status ?? null,
+    scopeType: me?.scope_type ?? null,
     scopeValue: me?.scope_value ?? null,
     permissions,
     loading,

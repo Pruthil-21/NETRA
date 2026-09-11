@@ -14,7 +14,7 @@ export type DataConsoleEntity =
   | 'postings'
   | 'registration_requests'
   | 'camera_status_history'
-  | 'circles'
+  | 'areas'
   | 'police_stations'
   | 'coverage_targets'
   | 'plate_sightings'

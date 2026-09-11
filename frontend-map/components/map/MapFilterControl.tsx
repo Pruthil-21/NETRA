@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { SlidersHorizontal, X, Search, Check } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
-import { circlesService, Circle } from '@/services/circlesService';
+import { areasService, Area } from '@/services/areasService';
 import { COVERAGE_LEGEND, COVERAGE_COLORS, COVERAGE_RADIUS_METERS } from '@/lib/coverageMath';
 import { DENSITY_WINDOW_OPTIONS, formatDensityHour } from '@/lib/densityMath';
 import { LayerWindowMode, MapLayer } from '@/types/filters';
@@ -145,12 +145,12 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
   const [open, setOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [locationSearch, setLocationSearch] = useState('');
-  const [circles, setCircles] = useState<Circle[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
   const locationRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    circlesService.listCircles().then(setCircles).catch(() => {
+    areasService.listAreas().then(setAreas).catch(() => {
       // Non-fatal: areas just won't be searchable/selectable until this
       // succeeds/retries -- cities (departments) still work either way.
     });
@@ -161,17 +161,17 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
     const cityRows: LocationRow[] = cityNames
       .sort((a, b) => a.localeCompare(b))
       .map((name) => ({ kind: 'city', key: name, label: name, searchText: name.toLowerCase() }));
-    const areaRows: LocationRow[] = [...circles]
+    const areaRows: LocationRow[] = [...areas]
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((circle) => ({
+      .map((area) => ({
         kind: 'area',
-        key: circle.id,
-        label: circle.name,
-        district: circle.district,
-        searchText: `${circle.name} ${circle.district}`.toLowerCase(),
+        key: area.id,
+        label: area.name,
+        district: area.district,
+        searchText: `${area.name} ${area.district}`.toLowerCase(),
       }));
     return [...cityRows, ...areaRows];
-  }, [cameras, circles]);
+  }, [cameras, areas]);
 
   const visibleRows = useMemo(() => {
     const term = locationSearch.trim().toLowerCase();
@@ -180,10 +180,10 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
   }, [locationRows, locationSearch]);
 
   const selectedCities = filters.departments;
-  const selectedAreaIds = filters.circleIds;
+  const selectedAreaIds = filters.areaIds;
   const selectedAreas = useMemo(
-    () => circles.filter((c) => selectedAreaIds.includes(c.id)),
-    [circles, selectedAreaIds]
+    () => areas.filter((c) => selectedAreaIds.includes(c.id)),
+    [areas, selectedAreaIds]
   );
 
   const activeCount =
@@ -241,9 +241,9 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
   const toggleArea = (id: number) => {
     setFilters((prev) => ({
       ...prev,
-      circleIds: prev.circleIds.includes(id)
-        ? prev.circleIds.filter((c) => c !== id)
-        : [...prev.circleIds, id],
+      areaIds: prev.areaIds.includes(id)
+        ? prev.areaIds.filter((c) => c !== id)
+        : [...prev.areaIds, id],
     }));
   };
 
@@ -252,7 +252,7 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
       ...prev,
       connectivity: 'all',
       departments: [],
-      circleIds: [],
+      areaIds: [],
       mapLayer: 'none',
       densityMode: 'live',
       densityWindowMinutes: 30,
@@ -340,6 +340,21 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
                 );
               })}
             </div>
+          </div>
+
+          <div>
+            <span className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1.5">
+              Markers
+            </span>
+            <label className="flex items-center gap-2 text-[11px] text-slate-300">
+              <input
+                type="checkbox"
+                checked={filters.showPoliceStations}
+                onChange={(e) => setFilters((prev) => ({ ...prev, showPoliceStations: e.target.checked }))}
+                className="accent-command"
+              />
+              Police stations
+            </label>
           </div>
 
           <div>

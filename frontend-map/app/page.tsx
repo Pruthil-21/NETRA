@@ -3,18 +3,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CameraGrid } from "@/components/dashboard/CameraGrid";
 import { GridControls } from "@/components/dashboard/GridControls";
-import { AlertLog } from "@/components/dashboard/AlertLog";
-import { AlertBanner, Alert } from "@/components/AlertBanner";
+import { AlertBanner } from "@/components/AlertBanner";
 import { StaleIndicator, useStaleness } from "@/components/common/StaleIndicator";
 import { useCameraFeeds, FEED_STALE_THRESHOLD_MS } from "@/hooks/useCameraFeeds";
 import { useLimitedPlayers } from "@/hooks/useLimitedPlayers";
 import { useCameraRegistry } from "@/context/CameraRegistryContext";
 import { useTileOrder } from "@/hooks/useTileOrder";
 import { CameraFeed } from "@/types/stream";
-import { DistrictCircleTree, TreeSelection } from "@/components/tree/DistrictCircleTree";
+import { DistrictAreaTree, TreeSelection } from "@/components/tree/DistrictAreaTree";
 import { CameraRegistrySidebar } from "@/components/registry/CameraRegistrySidebar";
 import { CameraInfoOverlay } from "@/components/overlay/CameraInfoOverlay";
-import { circlesService, Circle } from "@/services/circlesService";
+import { areasService, Area } from "@/services/areasService";
 import { filterFeedsByTreeSelection } from "@/lib/dashboardTreeFilter";
 import { usePermissions } from "@/hooks/usePermissions";
 import { useImmersiveMode } from "@/context/ImmersiveModeContext";
@@ -29,27 +28,24 @@ export default function DashboardPage() {
   const { cameras } = useCameraRegistry();
   const { scopeValue: homeDistrict } = usePermissions();
   const { isStale } = useStaleness(lastUpdated, !!error, FEED_STALE_THRESHOLD_MS);
-  const [layout, setLayout] = useState<"grid-4" | "grid-9" | "focus">("grid-9");
-  const [searchTerm, setSearchTerm] = useState("");
+  const [layout, setLayout] = useState<"grid-4" | "grid-9">("grid-9");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
-  const [focusedId, setFocusedId] = useState<string | null>(null);
-  const [allAlerts, setAllAlerts] = useState<Alert[]>([]);
   const [playAllMode, setPlayAllMode] = useState(false);
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
-  const [circles, setCircles] = useState<Circle[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [hoveredCameraId, setHoveredCameraId] = useState<string | null>(null);
   // Cameras an officer dragged in from the sidebar tree, rather than picked
   // via the tree-selection filter -- while this is non-empty it takes over
   // what the grid shows entirely (see visibleFeeds below), auto-sized to
-  // however many are in it instead of the fixed grid-4/grid-9/focus layouts.
+  // however many are in it instead of the fixed grid-4/grid-9 layouts.
   const [watchSetIds, setWatchSetIds] = useState<Set<string>>(new Set());
   const [watchSetNotice, setWatchSetNotice] = useState<string | null>(null);
 
   const { activeCameraIds, openPlayer } = useLimitedPlayers(MAX_CONCURRENT_PLAYERS);
 
   useEffect(() => {
-    circlesService.listCircles().then(setCircles).catch(() => {
-      // Non-fatal: the tree just shows no circles until this succeeds/retries.
+    areasService.listAreas().then(setAreas).catch(() => {
+      // Non-fatal: the tree just shows no areas until this succeeds/retries.
     });
   }, []);
 
@@ -58,30 +54,21 @@ export default function DashboardPage() {
     [feeds]
   );
 
-  const circleIdByCameraId = useMemo(() => {
+  const areaIdByCameraId = useMemo(() => {
     const map: Record<string, number | null> = {};
-    for (const cam of cameras) map[String(cam.id)] = cam.circle_id ?? null;
+    for (const cam of cameras) map[String(cam.id)] = cam.area_id ?? null;
     return map;
   }, [cameras]);
 
   const treeFilteredFeeds = useMemo(
-    () => filterFeedsByTreeSelection(feeds, treeSelection, circleIdByCameraId),
-    [feeds, treeSelection, circleIdByCameraId]
+    () => filterFeedsByTreeSelection(feeds, treeSelection, areaIdByCameraId),
+    [feeds, treeSelection, areaIdByCameraId]
   );
 
   const filteredFeeds = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
-    return treeFilteredFeeds.filter((feed) => {
-      if (statusFilter !== "all" && feed.status !== statusFilter) return false;
-      if (!term) return true;
-      return (
-        feed.name.toLowerCase().includes(term) ||
-        feed.id.toLowerCase().includes(term) ||
-        feed.location.toLowerCase().includes(term) ||
-        feed.department.toLowerCase().includes(term)
-      );
-    });
-  }, [treeFilteredFeeds, searchTerm, statusFilter]);
+    if (statusFilter === "all") return treeFilteredFeeds;
+    return treeFilteredFeeds.filter((feed) => feed.status === statusFilter);
+  }, [treeFilteredFeeds, statusFilter]);
 
   // An officer's drag-to-reorder preference, applied on top of the filtered set --
   // reordering is meaningless in focus mode (exactly one tile), so that layout skips
@@ -145,44 +132,24 @@ export default function DashboardPage() {
     });
   }, []);
 
-  // Focus mode shows exactly one camera — the one explicitly picked via a FeedCard's
-  // "Focus this camera" button, an alert's "View Camera"/plate link, or the first
-  // filtered result if none was picked yet. A drag-composed watch set takes over
-  // entirely ahead of this -- it's a deliberate, explicit pick, same as focus, just
-  // for however many cameras were dragged in rather than exactly one.
+  // A drag-composed watch set takes over the grid entirely ahead of the
+  // fixed grid-4/grid-9 layouts -- it's a deliberate, explicit pick of
+  // however many cameras were dragged in, same idea "focus mode" used to
+  // cover for exactly one camera before that whole layout was removed in
+  // favor of the watch-set + real browser fullscreen flow below.
   const visibleFeeds = useMemo(() => {
     if (isWatchMode) return watchSetFeeds;
-    if (layout !== "focus") return orderedFeeds;
-    const focused = filteredFeeds.find((f) => f.id === focusedId);
-    return focused ? [focused] : filteredFeeds.slice(0, 1);
-  }, [isWatchMode, watchSetFeeds, layout, orderedFeeds, filteredFeeds, focusedId]);
+    return orderedFeeds;
+  }, [isWatchMode, watchSetFeeds, orderedFeeds]);
 
   const hoveredCamera = useMemo(
     () => (hoveredCameraId ? cameras.find((c) => String(c.id) === hoveredCameraId) ?? null : null),
     [cameras, hoveredCameraId]
   );
-  const hoveredCircleName = useMemo(
-    () => circles.find((c) => c.id === hoveredCamera?.circle_id)?.name ?? null,
-    [circles, hoveredCamera]
+  const hoveredAreaName = useMemo(
+    () => areas.find((c) => c.id === hoveredCamera?.area_id)?.name ?? null,
+    [areas, hoveredCamera]
   );
-
-  // Jumping to a camera (from an alert's "View Camera"/plate link) must always land on
-  // that camera, regardless of what's currently selected in the tree -- otherwise the
-  // tree-selection gate either shows the "pick a district" empty state (nothing selected
-  // yet) or silently falls back to the first camera in a different district/circle's
-  // filtered list (something else selected). Selecting the target's whole *district*
-  // (not resolving its circle) guarantees inclusion without a circle lookup, since
-  // district-selection already covers every camera in it regardless of circle assignment.
-  const handleSelectFocus = useCallback((id: string) => {
-    setFocusedId(id);
-    setLayout("focus");
-    setStatusFilter("all");
-    setSearchTerm("");
-    const targetFeed = feeds.find((f) => f.id === id);
-    if (targetFeed) {
-      setTreeSelection({ type: "district", value: targetFeed.department });
-    }
-  }, [feeds]);
 
   // Tracks whether the cursor is currently over the shared CameraInfoOverlay
   // itself (set by that component's onMouseEnterOverlay/onMouseLeaveOverlay
@@ -241,14 +208,15 @@ export default function DashboardPage() {
       <main className="flex-1 flex overflow-hidden min-h-0 w-full bg-black">
         {!isFullscreen && (
           <div className="w-56 shrink-0 h-full border-r border-line">
-            <DistrictCircleTree
+            <DistrictAreaTree
               districts={districts}
-              circles={circles}
+              areas={areas}
               cameras={cameras}
               selected={treeSelection}
               onSelect={setTreeSelection}
               homeDistrict={homeDistrict}
               defaultCollapsed
+              onPlayCamera={(id) => handleDropCameraIds([id])}
             />
           </div>
         )}
@@ -303,15 +271,26 @@ export default function DashboardPage() {
     <main className="flex-1 flex overflow-hidden min-h-0 w-full relative">
       <CameraRegistrySidebar
         districts={districts}
-        circles={circles}
+        areas={areas}
         cameras={cameras}
         selected={treeSelection}
         onSelect={setTreeSelection}
         homeDistrict={homeDistrict}
+        onPlayCamera={(id) => handleDropCameraIds([id])}
+        extraControls={
+          <GridControls
+            layout={layout}
+            setLayout={setLayout}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            playAllMode={playAllMode}
+            setPlayAllMode={setPlayAllMode}
+          />
+        }
       />
 
       <div className="flex-1 min-h-0 flex flex-col overflow-y-auto">
-        <AlertBanner onAlertsUpdate={setAllAlerts} onJumpToCamera={handleSelectFocus} />
+        <AlertBanner />
 
         <div className="flex-1 p-4 sm:p-6">
           <div className="mb-6 flex justify-between items-center">
@@ -325,19 +304,6 @@ export default function DashboardPage() {
             </div>
             {!loading && <StaleIndicator lastUpdated={lastUpdated} hasError={!!error} pollIntervalMs={FEED_STALE_THRESHOLD_MS} />}
           </div>
-
-          <AlertLog alerts={allAlerts} onJumpToCamera={handleSelectFocus} />
-
-          <GridControls
-            layout={layout}
-            setLayout={setLayout}
-            searchTerm={searchTerm}
-            setSearchTerm={setSearchTerm}
-            statusFilter={statusFilter}
-            setStatusFilter={setStatusFilter}
-            playAllMode={playAllMode}
-            setPlayAllMode={setPlayAllMode}
-          />
 
           {loading && (
             <div className="flex items-center justify-center p-12 text-gray-400 text-sm">
@@ -365,7 +331,6 @@ export default function DashboardPage() {
               <CameraGrid
                 feeds={visibleFeeds}
                 layout={layout}
-                onSelectFocus={handleSelectFocus}
                 registryEmpty={feeds.length === 0}
                 mode={playAllMode ? 'playAll' : 'hoverOnly'}
                 activeIds={new Set(Array.from(activeCameraIds).map(String))}
@@ -381,7 +346,7 @@ export default function DashboardPage() {
 
       <CameraInfoOverlay
         camera={hoveredCamera}
-        circleName={hoveredCircleName}
+        areaName={hoveredAreaName}
         onClose={() => setHoveredCameraId(null)}
         onMouseEnterOverlay={() => {
           overlayHoveredRef.current = true;

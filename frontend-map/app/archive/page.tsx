@@ -1,11 +1,11 @@
 'use client';
 
-import React, { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
-import { TreeSelection } from '@/components/tree/DistrictCircleTree';
+import { TreeSelection } from '@/components/tree/DistrictAreaTree';
 import { CameraRegistrySidebar } from '@/components/registry/CameraRegistrySidebar';
-import { circlesService, Circle } from '@/services/circlesService';
+import { areasService, Area } from '@/services/areasService';
 import { fetchRecordingSegments, RecordingSegment } from '@/services/recordingsService';
 import { RecordingCalendar, toLocalDateKey } from '@/components/archive/RecordingCalendar';
 import { RecordingPlayer } from '@/components/archive/RecordingPlayer';
@@ -28,7 +28,7 @@ function ArchivePageInner() {
   const searchParams = useSearchParams();
 
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
-  const [circles, setCircles] = useState<Circle[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
 
   const [allSegments, setAllSegments] = useState<RecordingSegment[] | null>(null);
@@ -93,7 +93,7 @@ function ArchivePageInner() {
   const { isOver: isGridDropTarget, dropHandlers: gridDropHandlers } = useCameraDropTarget(handleDropCameraIds);
 
   useEffect(() => {
-    circlesService.listCircles().then(setCircles).catch(() => {
+    areasService.listAreas().then(setAreas).catch(() => {
       // Non-fatal: the tree just shows no areas until this succeeds/retries.
     });
   }, []);
@@ -103,21 +103,47 @@ function ArchivePageInner() {
     [cameras]
   );
 
-  // A camera passed via ?camera=<id> (the CameraDetailDrawer's "Recorded
-  // Footage" link) is honored once the registry has loaded, but only once --
-  // an officer picking a different camera from the tree afterwards shouldn't
-  // keep getting overridden back to the link's target on every render.
-  const appliedInitialCamera = React.useRef(false);
+// A camera passed via ?camera=<id> (the CameraDetailDrawer's "Recorded
+  // Footage" link, or an alert's "View Footage" link) is honored once per
+  // distinct id -- tracked by the id itself, not a one-time-ever boolean,
+  // so a *second* "View Footage" click for a *different* alert (a fresh
+  // navigation to this same already-mounted page, just with a new
+  // ?camera=) still takes effect instead of being silently ignored because
+  // "a deep link was already applied once." Still only reacts to the URL
+  // param actually changing, never to `cameras` itself refreshing in the
+  // background, so an officer's own manual tree pick afterwards isn't
+  // fought on the next unrelated poll.
+  const requestedCameraId = searchParams.get('camera');
+  const lastAppliedCameraId = useRef<string | null>(null);
   useEffect(() => {
-    if (appliedInitialCamera.current || cameras.length === 0) return;
-    const requestedId = searchParams.get('camera');
-    if (!requestedId) return;
-    const found = cameras.find((cam) => String(cam.id) === requestedId);
+    if (!requestedCameraId || cameras.length === 0 || lastAppliedCameraId.current === requestedCameraId) return;
+    const found = cameras.find((cam) => String(cam.id) === requestedCameraId);
     if (found) {
       setSelectedCamera(found);
-      appliedInitialCamera.current = true;
+      lastAppliedCameraId.current = requestedCameraId;
     }
-  }, [cameras, searchParams]);
+  }, [cameras, requestedCameraId]);
+
+  // ?at=<ISO timestamp> (an alert's "View Footage" link) -- jump straight to
+  // roughly 10 seconds before that exact moment, on that moment's own
+  // calendar day, rather than wherever the segments effect below would
+  // otherwise default to (the most recent day with footage). Same
+  // by-value tracking as the camera id above: a second "View Footage"
+  // click for a different alert -- even one on the *same* camera, so the
+  // effect below wouldn't otherwise re-run at all -- still lands on its
+  // own moment instead of being stuck on the first one this page instance
+  // ever saw. seekTargetIso itself is cleared once RecordingPlayer
+  // confirms it actually applied the seek, so a day the officer picks
+  // manually afterwards is never silently overridden back to it.
+  const requestedAt = searchParams.get('at');
+  const lastAppliedAt = useRef<string | null>(null);
+  const [seekTargetIso, setSeekTargetIso] = useState<string | null>(null);
+  useEffect(() => {
+    if (!requestedAt || lastAppliedAt.current === requestedAt) return;
+    setSelectedDate(toLocalDateKey(new Date(requestedAt)));
+    setSeekTargetIso(new Date(new Date(requestedAt).getTime() - 10000).toISOString());
+    lastAppliedAt.current = requestedAt;
+  }, [requestedAt]);
 
   useEffect(() => {
     if (!selectedCamera) {
@@ -131,7 +157,11 @@ function ArchivePageInner() {
         if (cancelled) return;
         setAvailable(result.available);
         setAllSegments(result.segments);
-        if (result.segments.length > 0) {
+        // A deep-linked moment (?at=) picks its own calendar day via the
+        // effect above, which runs independently of this fetch -- only
+        // fall back to "most recent day with any footage" when there's no
+        // such moment to defer to at all.
+        if (result.segments.length > 0 && !requestedAt) {
           const mostRecent = result.segments
             .map((s) => toLocalDateKey(new Date(s.start)))
             .sort()
@@ -185,7 +215,7 @@ function ArchivePageInner() {
     <div className="flex-1 flex overflow-hidden min-h-0 relative">
       <CameraRegistrySidebar
         districts={districts}
-        circles={circles}
+        areas={areas}
         cameras={cameras}
         selected={treeSelection}
         onSelect={handleTreeSelect}
@@ -262,6 +292,8 @@ function ArchivePageInner() {
                       cameraId={selectedCamera.id}
                       cameraName={selectedCamera.name}
                       segments={daySegments}
+                      initialPlayFromIso={seekTargetIso}
+                      onInitialSeekApplied={() => setSeekTargetIso(null)}
                     />
                   )}
                 </div>

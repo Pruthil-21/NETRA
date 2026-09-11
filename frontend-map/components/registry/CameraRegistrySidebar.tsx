@@ -7,17 +7,30 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { StaleIndicator } from '@/components/common/StaleIndicator';
 import CameraListSkeleton from '@/components/registry/CameraListSkeleton';
 import AddCameraModal from '@/components/registry/AddCameraModal';
-import { DistrictCircleTree, TreeSelection } from '@/components/tree/DistrictCircleTree';
-import { Circle } from '@/services/circlesService';
+import { DistrictAreaTree, TreeSelection } from '@/components/tree/DistrictAreaTree';
+import { Area } from '@/services/areasService';
 import { Camera } from '@/types/camera';
 
 interface CameraRegistrySidebarProps {
   districts: string[];
-  circles: Circle[];
+  areas: Area[];
   cameras: Camera[];
   selected: TreeSelection;
   onSelect: (selection: TreeSelection) => void;
   homeDistrict?: string | null;
+  /** Forwarded to DistrictAreaTree -- see its own doc comment. Defaults to
+   * true (Dashboard/Archive both have a real watch-grid drop target); the
+   * Map page passes false since dragging there was a no-op cursor bug. */
+  enableDrag?: boolean;
+  /** Extra controls rendered between the header and the tree -- e.g. the
+   * Dashboard's own status filter/layout/Play All (see GridControls),
+   * which used to be a whole separate bar above the feed grid pushing
+   * every tile down for something an officer sets once per session, not
+   * per camera. Omitted by Map/Archive, so they render exactly as before. */
+  extraControls?: React.ReactNode;
+  /** Forwarded to DistrictAreaTree -- see its own doc comment. Only
+   * Dashboard supplies this. */
+  onPlayCamera?: (cameraId: number) => void;
 }
 
 /** The one Camera Registry sidebar -- header (live count, Add Camera,
@@ -32,11 +45,14 @@ interface CameraRegistrySidebarProps {
  * expand toggle shown while collapsed. */
 export function CameraRegistrySidebar({
   districts,
-  circles,
+  areas,
   cameras,
   selected,
   onSelect,
   homeDistrict,
+  enableDrag = true,
+  extraControls,
+  onPlayCamera,
 }: CameraRegistrySidebarProps) {
   const { isLoading, error, lastUpdated, refreshCameras } = useCameraRegistry();
   const { has } = usePermissions();
@@ -89,6 +105,7 @@ export function CameraRegistrySidebar({
               </button>
             </div>
           </div>
+          {extraControls}
           {error ? (
             <div className="flex flex-col items-center text-center gap-2 p-6 text-signal-red">
               <AlertTriangle size={20} />
@@ -105,14 +122,16 @@ export function CameraRegistrySidebar({
             <CameraListSkeleton />
           ) : (
             <div className="flex-1 min-h-0 flex flex-col">
-              <DistrictCircleTree
+              <DistrictAreaTree
                 districts={districts}
-                circles={circles}
+                areas={areas}
                 cameras={cameras}
                 selected={selected}
                 onSelect={onSelect}
                 homeDistrict={homeDistrict}
                 defaultCollapsed
+                enableDrag={enableDrag}
+                onPlayCamera={onPlayCamera}
               />
             </div>
           )}

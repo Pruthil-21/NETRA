@@ -4,14 +4,14 @@ import React from 'react';
 import { CameraRegistryProvider, useCameraRegistry } from '@/context/CameraRegistryContext';
 import { MapFilterControl } from '@/components/map/MapFilterControl';
 import { Camera } from '@/types/camera';
-import { Circle } from '@/services/circlesService';
+import { Area } from '@/services/areasService';
 
 const MOCK_CAMERAS: Camera[] = [
   {
     id: 1,
     name: 'Sector 10 CH Road Junction',
     dept: 'Ahmedabad',
-    circle_id: null,
+    area_id: null,
     lat: 23.2156,
     long: 72.6369,
     camera_type: 'ANPR',
@@ -26,7 +26,7 @@ const MOCK_CAMERAS: Camera[] = [
     id: 2,
     name: 'Anand Bus Stand',
     dept: 'Anand',
-    circle_id: 1,
+    area_id: 1,
     lat: 22.5645,
     long: 72.9289,
     camera_type: 'PTZ',
@@ -41,7 +41,7 @@ const MOCK_CAMERAS: Camera[] = [
     id: 3,
     name: 'Anand Market Junction',
     dept: 'Anand',
-    circle_id: 2,
+    area_id: 2,
     lat: 22.5605,
     long: 72.9315,
     camera_type: 'ANPR',
@@ -54,13 +54,13 @@ const MOCK_CAMERAS: Camera[] = [
   },
 ];
 
-const MOCK_CIRCLES: Circle[] = [
-  { id: 1, name: 'APC Circle', district: 'Anand', created_at: '2026-01-01T00:00:00Z' },
-  { id: 2, name: 'Petlad Circle', district: 'Anand', created_at: '2026-01-01T00:00:00Z' },
+const MOCK_AREAS: Area[] = [
+  { id: 1, name: 'APC Area', district: 'Anand', district_id: 1, village: 'Village', taluka: 'Taluka', village_id: 1, created_at: '2026-01-01T00:00:00Z' },
+  { id: 2, name: 'Petlad Area', district: 'Anand', district_id: 1, village: 'Village', taluka: 'Taluka', village_id: 1, created_at: '2026-01-01T00:00:00Z' },
 ];
 
-vi.mock('@/services/circlesService', () => ({
-  circlesService: { listCircles: () => Promise.resolve(MOCK_CIRCLES) },
+vi.mock('@/services/areasService', () => ({
+  areasService: { listAreas: () => Promise.resolve(MOCK_AREAS) },
 }));
 
 function TestConsumer() {
@@ -93,7 +93,7 @@ async function openPanel() {
 async function openLocationDropdown() {
   await openPanel();
   fireEvent.focus(screen.getByLabelText('Search city or area'));
-  await waitFor(() => expect(screen.getByText('APC Circle')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('APC Area')).toBeInTheDocument());
 }
 
 describe('MapFilterControl', () => {
@@ -114,11 +114,11 @@ describe('MapFilterControl', () => {
   it('keeps the city/area list collapsed -- just the search box -- until it is focused', async () => {
     await openPanel();
 
-    expect(screen.queryByText('APC Circle')).not.toBeInTheDocument();
+    expect(screen.queryByText('APC Area')).not.toBeInTheDocument();
     expect(screen.queryByText('Ahmedabad')).not.toBeInTheDocument();
 
     fireEvent.focus(screen.getByLabelText('Search city or area'));
-    expect(screen.getByText('APC Circle')).toBeInTheDocument();
+    expect(screen.getByText('APC Area')).toBeInTheDocument();
     expect(screen.getByText('Ahmedabad')).toBeInTheDocument();
   });
 
@@ -127,8 +127,8 @@ describe('MapFilterControl', () => {
 
     expect(screen.getByText('Ahmedabad')).toBeInTheDocument();
     expect(screen.getByText('Anand')).toBeInTheDocument();
-    expect(screen.getByText('APC Circle')).toBeInTheDocument();
-    expect(screen.getByText('Petlad Circle')).toBeInTheDocument();
+    expect(screen.getByText('APC Area')).toBeInTheDocument();
+    expect(screen.getByText('Petlad Area')).toBeInTheDocument();
   });
 
   it('typing narrows the flat city+area list, Paytm-boarding-point style', async () => {
@@ -136,8 +136,8 @@ describe('MapFilterControl', () => {
 
     fireEvent.change(screen.getByLabelText('Search city or area'), { target: { value: 'petlad' } });
 
-    expect(screen.getByText('Petlad Circle')).toBeInTheDocument();
-    expect(screen.queryByText('APC Circle')).not.toBeInTheDocument();
+    expect(screen.getByText('Petlad Area')).toBeInTheDocument();
+    expect(screen.queryByText('APC Area')).not.toBeInTheDocument();
     expect(screen.queryByText('Ahmedabad')).not.toBeInTheDocument();
   });
 
@@ -159,13 +159,13 @@ describe('MapFilterControl', () => {
   it('combines status, a selected area, and a selected city with AND/OR as expected', async () => {
     await openLocationDropdown();
 
-    // Offline AND (Ahmedabad city OR APC Circle area) -- Ahmedabad's camera
-    // is online so it's excluded by status; APC Circle's camera is offline
-    // so it survives; the other Anand camera (Petlad Circle) isn't in either
+    // Offline AND (Ahmedabad city OR APC Area area) -- Ahmedabad's camera
+    // is online so it's excluded by status; APC Area's camera is offline
+    // so it survives; the other Anand camera (Petlad Area) isn't in either
     // selected location and is excluded.
     fireEvent.click(screen.getByRole('button', { name: 'Offline' }));
     fireEvent.click(screen.getByText('Ahmedabad'));
-    fireEvent.click(screen.getByText('APC Circle'));
+    fireEvent.click(screen.getByText('APC Area'));
 
     expect(screen.getByText('Anand Bus Stand')).toBeInTheDocument();
     expect(screen.queryByText('Anand Market Junction')).not.toBeInTheDocument();
@@ -185,6 +185,19 @@ describe('MapFilterControl', () => {
     expect(screen.queryByLabelText('Reset all active filters')).not.toBeInTheDocument();
   });
 
+  it('police stations are shown by default and can be toggled off', async () => {
+    await openPanel();
+
+    const checkbox = screen.getByLabelText('Police stations') as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+  });
+
   it('a click outside the dropdown but still inside the panel closes just the dropdown', async () => {
     await openLocationDropdown();
 
@@ -192,7 +205,7 @@ describe('MapFilterControl', () => {
     // own ref -- clicking one should dismiss the city/area list without
     // also closing the whole filters panel.
     fireEvent.mouseDown(screen.getByRole('button', { name: 'Offline' }));
-    expect(screen.queryByText('APC Circle')).not.toBeInTheDocument();
+    expect(screen.queryByText('APC Area')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Filter by status')).toBeInTheDocument();
   });
 
@@ -200,7 +213,7 @@ describe('MapFilterControl', () => {
     await openLocationDropdown();
 
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByText('APC Circle')).not.toBeInTheDocument();
+    expect(screen.queryByText('APC Area')).not.toBeInTheDocument();
     expect(screen.getByLabelText('Filter by status')).toBeInTheDocument();
 
     fireEvent.keyDown(document, { key: 'Escape' });

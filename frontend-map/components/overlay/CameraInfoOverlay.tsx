@@ -10,7 +10,7 @@ import { useCameraHealth } from '@/hooks/useCameraHealth';
 
 interface CameraInfoOverlayProps {
   camera: Camera | null;
-  circleName?: string | null;
+  areaName?: string | null;
   onClose: () => void;
   /** Fired when the cursor enters/leaves this overlay's own footprint. The
    * overlay renders `fixed inset-0` over whatever tile/marker the cursor was
@@ -41,7 +41,7 @@ function Row({ label, value }: { label: string; value: string }) {
  * by an ancestor's overflow/stacking context. */
 export function CameraInfoOverlay({
   camera,
-  circleName,
+  areaName,
   onClose,
   onMouseEnterOverlay,
   onMouseLeaveOverlay,
@@ -87,7 +87,7 @@ export function CameraInfoOverlay({
           <dl className="space-y-2 text-slate-300">
             <Row label="Camera ID" value={String(camera.id)} />
             <Row label="District" value={camera.dept} />
-            <Row label="Area" value={circleName ?? 'Unassigned'} />
+            <Row label="Area" value={areaName ?? 'Unassigned'} />
             <Row label="Type" value={camera.camera_type} />
             <Row label="Ownership" value={camera.ownership} />
             <Row label="Connectivity" value={camera.connectivity_status} />

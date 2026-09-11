@@ -3,7 +3,7 @@ import dynamic from "next/dynamic";
 import { CameraFeed } from "@/types/stream";
 import { useInView } from "@/hooks/useInView";
 import { createHoverGraceController, HoverGraceController } from "@/lib/hoverGrace";
-import { Radio, VideoOff, AlertTriangle, HelpCircle, Maximize2, MapPin, Play, GripVertical, X, LucideIcon } from "lucide-react";
+import { Radio, VideoOff, AlertTriangle, HelpCircle, MapPin, Play, GripVertical, X, LucideIcon } from "lucide-react";
 
 const HlsPlayer = dynamic(
   () => import("@/components/player/HlsPlayer").then((mod) => mod.HlsPlayer),
@@ -15,8 +15,6 @@ const HOVER_PREVIEW_GRACE_MS = 1200;
 
 interface FeedCardProps {
   feed: CameraFeed;
-  onFocus?: (id: string) => void;
-  startPlaying?: boolean;
   /** "playAll": tile plays inline whenever `isPlaying` is true (Play-All toggle
    * in GridControls). "hoverOnly" (default elsewhere in this app): tile stays
    * a static thumbnail; hover reports to the parent via onHoverStart/onHoverEnd
@@ -30,7 +28,7 @@ interface FeedCardProps {
    * dragged feed's id and this card's own id (the drop target). */
   onReorder?: (draggedId: string, targetId: string) => void;
   /** Present only when this tile is part of an officer's drag-composed
-   * watch set (dragged in from DistrictCircleTree, see CameraGrid's
+   * watch set (dragged in from DistrictAreaTree, see CameraGrid's
    * onDropCameraIds) -- renders a small remove button so any one stream can
    * be pulled back out without clearing the whole set. */
   onRemove?: (id: string) => void;
@@ -51,10 +49,22 @@ const STATUS_BADGE: Record<CameraFeed["status"], { label: string; className: str
 };
 
 const FeedCardImpl: React.FC<FeedCardProps> = ({
-  feed, onFocus, startPlaying = false, mode = 'hoverOnly', isPlaying = false, onHoverStart, onHoverEnd, onReorder, onRemove,
+  feed, mode = 'hoverOnly', isPlaying = false, onHoverStart, onHoverEnd, onReorder, onRemove,
   immersive = false,
 }) => {
-  const isPlayable = feed.status !== "OFFLINE";
+  // Any tile that can be one of several *simultaneously* decoding streams
+  // (immersive watch-set, or the grid's own Play All -- both cap at
+  // MAX_CONCURRENT_PLAYERS) risks the periodic server-side reachability probe
+  // (see useCameraFeeds.ts) timing out from that same burst of decoder
+  // traffic and mislabeling a feed OFFLINE even though the stream itself is
+  // fine. Trusting that probe here would yank a genuinely live player out
+  // under load, so for those modes the player's own error state (surfaced by
+  // HlsPlayer/useHls, which retries on its own) is the real source of truth
+  // instead. hoverOnly stays probe-gated -- only one stream plays at a time
+  // there, so there's no contention to false-negative on, and it's the
+  // signal that keeps a browsing grid from attempting playback on cameras
+  // that are genuinely down.
+  const isPlayable = mode === 'playAll' || feed.status !== "OFFLINE";
   const badge = STATUS_BADGE[feed.status];
   const BadgeIcon = badge.icon;
 
@@ -230,16 +240,6 @@ const FeedCardImpl: React.FC<FeedCardProps> = ({
             <BadgeIcon className={`w-3 h-3 ${feed.status === "ONLINE" ? "animate-pulse" : ""}`} />
             <span>{badge.label}</span>
           </div>
-          {onFocus && (
-            <button
-              onClick={() => onFocus?.(feed.id)}
-              aria-label={`Focus on ${feed.name}`}
-              title="Focus this camera"
-              className="p-1 rounded bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 transition-colors"
-            >
-              <Maximize2 className="w-3.5 h-3.5" />
-            </button>
-          )}
           {onRemove && (
             <button
               onClick={() => onRemove(feed.id)}

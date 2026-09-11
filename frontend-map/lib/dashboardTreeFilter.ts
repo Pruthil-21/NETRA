@@ -1,8 +1,8 @@
 import type { CameraFeed } from '@/types/stream';
-import type { TreeSelection } from '@/components/tree/DistrictCircleTree';
+import type { TreeSelection } from '@/components/tree/DistrictAreaTree';
 
 /** Pulled out as a pure function (not inlined in a useMemo on the page) so
- * its "district selects everything under it, circle narrows to just its
+ * its "district selects everything under it, area narrows to just its
  * own cameras, nothing selected shows every registered feed" contract is
  * directly unit-testable without rendering the whole dashboard. Showing
  * everything by default (rather than an empty state) matters operationally:
@@ -11,7 +11,7 @@ import type { TreeSelection } from '@/components/tree/DistrictCircleTree';
 export function filterFeedsByTreeSelection(
   feeds: CameraFeed[],
   selection: TreeSelection,
-  circleIdByCameraId: Record<string, number | null>
+  areaIdByCameraId: Record<string, number | null>
 ): CameraFeed[] {
   if (selection === null) return feeds;
   if (selection.type === 'district') {
@@ -20,5 +20,5 @@ export function filterFeedsByTreeSelection(
   if (selection.type === 'camera') {
     return feeds.filter((f) => f.id === String(selection.value));
   }
-  return feeds.filter((f) => circleIdByCameraId[f.id] === selection.value);
+  return feeds.filter((f) => areaIdByCameraId[f.id] === selection.value);
 }

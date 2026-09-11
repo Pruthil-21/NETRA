@@ -63,7 +63,7 @@ export interface AuditLogsQuery {
   category?: string;
   camera_id?: number;
   camera_district?: string;
-  camera_circle_id?: number;
+  camera_area_id?: number;
   from?: string;
   to?: string;
   cursor?: number;
@@ -178,7 +178,7 @@ export const adminService = {
     if (query.category) params.set('category', query.category);
     if (query.camera_id != null) params.set('camera_id', String(query.camera_id));
     if (query.camera_district) params.set('camera_district', query.camera_district);
-    if (query.camera_circle_id != null) params.set('camera_circle_id', String(query.camera_circle_id));
+    if (query.camera_area_id != null) params.set('camera_area_id', String(query.camera_area_id));
     if (query.from) params.set('from', query.from);
     if (query.to) params.set('to', query.to);
     if (query.cursor != null) params.set('cursor', String(query.cursor));

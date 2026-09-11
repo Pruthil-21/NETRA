@@ -72,6 +72,37 @@ describe('RecordingPlayer', () => {
     expect(screen.queryByText('Export Clip')).not.toBeInTheDocument();
   });
 
+  it('jumps straight to a deep-linked moment (e.g. 10s before a plate match) instead of the start', () => {
+    const onInitialSeekApplied = vi.fn();
+    render(
+      <RecordingPlayer
+        cameraId={7}
+        cameraName="Ring Road Camera"
+        segments={SEGMENTS}
+        initialPlayFromIso="2026-09-05T08:02:00.000Z"
+        onInitialSeekApplied={onInitialSeekApplied}
+      />
+    );
+    // SEGMENTS[0] starts at 08:00:00; 08:02:00 is 120s in.
+    expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveValue('120');
+    expect(onInitialSeekApplied).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the normal start-at-0 behavior when the deep-linked moment falls outside the given segments', () => {
+    const onInitialSeekApplied = vi.fn();
+    render(
+      <RecordingPlayer
+        cameraId={7}
+        cameraName="Ring Road Camera"
+        segments={SEGMENTS}
+        initialPlayFromIso="2026-09-06T08:02:00.000Z"
+        onInitialSeekApplied={onInitialSeekApplied}
+      />
+    );
+    expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveValue('0');
+    expect(onInitialSeekApplied).not.toHaveBeenCalled();
+  });
+
   it("resets the scrubber when a different day's segments are passed in", () => {
     const { rerender } = render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
     const slider = screen.getByLabelText('Scrub recorded footage timeline');
