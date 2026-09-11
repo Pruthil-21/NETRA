@@ -20,10 +20,39 @@ from ..auth import _RBAC_ROLES, require_role
 from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
+from ..rbac_scope import effective_district_scopes
 from ..schemas import AlertHistoryEntry, AlertOut, AlertStatusUpdate
 from ..services import alerts_service, alerts_stream, audit_service, push_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+
+def _require_alert_in_scope(db, alert_id: int, user: dict, *, audit_denial: bool = False) -> dict:
+    """404 for an alert that doesn't exist, 403 for one outside the
+    officer's own jurisdiction -- same shape as backend-registry's
+    _require_camera_in_scope. "In scope" is the dual rule list_alerts
+    already applies: the detecting camera's district OR the watchlist
+    entry's flagging district must be one of the officer's own.
+    audit_denial=True (used before a status-changing PATCH) also logs the
+    denied attempt, same AccessDenied convention as the entity-CRUD guards."""
+    alert = alerts_service.get_alert(db, alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    dept_scopes = effective_district_scopes(user)
+    if dept_scopes is None:
+        return alert
+    in_scope = alert.get("camera_district") in dept_scopes or alert.get("flagged_district") in dept_scopes
+    if not in_scope:
+        if audit_denial:
+            audit_service.log(
+                db, user.get("badge_number", user.get("sub")), "access_denied_scope", "alert", alert_id,
+                reason_code=(
+                    f"camera in {alert.get('camera_district')}, flagged by {alert.get('flagged_district')}, "
+                    f"scoped to {', '.join(dept_scopes) or 'none'}"
+                ),
+            )
+        raise HTTPException(status_code=403, detail="Alert outside your jurisdiction")
+    return alert
 
 
 @router.get("", response_model=list[AlertOut])
@@ -31,7 +60,7 @@ def get_alerts(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    return alerts_service.list_alerts(db)
+    return alerts_service.list_alerts(db, effective_district_scopes(user))
 
 @router.patch("/{alert_id}", response_model=AlertOut)
 def update_alert_status(
@@ -41,6 +70,7 @@ def update_alert_status(
     user=Depends(require_role("officer")),
 ):
     actor = user.get("badge_number", user.get("sub"))
+    _require_alert_in_scope(db, alert_id, user, audit_denial=True)
 
     if body.status == "ESCALATED" and alerts_service.has_prior_status_change(db, alert_id, actor):
         raise HTTPException(
@@ -81,6 +111,7 @@ def get_alert_history(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
+    _require_alert_in_scope(db, alert_id, user)
     return audit_service.history_for(db, "alert", alert_id)
 
 
