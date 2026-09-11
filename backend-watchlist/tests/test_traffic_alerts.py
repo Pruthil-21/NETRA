@@ -157,6 +157,62 @@ def test_evaluate_creates_a_flow_alert_when_speed_drops_below_threshold(
         _delete_test_camera(cam_b)
 
 
+def _set_camera_offline_since(camera_id: int, minutes_ago: float):
+    with _direct_conn() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE cameras SET connectivity_status = 'offline' WHERE id = %s", (camera_id,))
+        cur.execute(
+            """
+            INSERT INTO camera_status_history (camera_id, connectivity_status, changed_at)
+            VALUES (%s, 'offline', now() - (%s || ' minutes')::interval)
+            """,
+            (camera_id, minutes_ago),
+        )
+
+
+def test_evaluate_creates_a_camera_offline_alert_past_the_threshold(client, traffic_alert_test_rows, monkeypatch):
+    monkeypatch.setattr(settings, "camera_offline_alert_threshold_minutes", 10)
+    cam = _insert_test_camera("Traffic Alert Offline District")
+    try:
+        _set_camera_offline_since(cam, 20)
+
+        created = _run_evaluation_tick(traffic_alert_test_rows)
+        offline_alerts = [a for a in created if a["alert_type"] == "camera_offline" and a["camera_id"] == cam]
+        assert len(offline_alerts) == 1
+        assert offline_alerts[0]["metric_value"] >= 10
+        assert offline_alerts[0]["threshold_value"] == 10
+        assert offline_alerts[0]["district"] == "Traffic Alert Offline District"
+    finally:
+        _delete_test_camera(cam)
+
+
+def test_evaluate_does_not_alert_a_camera_offline_under_the_threshold(client, traffic_alert_test_rows, monkeypatch):
+    monkeypatch.setattr(settings, "camera_offline_alert_threshold_minutes", 30)
+    cam = _insert_test_camera("Traffic Alert Recent Offline District")
+    try:
+        _set_camera_offline_since(cam, 2)
+
+        created = _run_evaluation_tick(traffic_alert_test_rows)
+        assert not [a for a in created if a["camera_id"] == cam and a["alert_type"] == "camera_offline"]
+    finally:
+        _delete_test_camera(cam)
+
+
+def test_evaluate_respects_cooldown_for_a_still_offline_camera(client, traffic_alert_test_rows, monkeypatch):
+    monkeypatch.setattr(settings, "camera_offline_alert_threshold_minutes", 10)
+    monkeypatch.setattr(settings, "traffic_alert_cooldown_minutes", 30)
+    cam = _insert_test_camera("Traffic Alert Offline Cooldown District")
+    try:
+        _set_camera_offline_since(cam, 20)
+
+        first = _run_evaluation_tick(traffic_alert_test_rows)
+        assert [a for a in first if a["camera_id"] == cam and a["alert_type"] == "camera_offline"]
+
+        second = _run_evaluation_tick(traffic_alert_test_rows)
+        assert not [a for a in second if a["camera_id"] == cam and a["alert_type"] == "camera_offline"]
+    finally:
+        _delete_test_camera(cam)
+
+
 def _insert_traffic_alert(alert_type="density", camera_id=None, district="Traffic Alert API District") -> int:
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
@@ -214,6 +270,26 @@ def test_patch_traffic_alert_acknowledges_and_records_who(client, traffic_alert_
     assert body["status"] == "ACKNOWLEDGED"
     assert body["acknowledged_by"] == "TA-TEST"
     assert body["acknowledged_at"] is not None
+
+
+def test_patch_traffic_alert_rejects_a_district_scoped_actor_outside_the_alerts_district(client, traffic_alert_test_rows):
+    alert_id = _insert_traffic_alert(district="Traffic Alert Scope District")
+    traffic_alert_test_rows.append(alert_id)
+    token = _make_token("station_officer", "district", scope_value="Somewhere Else")
+    resp = client.patch(
+        f"/traffic-alerts/{alert_id}", json={"status": "ACKNOWLEDGED"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+
+
+def test_patch_traffic_alert_allows_a_district_scoped_actor_in_the_alerts_own_district(client, traffic_alert_test_rows):
+    alert_id = _insert_traffic_alert(district="Traffic Alert Scope District")
+    traffic_alert_test_rows.append(alert_id)
+    token = _make_token("station_officer", "district", scope_value="Traffic Alert Scope District")
+    resp = client.patch(
+        f"/traffic-alerts/{alert_id}", json={"status": "ACKNOWLEDGED"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
 
 
 def test_patch_traffic_alert_404_for_unknown_id(client, traffic_alert_test_rows):

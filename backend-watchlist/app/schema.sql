@@ -142,7 +142,7 @@ CREATE INDEX idx_vehicle_daily_sightings_plate
 -- see traffic_alerts_service.evaluate_and_broadcast.
 CREATE TABLE IF NOT EXISTS traffic_alerts (
     id               SERIAL PRIMARY KEY,
-    alert_type       TEXT NOT NULL CHECK (alert_type IN ('density', 'flow')),
+    alert_type       TEXT NOT NULL CHECK (alert_type IN ('density', 'flow', 'camera_offline')),
     camera_id        INTEGER,
     from_camera_id   INTEGER,
     to_camera_id     INTEGER,
@@ -154,6 +154,14 @@ CREATE TABLE IF NOT EXISTS traffic_alerts (
     acknowledged_by  TEXT,
     acknowledged_at  TIMESTAMPTZ
 );
+
+-- 'camera_offline' added after this table's original release -- a bare
+-- CREATE TABLE IF NOT EXISTS above never re-runs against an already
+-- initialized database (see docker-entrypoint-initdb.d), so the widened
+-- constraint needs its own idempotent statement to actually reach one.
+ALTER TABLE traffic_alerts DROP CONSTRAINT IF EXISTS traffic_alerts_alert_type_check;
+ALTER TABLE traffic_alerts ADD CONSTRAINT traffic_alerts_alert_type_check
+    CHECK (alert_type IN ('density', 'flow', 'camera_offline'));
 
 CREATE INDEX IF NOT EXISTS idx_traffic_alerts_status ON traffic_alerts (status);
 CREATE INDEX IF NOT EXISTS idx_traffic_alerts_district ON traffic_alerts (district);

@@ -28,6 +28,14 @@ class Settings:
     # every 5-minute tick during a sustained jam would create a fresh row.
     traffic_alert_cooldown_minutes: int = int(os.environ.get("TRAFFIC_ALERT_COOLDOWN_MINUTES", 30))
 
+    # A camera going offline briefly (a tunnel blip, a reboot) is normal and
+    # not worth an alert -- only a camera that's STAYED offline this long,
+    # continuously, without a single online transition in between, fires one.
+    # Reuses the same evaluation tick/cooldown machinery as density/flow
+    # above (traffic_alerts_service.evaluate_and_broadcast), just a third
+    # alert_type on the same table.
+    camera_offline_alert_threshold_minutes: int = int(os.environ.get("CAMERA_OFFLINE_ALERT_THRESHOLD_MINUTES", 30))
+
     # Web Push (VAPID) -- see services/push_service.py. Optional: an unset
     # VAPID_PRIVATE_KEY just means push_service.send_to_badges skips sending
     # (no-ops) rather than crashing -- every other alert path (WS, poll) is

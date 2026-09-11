@@ -120,12 +120,12 @@ class FlowTrendResponse(BaseModel):
 
 
 class TrafficAlertOut(BaseModel):
-    """A density/flow threshold breach -- see traffic_alerts_service and
-    schema.sql's traffic_alerts table. Exactly one of camera_id (a density
-    breach) or from_camera_id/to_camera_id (a flow/corridor breach) is set,
-    matching alert_type."""
+    """A congestion or camera-health breach -- see traffic_alerts_service and
+    schema.sql's traffic_alerts table. Exactly one of camera_id (a density or
+    camera_offline breach) or from_camera_id/to_camera_id (a flow/corridor
+    breach) is set, matching alert_type."""
     id: int
-    alert_type: Literal["density", "flow"]
+    alert_type: Literal["density", "flow", "camera_offline"]
     camera_id: Optional[int] = None
     from_camera_id: Optional[int] = None
     to_camera_id: Optional[int] = None
