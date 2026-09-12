@@ -15,11 +15,11 @@ export type LayerWindowMode = 'live' | 'hour';
 export interface CameraFilters {
   /** Selected city/department names -- empty means "every city". A camera
    * passes if its dept matches any of these, OR-ed together with
-   * circleIds below (picking a city and a specific area in another city
+   * areaIds below (picking a city and a specific area in another city
    * means "either," not "both"). */
   departments: string[];
-  /** Selected area/circle ids -- empty means "every area." */
-  circleIds: number[];
+  /** Selected area/area ids -- empty means "every area." */
+  areaIds: number[];
   connectivity: ConnectivityStatus | 'all';
   health: HealthStatus | 'all';
   searchQuery: string;
@@ -39,4 +39,8 @@ export interface CameraFilters {
   flowWindowMinutes: 15 | 30 | 60;
   /** 0-23, IST. Only meaningful while flowMode === 'hour'. */
   flowHour: number;
+  /** Independent of mapLayer -- a police station pin isn't a per-camera
+   * marker, so it isn't affected by the coverage/density/flow overlays
+   * that hide camera pins. Defaults to true. */
+  showPoliceStations: boolean;
 }

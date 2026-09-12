@@ -41,8 +41,14 @@ function hintStatus(connectivityStatus: string, healthStatus: string): CameraFee
 }
 
 const POLL_INTERVAL_MS = 20_000;
-const HEALTH_CHECK_INTERVAL_MS = 15_000;
-const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+// Tightened from 15s/5s -- officers need an ONLINE/OFFLINE badge that
+// reflects reality within a few seconds, not tens of seconds. Safe to run
+// this fast now that Play-All/immersive tiles (see FeedCard's isPlayable)
+// no longer get yanked off-screen by this probe timing out under their own
+// decoder load -- this interval only drives the status badge and the
+// hoverOnly single-stream gate now, not multi-decoder playback.
+const HEALTH_CHECK_INTERVAL_MS = 8_000;
+const HEALTH_CHECK_TIMEOUT_MS = 3_000;
 // The reachability probe is what actually drives ONLINE/OFFLINE, so it's the
 // cadence a "how fresh is this badge" indicator should be measured against.
 export const FEED_STALE_THRESHOLD_MS = HEALTH_CHECK_INTERVAL_MS;

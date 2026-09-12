@@ -5,8 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, Film, LogOut, UserCircle2 } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
-import { AlertsBell } from '@/components/alerts/AlertsBell';
-import { NotificationsBell } from '@/components/notifications/NotificationsBell';
+import { NotificationCenter } from '@/components/shell/NotificationCenter';
 import { ThemeToggle } from '@/components/common/ThemeToggle';
 import { logout } from '@/lib/session';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -104,12 +103,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canSeeAdmin =
     has('manage_users_roles') ||
     has('manage_roles') ||
-    has('manage_circles') ||
+    has('manage_areas') ||
     has('view_audit_logs') ||
     has('reset_officer_passwords');
-  const navItems = canSeeAdmin
-    ? [...BASE_NAV_ITEMS, { href: '/admin', label: 'Admin', icon: Shield }]
-    : BASE_NAV_ITEMS;
+  const navItems = [
+    ...BASE_NAV_ITEMS,
+    ...(canSeeAdmin ? [{ href: '/admin', label: 'Admin', icon: Shield }] : []),
+  ];
 
   const handleLogout = () => {
     logout();
@@ -157,8 +157,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <StatusTicker />
             </div>
             <div className="hidden md:block h-4 w-px bg-line" />
-            <AlertsBell />
-            <NotificationsBell />
+            <NotificationCenter />
             <ThemeToggle />
             <Link
               href="/profile"

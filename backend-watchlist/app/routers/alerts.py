@@ -20,10 +20,39 @@ from ..auth import _RBAC_ROLES, require_role
 from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
-from ..schemas import AlertOut, AlertStatusUpdate
-from ..services import alerts_service, alerts_stream, audit_service
+from ..rbac_scope import effective_district_scopes
+from ..schemas import AlertHistoryEntry, AlertOut, AlertStatusUpdate
+from ..services import alerts_service, alerts_stream, audit_service, push_service
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
+
+
+def _require_alert_in_scope(db, alert_id: int, user: dict, *, audit_denial: bool = False) -> dict:
+    """404 for an alert that doesn't exist, 403 for one outside the
+    officer's own jurisdiction -- same shape as backend-registry's
+    _require_camera_in_scope. "In scope" is the dual rule list_alerts
+    already applies: the detecting camera's district OR the watchlist
+    entry's flagging district must be one of the officer's own.
+    audit_denial=True (used before a status-changing PATCH) also logs the
+    denied attempt, same AccessDenied convention as the entity-CRUD guards."""
+    alert = alerts_service.get_alert(db, alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    dept_scopes = effective_district_scopes(user)
+    if dept_scopes is None:
+        return alert
+    in_scope = alert.get("camera_district") in dept_scopes or alert.get("flagged_district") in dept_scopes
+    if not in_scope:
+        if audit_denial:
+            audit_service.log(
+                db, user.get("badge_number", user.get("sub")), "access_denied_scope", "alert", alert_id,
+                reason_code=(
+                    f"camera in {alert.get('camera_district')}, flagged by {alert.get('flagged_district')}, "
+                    f"scoped to {', '.join(dept_scopes) or 'none'}"
+                ),
+            )
+        raise HTTPException(status_code=403, detail="Alert outside your jurisdiction")
+    return alert
 
 
 @router.get("", response_model=list[AlertOut])
@@ -31,7 +60,7 @@ def get_alerts(
     db: RealDictCursor = Depends(get_db),
     user=Depends(require_role("officer")),
 ):
-    return alerts_service.list_alerts(db)
+    return alerts_service.list_alerts(db, effective_district_scopes(user))
 
 @router.patch("/{alert_id}", response_model=AlertOut)
 def update_alert_status(
@@ -41,6 +70,7 @@ def update_alert_status(
     user=Depends(require_role("officer")),
 ):
     actor = user.get("badge_number", user.get("sub"))
+    _require_alert_in_scope(db, alert_id, user, audit_denial=True)
 
     if body.status == "ESCALATED" and alerts_service.has_prior_status_change(db, alert_id, actor):
         raise HTTPException(
@@ -51,9 +81,38 @@ def update_alert_status(
     alert = alerts_service.update_status(db, alert_id, body.status, actor)
     if alert is None:
         raise HTTPException(status_code=404, detail="Alert not found")
-    audit_service.log(db, actor, "status_change", "alert", alert_id, reason_code=body.reason_code)
+    audit_service.log(db, actor, f"alert_{body.status.lower()}", "alert", alert_id, reason_code=body.reason_code)
     logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
+
+    if body.status == "ESCALATED":
+        db.execute("SELECT dept FROM cameras WHERE id = %s", (alert["camera_id"],))
+        dept_row = db.fetchone()
+        district = dept_row["dept"] if dept_row else None
+        # Every officer scoped to see this alert, not just one named
+        # assignee -- there's no "escalate to a specific officer" concept
+        # in the alert model today (AlertStatusUpdate is just a status
+        # enum), so this reuses the same district/platform scoping the WS
+        # broadcast already applies rather than inventing new assignment UI.
+        push_service.send_to_badges(
+            db, push_service.recipients_for_scope(db, district),
+            {
+                "title": "Alert escalated",
+                "body": f"{alert['plate_number']} escalated by {actor}",
+                "url": f"/alerts/track/{alert['plate_number']}",
+            },
+        )
+
     return alert
+
+
+@router.get("/{alert_id}/history", response_model=list[AlertHistoryEntry])
+def get_alert_history(
+    alert_id: int,
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_role("officer")),
+):
+    _require_alert_in_scope(db, alert_id, user)
+    return audit_service.history_for(db, "alert", alert_id)
 
 
 @router.websocket("/stream")

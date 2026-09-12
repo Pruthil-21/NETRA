@@ -43,6 +43,12 @@ services:
     environment:
       DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
       JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
+      # Web Push (VAPID) -- see push_service.py. Same three values passed to
+      # backend-watchlist below; camera-down alerts are sent from here,
+      # watchlist/congestion/escalation alerts from there.
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@example.com}"
       # Required for the tunneled recording-health webhook sink
       # (routers/recording_webhooks.py) to actually accept Dhruv's calls --
       # without this, the publicly-reachable container 401s every request
@@ -107,6 +113,10 @@ services:
       DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
       JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
       INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      # Web Push (VAPID) -- see push_service.py and backend-registry's copy above.
+      VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
+      VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
+      VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@example.com}"
       # From inside the compose network, not the host-published port above.
       KAFKA_BROKERS: "kafka:19092"
     ports:

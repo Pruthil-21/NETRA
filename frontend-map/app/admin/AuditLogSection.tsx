@@ -18,7 +18,7 @@ import {
   LucideIcon,
 } from 'lucide-react';
 import { adminService, AuditLogOut } from '@/services/adminService';
-import { circlesService, Circle } from '@/services/circlesService';
+import { areasService, Area } from '@/services/areasService';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 
 function formatTimestamp(iso: string): string {
@@ -49,30 +49,109 @@ const ACTION_DESCRIPTIONS: Record<string, string> = {
   'login:officer': 'Logged in',
   'change_password:officer': 'Changed their own password',
   'reset_password:officer': "Reset an officer's password",
+  'self_register:officer': 'Registered for access',
+  'self_register_verified:officer': 'Verified their registration email',
+  'approve_registration:officer': "Approved an officer's registration",
+  'reject_registration:officer': "Rejected an officer's registration",
+  'suspend_officer:officer': 'Suspended an officer',
+  'reactivate_officer:officer': 'Reactivated an officer',
+  'force_logout:officer': 'Force-logged-out an officer',
+  'unlock_officer:officer': "Unlocked an officer's account",
+  'self_service_password_reset:officer': 'Reset their own password (self-service)',
+  'update_email:officer': 'Updated their email address',
+  'add_posting:posting': 'Added a posting',
+  'revoke_posting:posting': 'Revoked a posting',
   'reassign_posting:posting': 'Reassigned a posting',
+  'create_duty:duty': 'Created a duty',
+  'edit_duty:duty': 'Edited a duty',
+  'delete_duty:duty': 'Removed a duty',
+  'create_role:role': 'Created a role',
+  'clone_role:role': 'Cloned a role',
+  'edit_role_duties:role': "Edited a role's duties",
   'edit_role_permissions:role': "Edited a role's permissions",
+  'publish_role:role': 'Published a role',
+  'deactivate_role:role': 'Deactivated a role',
+  'reactivate_role:role': 'Reactivated a role',
+  'delete_role:role': 'Deleted a role',
   'create:camera': 'Added a camera',
   'update:camera': 'Updated a camera',
   'delete:camera': 'Removed a camera',
-  'create:circle': 'Added an area',
-  'update:circle': 'Updated an area',
-  'delete:circle': 'Removed an area',
+  // Reported by the health-check poll, not an officer action -- see the
+  // "system" actor label below.
+  'camera_online:camera': 'Camera came back online',
+  'camera_offline:camera': 'Camera went offline',
+  'camera_status_changed:camera': "Camera's connectivity status changed",
+  'create:area': 'Added an area',
+  'update:area': 'Updated an area',
+  'delete:area': 'Removed an area',
   'create:police_station': 'Added a police station',
   'update:police_station': 'Updated a police station',
   'delete:police_station': 'Removed a police station',
   'create:coverage_target': 'Added a coverage target',
   'update:coverage_target': 'Updated a coverage target',
   'delete:coverage_target': 'Removed a coverage target',
-  'status_change:alert': "Changed an alert's status",
+  // "circle" predates the Circle -> Area rename -- no live route creates
+  // these anymore, but real historical rows exist.
+  'create:circle': 'Added a circle (legacy — now areas)',
+  'update:circle': 'Updated a circle (legacy — now areas)',
+  'delete:circle': 'Removed a circle (legacy — now areas)',
+  'create_sod_rule:sod_rule': 'Created a separation-of-duties rule',
+  'delete_sod_rule:sod_rule': 'Removed a separation-of-duties rule',
+  'sod_conflict_blocked:officer': 'Blocked an assignment for a separation-of-duties conflict',
+  'alert_acknowledged:alert': 'Acknowledged a watchlist alert',
+  'alert_escalated:alert': 'Escalated a watchlist alert',
+  'alert_dismissed:alert': 'Dismissed a watchlist alert',
   'create:alert': 'Watchlist alert generated',
+  'create:watchlist': 'Added a watchlist entry',
+  'alert_acknowledged:traffic_alert': 'Acknowledged a congestion alert',
+  'alert_dismissed:traffic_alert': 'Dismissed a congestion alert',
   'create:detection': 'Plate detection recorded',
+  'search:vehicle_trace': "Searched a vehicle's trace history",
   'data_job_export:import_export_job': 'Ran a data export',
   'data_job_import:import_export_job': 'Ran a data import',
   'data_job_resubmit:import_export_job': 'Resubmitted failed import rows',
 };
 
+// Non-human actors -- an automated process, not an officer who happened to
+// have a browser tab open. Shown in place of "Unknown officer" for a
+// badge_number that will never resolve to a real officer row.
+const SYSTEM_ACTOR_LABELS: Record<string, string> = {
+  system: 'System (automated)',
+  'ml-anpr': 'ML/ANPR Service',
+};
+
 function describeLog(log: AuditLogOut): string {
   return ACTION_DESCRIPTIONS[`${log.action}:${log.resource_type}`] ?? `${log.action} ${log.resource_type}`;
+}
+
+function actorLabel(log: AuditLogOut): string {
+  if (log.actor_name) return log.actor_name;
+  if (log.badge_number) return SYSTEM_ACTOR_LABELS[log.badge_number] ?? 'Unknown officer';
+  return 'System';
+}
+
+type LogRow = { kind: 'header'; key: string; count: number } | { kind: 'log'; log: AuditLogOut };
+
+/** "Other" is whatever nobody's remembered to categorize yet -- rather than
+ * dumping it as one undifferentiated list, group it by its actual
+ * (action, resource_type) pair so it's still scannable, and so it's obvious
+ * at a glance which raw types are still uncategorized and worth adding a
+ * real category for. Every other category renders as a flat list, same as
+ * before -- this grouping is specifically an "Other" concern. */
+function buildRows(logs: AuditLogOut[], activeCategory: string): LogRow[] {
+  if (activeCategory !== 'other') return logs.map((log) => ({ kind: 'log', log }));
+  const groups = new Map<string, AuditLogOut[]>();
+  for (const log of logs) {
+    const key = `${log.action}:${log.resource_type}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(log);
+  }
+  const rows: LogRow[] = [];
+  for (const [key, groupLogs] of groups) {
+    rows.push({ kind: 'header', key, count: groupLogs.length });
+    for (const log of groupLogs) rows.push({ kind: 'log', log });
+  }
+  return rows;
 }
 
 // Every mutating admin/registry action writes here via audit_service.log --
@@ -89,7 +168,7 @@ export function AuditLogSection() {
   const [categories, setCategories] = useState<string[]>([]);
   const [activeCategory, setActiveCategory] = useState('all');
 
-  const [circles, setCircles] = useState<Circle[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [badgeFilter, setBadgeFilter] = useState('');
   const [districtFilter, setDistrictFilter] = useState('');
   const [areaFilter, setAreaFilter] = useState('');
@@ -101,7 +180,7 @@ export function AuditLogSection() {
     adminService.listAuditLogCategories().then(setCategories).catch(() => {
       // Non-fatal: the "All Activity" chip alone still works without this.
     });
-    circlesService.listCircles().then(setCircles).catch(() => {
+    areasService.listAreas().then(setAreas).catch(() => {
       // Non-fatal: the Area dropdown just shows no options until it retries.
     });
   }, []);
@@ -114,8 +193,8 @@ export function AuditLogSection() {
   // Area" relationship as the camera hierarchy tree -- otherwise every area
   // platform-wide, which is rarely what an officer searching by location wants.
   const areaOptions = useMemo(
-    () => (districtFilter ? circles.filter((c) => c.district === districtFilter) : circles),
-    [circles, districtFilter]
+    () => (districtFilter ? areas.filter((c) => c.district === districtFilter) : areas),
+    [areas, districtFilter]
   );
 
   const load = (opts: { cursor?: number; append?: boolean } = {}) => {
@@ -128,7 +207,7 @@ export function AuditLogSection() {
         category: activeCategory === 'all' ? undefined : activeCategory,
         camera_id: cameraIdFilter ? Number(cameraIdFilter) : undefined,
         camera_district: districtFilter || undefined,
-        camera_circle_id: areaFilter ? Number(areaFilter) : undefined,
+        camera_area_id: areaFilter ? Number(areaFilter) : undefined,
         from: dateFrom ? new Date(dateFrom).toISOString() : undefined,
         to: dateTo ? new Date(dateTo).toISOString() : undefined,
         cursor: opts.cursor,
@@ -158,7 +237,7 @@ export function AuditLogSection() {
         category: category === 'all' ? undefined : category,
         camera_id: cameraIdFilter ? Number(cameraIdFilter) : undefined,
         camera_district: districtFilter || undefined,
-        camera_circle_id: areaFilter ? Number(areaFilter) : undefined,
+        camera_area_id: areaFilter ? Number(areaFilter) : undefined,
         from: dateFrom ? new Date(dateFrom).toISOString() : undefined,
         to: dateTo ? new Date(dateTo).toISOString() : undefined,
       })
@@ -341,14 +420,25 @@ export function AuditLogSection() {
                   </tr>
                 </thead>
                 <tbody>
-                  {logs.map((log) => {
+                  {buildRows(logs, activeCategory).map((row) => {
+                    if (row.kind === 'header') {
+                      const [action, resourceType] = row.key.split(':');
+                      return (
+                        <tr key={`header-${row.key}`} className="bg-panel-raised/70">
+                          <td colSpan={5} className="px-3 py-1.5 text-[10px] font-semibold tracking-wider text-slate-400 uppercase">
+                            {action} · {resourceType} ({row.count})
+                          </td>
+                        </tr>
+                      );
+                    }
+                    const log = row.log;
                     const meta = CATEGORY_META[log.category] ?? CATEGORY_META.other;
                     const Icon = meta.icon;
                     return (
                       <tr key={log.id} className="border-t border-line hover:bg-panel-raised/50">
                         <td className="px-3 py-2 font-mono text-slate-400 whitespace-nowrap">{formatTimestamp(log.timestamp)}</td>
                         <td className="px-3 py-2">
-                          <p className="text-slate-200">{log.actor_name ?? (log.badge_number ? 'Unknown officer' : 'System')}</p>
+                          <p className="text-slate-200">{actorLabel(log)}</p>
                           {log.badge_number && <p className="font-mono text-slate-500">{log.badge_number}</p>}
                         </td>
                         <td className="px-3 py-2">

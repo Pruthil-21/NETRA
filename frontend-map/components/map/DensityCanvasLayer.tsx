@@ -154,15 +154,27 @@ export function DensityCanvasLayer({ cameras, mode, windowMinutes, hour, onStatu
         // rather than a hard-edged fill -- overlapping blobs read as a
         // continuous heat region instead of a field of distinct dots, and
         // a camera with only a little activity still shows faintly rather
-        // than painting as solidly as the busiest one on screen.
+        // than painting as solidly as the busiest one on screen. Alpha
+        // floor raised from 0.25 to 0.4 so even the quietest camera on
+        // screen has a solid-looking core, not just a wisp.
         const gradient = ctx.createRadialGradient(point.x, point.y, 0, point.x, point.y, radiusPx);
-        const alpha = 0.25 + 0.5 * ratio;
+        const alpha = 0.4 + 0.5 * ratio;
         gradient.addColorStop(0, `${color.replace('rgb', 'rgba').replace(')', `, ${alpha})`)}`);
         gradient.addColorStop(1, `${color.replace('rgb', 'rgba').replace(')', ', 0)')}`);
         ctx.fillStyle = gradient;
         ctx.beginPath();
         ctx.arc(point.x, point.y, radiusPx, 0, Math.PI * 2);
         ctx.fill();
+
+        // A defined edge on top of the fade -- against satellite imagery
+        // (dark water, light rooftops, everything in between) a pure soft
+        // fade blends into whatever's underneath; a thin solid ring gives
+        // every blob a boundary regardless of basemap color.
+        ctx.strokeStyle = `${color.replace('rgb', 'rgba').replace(')', ', 0.85)')}`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radiusPx, 0, Math.PI * 2);
+        ctx.stroke();
       }
 
       renderedBounds = map.getBounds();

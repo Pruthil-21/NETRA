@@ -16,9 +16,12 @@ def test_uptime_for_unknown_camera_returns_404(client, viewer_headers):
     assert resp.status_code == 404
 
 
-def test_uptime_with_no_transitions_yet_returns_empty_windows(client, officer_headers, viewer_headers):
+def test_uptime_with_no_transitions_yet_returns_empty_windows(
+    client, officer_headers, viewer_headers, gap_analysis_test_cameras
+):
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     resp = client.get(f"/cameras/{camera_id}/uptime", headers=viewer_headers)
     assert resp.status_code == 200
@@ -28,9 +31,12 @@ def test_uptime_with_no_transitions_yet_returns_empty_windows(client, officer_he
     assert body["windows"] == []
 
 
-def test_uptime_after_one_transition_has_one_closed_and_one_open_window(client, officer_headers, viewer_headers):
+def test_uptime_after_one_transition_has_one_closed_and_one_open_window(
+    client, officer_headers, viewer_headers, gap_analysis_test_cameras
+):
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
 
@@ -44,9 +50,12 @@ def test_uptime_after_one_transition_has_one_closed_and_one_open_window(client, 
     assert window["duration_seconds"] >= 0
 
 
-def test_uptime_after_two_transitions_has_one_closed_window(client, officer_headers, viewer_headers):
+def test_uptime_after_two_transitions_has_one_closed_window(
+    client, officer_headers, viewer_headers, gap_analysis_test_cameras
+):
     create_resp = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
     camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "offline"}, headers=officer_headers)
     client.put(f"/cameras/{camera_id}", json={"connectivity_status": "online"}, headers=officer_headers)

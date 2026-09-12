@@ -505,7 +505,7 @@ export function FederationSection() {
         {sources.length === 0 ? (
           <p className="text-xs text-slate-600 italic">No sources configured.</p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
             {sources.map((source) => {
               const health = sourceHealth(source);
               const hint = errorHint(source.error_code);

@@ -4,7 +4,7 @@ import { useCallback, useState } from 'react';
 import type { DragEvent } from 'react';
 import { CAMERA_DRAG_MIME } from '@/lib/cameraDrag';
 
-/** Shared drop-target wiring for "drag camera(s) out of DistrictCircleTree,
+/** Shared drop-target wiring for "drag camera(s) out of DistrictAreaTree,
  * drop them onto a grid to start watching" -- used by both the Dashboard's
  * live CameraGrid and Archive's recorded-footage grid, so the two grids
  * can't drift apart in drag/drop behavior. `isOver` is for the caller's own

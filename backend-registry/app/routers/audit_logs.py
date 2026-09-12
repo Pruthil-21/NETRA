@@ -20,7 +20,7 @@ def list_audit_logs(
     category: str | None = None,
     camera_id: int | None = None,
     camera_district: str | None = None,
-    camera_circle_id: int | None = None,
+    camera_area_id: int | None = None,
     date_from: datetime | None = Query(None, alias="from"),
     date_to: datetime | None = Query(None, alias="to"),
     cursor: int | None = None,
@@ -38,7 +38,7 @@ def list_audit_logs(
     district = dept_scopes[0] if dept_scopes else None
     with get_conn() as conn:
         logs, next_cursor = audit_logs_service.list_logs(
-            conn, badge_number, resource_type, category, camera_id, camera_district, camera_circle_id,
+            conn, badge_number, resource_type, category, camera_id, camera_district, camera_area_id,
             date_from, date_to, district, cursor, limit,
         )
         return {"logs": logs, "next_cursor": next_cursor}

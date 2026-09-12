@@ -7,11 +7,12 @@ in the latest history row so callers always see the current status.
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from . import alerts_stream, govt_lookup_service, watchlist_service
+from . import alerts_stream, govt_lookup_service, push_service, watchlist_service
 
 _SELECT_WITH_CURRENT_STATUS = """
     SELECT a.id, a.camera_id, a.plate_number, a.watchlist_id, a.detection_id,
-           a.matched_at, COALESCE(h.status, a.status) AS status
+           a.matched_at, COALESCE(h.status, a.status) AS status,
+           cam.dept AS camera_district, w.dept_flagged AS flagged_district
     FROM alerts a
     LEFT JOIN LATERAL (
         SELECT status FROM alert_status_history
@@ -19,7 +20,13 @@ _SELECT_WITH_CURRENT_STATUS = """
         ORDER BY changed_at DESC, id DESC
         LIMIT 1
     ) h ON true
+    LEFT JOIN cameras cam ON cam.id = a.camera_id
+    LEFT JOIN watchlist w ON w.id = a.watchlist_id
 """
+# camera_district/flagged_district are scope-checking-only -- not declared
+# on AlertOut, so FastAPI's response_model strips them before they ever
+# reach the client. Used by list_alerts' dual-district filter below and by
+# routers/alerts.py's _require_alert_in_scope guard on GET/PATCH one alert.
 
 
 def _with_owner_details(alert):
@@ -77,8 +84,23 @@ def _with_nearest_station(db, alert):
     return alert
 
 
-def list_alerts(db: RealDictCursor):
-    db.execute(_SELECT_WITH_CURRENT_STATUS + " ORDER BY a.matched_at DESC")
+def list_alerts(db: RealDictCursor, dept_scopes: list[str] | None = None):
+    """dept_scopes=None -> every alert (platform-wide). [] -> none (holds
+    no jurisdiction at all). Otherwise the dual rule: an alert is visible
+    if EITHER the detecting camera's district OR the watchlist entry's
+    flagging district is one of the officer's own -- a look-out notice
+    stays visible to the district that issued it wherever the plate is
+    later spotted, not only to whichever district's camera happened to
+    catch it."""
+    if dept_scopes is not None and not dept_scopes:
+        return []
+    query = _SELECT_WITH_CURRENT_STATUS
+    params: list = []
+    if dept_scopes is not None:
+        query += " WHERE cam.dept = ANY(%s) OR w.dept_flagged = ANY(%s)"
+        params = [dept_scopes, dept_scopes]
+    query += " ORDER BY a.matched_at DESC"
+    db.execute(query, params)
     alerts = db.fetchall()
     for alert in alerts:
         _with_owner_details(alert)
@@ -124,6 +146,15 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
     dept_row = db.fetchone()
     camera_district = dept_row["dept"] if dept_row else None
     alerts_stream.manager.broadcast_sync(alert, camera_district)
+
+    push_service.send_to_badges(
+        db, push_service.recipients_for_scope(db, camera_district),
+        {
+            "title": "Watchlist match",
+            "body": f"{plate_number} spotted at camera {camera_id}",
+            "url": f"/alerts/track/{plate_number}",
+        },
+    )
 
     return alert
 

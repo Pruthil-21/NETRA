@@ -23,7 +23,7 @@ export const createCustomMarkerIcon = (
   // no ping, since up to several of these render at once and a shared pulse
   // would be visual noise. isSelected (the one open in the detail drawer)
   // still gets the louder ping ring and wins if both apply. isHighlighted (a
-  // camera under the tree's currently selected district/circle) gets a static
+  // camera under the tree's currently selected district/area) gets a static
   // amber ring, lowest priority of the three -- it's a coarse "this is the
   // selected group" cue, not something that should compete visually with an
   // actual selection or an active sighting route.
@@ -75,6 +75,28 @@ export const createDirectionArrowIcon = (bearingDeg: number) =>
     iconSize: [16, 16],
     iconAnchor: [8, 8],
   });
+
+// Police stations previously rendered as a plain amber CircleMarker dot --
+// visually identical in shape to every other dot on the map (plate
+// sightings, coverage targets), so a station was only distinguishable by
+// color, not shape. A pin (not a circle) with a shield glyph reads as "a
+// place" rather than "an event/reading" at a glance, and the shield ties it
+// to the app's own logo mark rather than inventing a new symbol. Every
+// station uses the exact same icon (no per-station state, unlike a
+// camera's online/offline/selected variants), so this is a plain shared
+// constant instead of a factory re-built on every render.
+export const POLICE_STATION_ICON = L.divIcon({
+  html: `
+    <svg viewBox="0 0 26 34" class="w-7 h-7 drop-shadow-md">
+      <path d="M13 0C5.8 0 0 5.8 0 13c0 9.5 13 21 13 21s13-11.5 13-21C26 5.8 20.2 0 13 0z" fill="#FBBF24" stroke="#78350F" stroke-width="1.5" />
+      <path d="M13 6.4 L17.6 8.1 V12.6 C17.6 15.9 13 18.2 13 18.2 C13 18.2 8.4 15.9 8.4 12.6 V8.1 Z" fill="#78350F" />
+    </svg>
+  `,
+  className: 'police-station-marker',
+  iconSize: [26, 34],
+  iconAnchor: [13, 34],
+  popupAnchor: [0, -30],
+});
 
 // The animated marker that sweeps along a vehicle's inferred route
 // (CameraMap's VehicleTraceMarker) — a small glowing dot, not a directional

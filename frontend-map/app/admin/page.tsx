@@ -5,7 +5,7 @@ import { Users, ShieldCheck, Map as MapIcon, ScrollText, UserPlus, Radio, Databa
 import { usePermissions } from '@/hooks/usePermissions';
 import { UsersSection } from './UsersSection';
 import { SecurityConfigurationSection } from './SecurityConfigurationSection';
-import { CircleManagementSection } from './CircleManagementSection';
+import { AreaManagementSection } from './AreaManagementSection';
 import { AuditLogSection } from './AuditLogSection';
 import { ApprovalsSection } from './ApprovalsSection';
 import { FederationSection } from './FederationSection';
@@ -26,7 +26,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'security', label: 'Security Configuration', icon: ShieldCheck, permission: 'manage_roles' },
   { id: 'users', label: 'Users', icon: Users, permission: 'manage_users_roles', fullBleed: true },
   { id: 'approvals', label: 'Pending Approvals', icon: UserPlus, permission: 'manage_users_roles' },
-  { id: 'circles', label: 'Areas', icon: MapIcon, permission: 'manage_circles' },
+  { id: 'areas', label: 'Areas', icon: MapIcon, permission: 'manage_areas' },
   { id: 'federation', label: 'Federation', icon: Radio, permission: 'manage_cameras' },
   { id: 'audit-log', label: 'Audit Log', icon: ScrollText, permission: 'view_audit_logs' },
   // Gated on manage_cameras rather than a data-console-specific permission --
@@ -99,8 +99,8 @@ export default function AdminPage() {
       {activeId === 'security' && <SecurityConfigurationSection />}
       {activeId === 'users' && <UsersSection canResetPasswords={permissions.includes('reset_officer_passwords')} />}
       {activeId === 'approvals' && <ApprovalsSection />}
-      {activeId === 'circles' && (
-        <CircleManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
+      {activeId === 'areas' && (
+        <AreaManagementSection districtScope={role === 'district_command' ? scopeValue : null} />
       )}
       {activeId === 'federation' && <FederationSection />}
       {activeId === 'audit-log' && <AuditLogSection />}
@@ -142,7 +142,7 @@ export default function AdminPage() {
           <div className="h-full">{activeContent}</div>
         ) : (
           <div className="h-full overflow-y-auto">
-            <div className="max-w-5xl p-5 sm:p-7">{activeContent}</div>
+            <div className="max-w-[1600px] p-5 sm:p-7">{activeContent}</div>
           </div>
         )}
       </div>

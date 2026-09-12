@@ -7,3 +7,4 @@ certifi
 bcrypt
 httpx
 openpyxl
+pywebpush

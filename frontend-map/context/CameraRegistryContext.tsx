@@ -153,19 +153,22 @@ interface RegistryContextType {
   addCamera: (raw: OrganizerCamera) => void;
   /** Bulk-imports many cameras at once (CSV/JSON upload), same id rules as addCamera. */
   importCameras: (raws: OrganizerCamera[]) => void;
-  /** Reflects a real registry camera's circle_id in local state after the
-   * caller (CameraDetailDrawer) has already confirmed the write succeeded via
-   * cameraService.updateCameraCircle -- mirrors updateCameraConnectivity's
-   * "patch the one changed camera in place" shape, but doesn't make the
-   * network call itself: the caller needs to await the request and surface
-   * its own failure (e.g. a cross-district rejection) inline, which a
-   * fire-and-forget update here couldn't do. */
-  applyCameraCircleAssignment: (id: number, circleId: number | null) => void;
+  /** Reflects a real registry camera's edited fields in local state after
+   * the caller (the right-click Configure/Rename actions) has already
+   * confirmed the write succeeded via cameraService.updateCamera, without
+   * making the network call itself or waiting on a full refetch -- any
+   * subset of fields, so each new editable field doesn't need its own
+   * bespoke context method. */
+  applyCameraUpdate: (id: number, patch: Partial<Camera>) => void;
+  /** Removes a deleted registry camera from local state immediately, rather
+   * than waiting for the next refreshCameras() poll -- the caller has
+   * already confirmed the DELETE succeeded via cameraService.deleteCamera. */
+  removeCamera: (id: number) => void;
 }
 
 const initialFilters: CameraFilters = {
   departments: [],
-  circleIds: [],
+  areaIds: [],
   connectivity: 'all',
   health: 'all',
   searchQuery: '',
@@ -176,6 +179,7 @@ const initialFilters: CameraFilters = {
   flowMode: 'live',
   flowWindowMinutes: 30,
   flowHour: new Date().getHours(),
+  showPoliceStations: true,
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
@@ -295,13 +299,13 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   const filteredCameras = useMemo(() => {
     return cameras.filter((cam) => {
       // 1. Location filter -- a camera passes if it's in any selected city
-      // (department) OR any selected area (circle); picking a city and a
+      // (department) OR any selected area (area); picking a city and a
       // specific area elsewhere means "either," not "both." No selection at
       // all means every location passes.
       const matchesDept =
-        (filters.departments.length === 0 && filters.circleIds.length === 0) ||
+        (filters.departments.length === 0 && filters.areaIds.length === 0) ||
         filters.departments.some((d) => cam.dept?.toLowerCase() === d.toLowerCase()) ||
-        (cam.circle_id != null && filters.circleIds.includes(cam.circle_id));
+        (cam.area_id != null && filters.areaIds.includes(cam.area_id));
 
       // 2. Connectivity filter (online / offline / all)
       const matchesConnectivity =
@@ -359,17 +363,20 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     );
   }, []);
 
-  const applyCameraCircleAssignment = useCallback((id: number, circleId: number | null) => {
+  const applyCameraUpdate = useCallback((id: number, patch: Partial<Camera>) => {
     setCameras((prev) => {
       const idx = prev.findIndex((c) => c.id === id);
-      if (idx === -1 || prev[idx].circle_id === circleId) return prev;
+      if (idx === -1) return prev;
       const next = prev.slice();
-      next[idx] = { ...prev[idx], circle_id: circleId };
+      next[idx] = { ...prev[idx], ...patch };
       return next;
     });
-    setSelectedCamera((prev) =>
-      prev && prev.id === id && prev.circle_id !== circleId ? { ...prev, circle_id: circleId } : prev
-    );
+    setSelectedCamera((prev) => (prev && prev.id === id ? { ...prev, ...patch } : prev));
+  }, []);
+
+  const removeCamera = useCallback((id: number) => {
+    setCameras((prev) => prev.filter((c) => c.id !== id));
+    setSelectedCamera((prev) => (prev && prev.id === id ? null : prev));
   }, []);
 
   // Real-time online/offline for every camera — list, badges, and map pins
@@ -444,7 +451,8 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         updateCameraConnectivity,
         addCamera,
         importCameras,
-        applyCameraCircleAssignment,
+        applyCameraUpdate,
+        removeCamera,
       }}
     >
       {children}

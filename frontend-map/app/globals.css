@@ -17,54 +17,63 @@
    `[data-theme="light"]` overrides it explicitly, toggled by
    components/common/ThemeToggle.tsx and applied pre-paint by the inline
    script in app/layout.tsx (see that file for why it's inline). */
+/* Values below are "R G B" triplets, not hex -- required so
+   tailwind.config.ts's withOpacity() helper can build `rgb(var(--x) / A)`
+   for every one of these tokens. A plain hex string can't take a Tailwind
+   opacity modifier (bg-command/10, border-signal-red/30, ...): Tailwind
+   generates the modifier by injecting an alpha value into the color
+   function it's given, and a hex literal has nowhere for that to go. Every
+   `/NN`-suffixed use of one of these tokens anywhere in the app was
+   silently resolving to fully transparent until this format change --
+   found via the alert banner's Acknowledge button rendering invisible. */
 :root {
   color-scheme: dark;
-  --color-white: #ffffff;
-  --color-slate-100: #f1f5f9;
-  --color-slate-200: #e2e8f0;
-  --color-slate-300: #cbd5e1;
-  --color-slate-400: #94a3b8;
-  --color-slate-500: #64748b;
-  --color-slate-600: #475569;
-  --color-slate-700: #334155;
-  --color-slate-800: #1e293b;
-  --color-slate-900: #0f172a;
-  --color-slate-950: #020617;
+  --color-white: 255 255 255;
+  --color-slate-100: 241 245 249;
+  --color-slate-200: 226 232 240;
+  --color-slate-300: 203 213 225;
+  --color-slate-400: 148 163 184;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 71 85 105;
+  --color-slate-700: 51 65 85;
+  --color-slate-800: 30 41 59;
+  --color-slate-900: 15 23 42;
+  --color-slate-950: 2 6 23;
 
-  --color-ink: #05070a;
-  --color-panel: #0e141b;
-  --color-panel-raised: #141b24;
-  --color-line: #1f2a35;
-  --color-command: #2f6fed;
-  --color-command-dim: #1e4fbe;
-  --color-signal-amber: #f5a623;
-  --color-signal-green: #22c55e;
-  --color-signal-red: #ef4444;
+  --color-ink: 5 7 10;
+  --color-panel: 14 20 27;
+  --color-panel-raised: 20 27 36;
+  --color-line: 31 42 53;
+  --color-command: 47 111 237;
+  --color-command-dim: 30 79 190;
+  --color-signal-amber: 245 166 35;
+  --color-signal-green: 34 197 94;
+  --color-signal-red: 239 68 68;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --color-white: #0f172a;
-  --color-slate-100: #0f172a;
-  --color-slate-200: #1e293b;
-  --color-slate-300: #334155;
-  --color-slate-400: #475569;
-  --color-slate-500: #64748b;
-  --color-slate-600: #94a3b8;
-  --color-slate-700: #cbd5e1;
-  --color-slate-800: #e2e8f0;
-  --color-slate-900: #f1f5f9;
-  --color-slate-950: #f8fafc;
+  --color-white: 15 23 42;
+  --color-slate-100: 15 23 42;
+  --color-slate-200: 30 41 59;
+  --color-slate-300: 51 65 85;
+  --color-slate-400: 71 85 105;
+  --color-slate-500: 100 116 139;
+  --color-slate-600: 148 163 184;
+  --color-slate-700: 203 213 225;
+  --color-slate-800: 226 232 240;
+  --color-slate-900: 241 245 249;
+  --color-slate-950: 248 250 252;
 
-  --color-ink: #f7f8fa;
-  --color-panel: #ffffff;
-  --color-panel-raised: #f1f3f5;
-  --color-line: #dfe3e8;
-  --color-command: #2f6fed;
-  --color-command-dim: #1e4fbe;
-  --color-signal-amber: #b45309;
-  --color-signal-green: #16a34a;
-  --color-signal-red: #dc2626;
+  --color-ink: 247 248 250;
+  --color-panel: 255 255 255;
+  --color-panel-raised: 241 243 245;
+  --color-line: 223 227 232;
+  --color-command: 47 111 237;
+  --color-command-dim: 30 79 190;
+  --color-signal-amber: 180 83 9;
+  --color-signal-green: 22 163 74;
+  --color-signal-red: 220 38 38;
 }
 
 @layer base {

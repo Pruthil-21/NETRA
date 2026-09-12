@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { CameraFeed } from '@/types/stream';
-import type { Circle } from '@/services/circlesService';
-import type { TreeSelection } from '@/components/tree/DistrictCircleTree';
+import type { Area } from '@/services/areasService';
+import type { TreeSelection } from '@/components/tree/DistrictAreaTree';
 import { filterFeedsByTreeSelection } from '@/lib/dashboardTreeFilter';
 
 const FEEDS: CameraFeed[] = [
@@ -10,30 +10,30 @@ const FEEDS: CameraFeed[] = [
   { id: '3', name: 'Cam 3', department: 'Vadodara', location: '', lat: 0, long: 0, hlsUrl: '', status: 'ONLINE' },
 ];
 
-const CIRCLES: Circle[] = [
-  { id: 10, name: 'APC Circle', district: 'Anand', created_at: '2026-01-01T00:00:00Z' },
+const AREAS: Area[] = [
+  { id: 10, name: 'APC Area', district: 'Anand', district_id: 1, village: 'Village', taluka: 'Taluka', village_id: 1, created_at: '2026-01-01T00:00:00Z' },
 ];
 
-// Camera-id -> circle-id lookup, mirroring what the page builds from useCameraRegistry().cameras
-const CIRCLE_BY_CAMERA_ID: Record<string, number | null> = { '1': 10, '2': null, '3': null };
+// Camera-id -> area-id lookup, mirroring what the page builds from useCameraRegistry().cameras
+const AREA_BY_CAMERA_ID: Record<string, number | null> = { '1': 10, '2': null, '3': null };
 
 describe('filterFeedsByTreeSelection', () => {
   it('returns every registered feed when nothing is selected', () => {
-    expect(filterFeedsByTreeSelection(FEEDS, null, CIRCLE_BY_CAMERA_ID)).toEqual(FEEDS);
+    expect(filterFeedsByTreeSelection(FEEDS, null, AREA_BY_CAMERA_ID)).toEqual(FEEDS);
   });
 
   it('returns every camera in the district (including unassigned) when a district is selected', () => {
-    const result = filterFeedsByTreeSelection(FEEDS, { type: 'district', value: 'Anand' }, CIRCLE_BY_CAMERA_ID);
+    const result = filterFeedsByTreeSelection(FEEDS, { type: 'district', value: 'Anand' }, AREA_BY_CAMERA_ID);
     expect(result.map((f) => f.id).sort()).toEqual(['1', '2']);
   });
 
-  it('returns only that circle\'s cameras when a circle is selected', () => {
-    const result = filterFeedsByTreeSelection(FEEDS, { type: 'circle', value: 10 }, CIRCLE_BY_CAMERA_ID);
+  it('returns only that area\'s cameras when a area is selected', () => {
+    const result = filterFeedsByTreeSelection(FEEDS, { type: 'area', value: 10 }, AREA_BY_CAMERA_ID);
     expect(result.map((f) => f.id)).toEqual(['1']);
   });
 
   it('returns only that one camera when a camera leaf is selected', () => {
-    const result = filterFeedsByTreeSelection(FEEDS, { type: 'camera', value: 2 }, CIRCLE_BY_CAMERA_ID);
+    const result = filterFeedsByTreeSelection(FEEDS, { type: 'camera', value: 2 }, AREA_BY_CAMERA_ID);
     expect(result.map((f) => f.id)).toEqual(['2']);
   });
 });

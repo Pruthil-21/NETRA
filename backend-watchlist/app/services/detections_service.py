@@ -14,7 +14,7 @@ from datetime import datetime
 from psycopg2.extras import RealDictCursor
 
 from ..schemas import DetectionIn, normalize_plate
-from . import camera_metadata, geo
+from . import camera_metadata, geo, route_geometry_service
 
 
 def _upsert_daily_sighting(
@@ -251,41 +251,15 @@ def camera_density_counts(
 MAX_FLOW_TRANSITION_GAP_HOURS = 3
 
 
-def camera_flow_pairs(
-    db: RealDictCursor,
-    window_minutes: int | None = None,
-    hour: int | None = None,
-    on_date=None,
-    dept: str | None = None,
-    limit: int = 200,
-):
-    """Camera-to-camera transition volume and average travel speed for the
-    Map page's Flow layer, within the same live/hour window
-    camera_density_counts uses. Every plate's two consecutive sightings in
-    the window count as one transition from the first camera to the
-    second; grouped by (from, to) pair, this is a network-wide flow matrix,
-    not any one vehicle's route.
-
-    Average speed is computed here, not in SQL: it needs each camera's
-    real lat/long (backend-registry's `cameras` table, via
-    camera_metadata.lookup) and geo.haversine_km, mirroring how
-    get_vehicle_trace already derives speed for a single plate's route.
-    A pair where either camera's coordinates are unknown is dropped rather
-    than returned with a null speed -- the frontend draws every returned
-    pair as a colored corridor, and a corridor with no speed to color by
-    isn't renderable.
-    """
-    joins = ""
-    clauses, params = _time_window_clauses(window_minutes, hour, on_date)
-
-    if dept is not None:
-        joins = "JOIN cameras c ON c.id = detections.camera_id"
-        clauses.append("c.dept = %s")
-        params.append(dept)
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    db.execute(
-        f"""
+def _flow_transitions_cte(joins: str, where: str) -> str:
+    """The transition-pairing CTE shared by every flow query below --
+    camera_flow_pairs (a single live/hour snapshot) and camera_flow_trend
+    (the same pairing, bucketed over a date range). Selecting `detected_at`
+    (the first sighting's own timestamp, not the pair's) lets a caller
+    bucket each transition by when it started. Consumers must supply
+    MAX_FLOW_TRANSITION_GAP_HOURS as the next bind param after `joins`/
+    `where`'s own params."""
+    return f"""
         WITH ordered AS (
             SELECT detections.plate_number, detections.camera_id, detections.detected_at,
                    LEAD(detections.camera_id) OVER (
@@ -299,6 +273,7 @@ def camera_flow_pairs(
         ),
         transitions AS (
             SELECT camera_id AS from_camera_id, next_camera_id AS to_camera_id,
+                   detected_at,
                    EXTRACT(EPOCH FROM (next_detected_at - detected_at)) AS gap_seconds
             FROM ordered
             WHERE next_camera_id IS NOT NULL
@@ -306,17 +281,19 @@ def camera_flow_pairs(
               AND next_detected_at > detected_at
               AND next_detected_at - detected_at <= (%s || ' hours')::interval
         )
-        SELECT from_camera_id, to_camera_id,
-               COUNT(*) AS transitions, AVG(gap_seconds) AS avg_gap_seconds
-        FROM transitions
-        GROUP BY from_camera_id, to_camera_id
-        ORDER BY transitions DESC
-        LIMIT %s
-        """,
-        [*params, MAX_FLOW_TRANSITION_GAP_HOURS, limit],
-    )
-    pairs = db.fetchall()
+    """
 
+
+def _with_avg_speed(db: RealDictCursor, pairs: list[dict]) -> list[dict]:
+    """Enriches (from_camera_id, to_camera_id, transitions, avg_gap_seconds)
+    rows with avg_speed_kmh, shared by camera_flow_pairs and
+    camera_flow_trend's top_corridors. Needs each camera's real lat/long
+    (backend-registry's `cameras` table, via camera_metadata.lookup) and
+    geo.haversine_km, mirroring how get_vehicle_trace already derives speed
+    for a single plate's route. A pair where either camera's coordinates
+    are unknown is dropped rather than returned with a null speed -- every
+    returned pair is drawn as a colored corridor, and a corridor with no
+    speed to color by isn't renderable."""
     metadata_cache: dict[int, dict] = {}
 
     def _metadata(camera_id: int) -> dict:
@@ -334,15 +311,179 @@ def camera_flow_pairs(
             from_meta["latitude"], from_meta["longitude"], to_meta["latitude"], to_meta["longitude"]
         )
         avg_gap_hours = float(pair["avg_gap_seconds"]) / 3600
+        route = route_geometry_service.get_or_fetch_route(
+            db, pair["from_camera_id"], pair["to_camera_id"],
+            from_meta["latitude"], from_meta["longitude"], to_meta["latitude"], to_meta["longitude"],
+        )
         flows.append(
             {
                 "from_camera_id": pair["from_camera_id"],
                 "to_camera_id": pair["to_camera_id"],
                 "transitions": pair["transitions"],
                 "avg_speed_kmh": round(distance_km / avg_gap_hours, 1) if avg_gap_hours > 0 else None,
+                # Road-following path for the Flow layer to draw instead of
+                # a straight line -- None when OSRM couldn't resolve one
+                # (miss/timeout/no route found), which the frontend falls
+                # back to a straight line for rather than dropping the
+                # corridor entirely.
+                "route": route,
             }
         )
     return flows
+
+
+def camera_flow_pairs(
+    db: RealDictCursor,
+    window_minutes: int | None = None,
+    hour: int | None = None,
+    on_date=None,
+    dept: str | None = None,
+    limit: int = 200,
+):
+    """Camera-to-camera transition volume and average travel speed for the
+    Map page's Flow layer, within the same live/hour window
+    camera_density_counts uses. Every plate's two consecutive sightings in
+    the window count as one transition from the first camera to the
+    second; grouped by (from, to) pair, this is a network-wide flow matrix,
+    not any one vehicle's route."""
+    joins = ""
+    clauses, params = _time_window_clauses(window_minutes, hour, on_date)
+
+    if dept is not None:
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    db.execute(
+        _flow_transitions_cte(joins, where)
+        + """
+        SELECT from_camera_id, to_camera_id,
+               COUNT(*) AS transitions, AVG(gap_seconds) AS avg_gap_seconds
+        FROM transitions
+        GROUP BY from_camera_id, to_camera_id
+        ORDER BY transitions DESC
+        LIMIT %s
+        """,
+        [*params, MAX_FLOW_TRANSITION_GAP_HOURS, limit],
+    )
+    return _with_avg_speed(db, db.fetchall())
+
+
+_TREND_BUCKETS = {"hour", "day"}
+
+
+def camera_density_trend(
+    db: RealDictCursor,
+    date_from,
+    date_to,
+    bucket: str,
+    dept: str | None = None,
+    top_n: int = 10,
+):
+    """Bucketed detection counts over an arbitrary date range, for the
+    historical trends dashboard -- unlike camera_density_counts (a single
+    live-rolling-window or hour-of-day snapshot), this spans days/weeks.
+    Buckets are aligned to IST calendar boundaries, matching the hour-mode
+    convention _time_window_clauses already uses elsewhere on this table.
+
+    Returns a network-wide trend (one row per bucket, total count across
+    every camera) plus the top_n busiest cameras over the whole range --
+    not a per-camera per-bucket series, which would be a lot of mostly-empty
+    rows at this data volume for comparatively little dashboard value."""
+    if bucket not in _TREND_BUCKETS:
+        raise ValueError(f"bucket must be one of {_TREND_BUCKETS}")
+
+    joins = ""
+    clauses = ["detected_at >= %s", "detected_at <= %s"]
+    params: list = [date_from, date_to]
+    if dept is not None:
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
+    where = f"WHERE {' AND '.join(clauses)}"
+
+    db.execute(
+        f"""
+        SELECT date_trunc(%s, detections.detected_at AT TIME ZONE 'Asia/Kolkata') AS bucket_start,
+               COUNT(*) AS count
+        FROM detections {joins}
+        {where}
+        GROUP BY bucket_start
+        ORDER BY bucket_start ASC
+        """,
+        [bucket, *params],
+    )
+    trend = db.fetchall()
+
+    db.execute(
+        f"""
+        SELECT detections.camera_id AS camera_id, COUNT(*) AS count
+        FROM detections {joins}
+        {where}
+        GROUP BY detections.camera_id
+        ORDER BY count DESC
+        LIMIT %s
+        """,
+        [*params, top_n],
+    )
+    return {"trend": trend, "top_cameras": db.fetchall()}
+
+
+def camera_flow_trend(
+    db: RealDictCursor,
+    date_from,
+    date_to,
+    bucket: str,
+    dept: str | None = None,
+    top_n: int = 10,
+):
+    """Bucketed transition-volume trend over an arbitrary date range, the
+    Flow-layer counterpart to camera_density_trend -- same transition
+    pairing camera_flow_pairs uses (via _flow_transitions_cte), bucketed by
+    each transition's start time, plus the top_n busiest corridors over the
+    whole range (same "ranked list, not a per-bucket series" reasoning as
+    the density trend)."""
+    if bucket not in _TREND_BUCKETS:
+        raise ValueError(f"bucket must be one of {_TREND_BUCKETS}")
+
+    joins = ""
+    clauses = ["detected_at >= %s", "detected_at <= %s"]
+    params: list = [date_from, date_to]
+    if dept is not None:
+        joins = "JOIN cameras c ON c.id = detections.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(dept)
+    where = f"WHERE {' AND '.join(clauses)}"
+    cte = _flow_transitions_cte(joins, where)
+
+    db.execute(
+        cte
+        + """
+        SELECT date_trunc(%s, detected_at AT TIME ZONE 'Asia/Kolkata') AS bucket_start, COUNT(*) AS count
+        FROM transitions
+        GROUP BY bucket_start
+        ORDER BY bucket_start ASC
+        """,
+        [*params, MAX_FLOW_TRANSITION_GAP_HOURS, bucket],
+    )
+    trend = db.fetchall()
+
+    db.execute(
+        cte
+        + """
+        SELECT from_camera_id, to_camera_id,
+               COUNT(*) AS transitions, AVG(gap_seconds) AS avg_gap_seconds
+        FROM transitions
+        GROUP BY from_camera_id, to_camera_id
+        ORDER BY transitions DESC
+        LIMIT %s
+        """,
+        [*params, MAX_FLOW_TRANSITION_GAP_HOURS, top_n],
+    )
+    top_corridors = _with_avg_speed(db, db.fetchall())
+
+    return {"trend": trend, "top_corridors": top_corridors}
 
 
 def get_vehicle_trace(

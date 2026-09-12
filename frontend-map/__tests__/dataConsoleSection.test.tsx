@@ -156,6 +156,36 @@ describe('DataConsoleSection', () => {
     await waitFor(() => expect(dataConsoleService.resubmitFailed).toHaveBeenCalledWith(7));
   });
 
+  it('offers sample CSV/JSON downloads for an entity that supports import', async () => {
+    mockPermissions(['manage_cameras']);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+    render(<DataConsoleSection />);
+    await screen.findByText('42');
+
+    fireEvent.click(screen.getByRole('button', { name: /download sample csv/i }));
+    expect(createUrlSpy).toHaveBeenCalledTimes(1);
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /download sample json/i }));
+    expect(createUrlSpy).toHaveBeenCalledTimes(2);
+
+    vi.restoreAllMocks();
+  });
+
+  it('does not offer sample downloads for an entity with no import support', async () => {
+    mockPermissions(['manage_cameras']);
+    render(<DataConsoleSection />);
+    await screen.findByText('42');
+
+    fireEvent.click(screen.getByText('Coverage Targets'));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /download sample csv/i })).not.toBeInTheDocument()
+    );
+  });
+
   it('offers a link to the full history in Audit Log only when the officer can see it', async () => {
     mockPermissions(['manage_cameras', 'view_audit_logs']);
     const onViewAuditLog = vi.fn();
@@ -180,5 +210,41 @@ describe('DataConsoleSection', () => {
     await screen.findByText('42');
     expect(screen.getByText('Login')).toBeInTheDocument();
     expect(screen.getByText('Credentials')).toBeInTheDocument();
+  });
+
+  it('shows the Traffic Analytics entities only with view_analytics', async () => {
+    mockPermissions(['manage_cameras']);
+    render(<DataConsoleSection />);
+    await screen.findByText('42');
+    expect(screen.queryByText('Traffic Analytics')).not.toBeInTheDocument();
+    expect(screen.queryByText('Plate Sightings')).not.toBeInTheDocument();
+  });
+
+  it('seeds a default live 30-minute window for Traffic Density and previews against it', async () => {
+    mockPermissions(['view_analytics']);
+    render(<DataConsoleSection />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Traffic Density' }));
+    await waitFor(() =>
+      expect(dataConsoleService.preview).toHaveBeenCalledWith('traffic_density', { window_minutes: 30 })
+    );
+  });
+
+  it('switching Traffic Density to Hour of day mode replaces window_minutes with hour/date', async () => {
+    mockPermissions(['view_analytics']);
+    render(<DataConsoleSection />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Traffic Density' }));
+    await waitFor(() =>
+      expect(dataConsoleService.preview).toHaveBeenCalledWith('traffic_density', { window_minutes: 30 })
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hour of day' }));
+    await waitFor(() => {
+      const lastCall = (dataConsoleService.preview as any).mock.calls.at(-1);
+      expect(lastCall[0]).toBe('traffic_density');
+      expect(lastCall[1]).toHaveProperty('hour');
+      expect(lastCall[1]).toHaveProperty('date');
+      expect(lastCall[1]).not.toHaveProperty('window_minutes');
+    });
   });
 });

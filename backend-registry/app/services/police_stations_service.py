@@ -16,9 +16,12 @@ _SELECT = """
 """
 
 
-def list_stations(conn) -> list[dict]:
+def list_stations(conn, district: str | None = None) -> list[dict]:
     with conn.cursor() as cur:
-        cur.execute(_SELECT + " ORDER BY id")
+        if district is None:
+            cur.execute(_SELECT + " ORDER BY id")
+        else:
+            cur.execute(_SELECT + " WHERE district = %s ORDER BY id", (district,))
         rows = cur.fetchall()
     return [_row_to_dict(r) for r in rows]
 

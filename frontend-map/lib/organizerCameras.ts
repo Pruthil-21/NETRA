@@ -48,7 +48,7 @@ export function organizerCameraToCamera(oc: OrganizerCamera): Camera {
     stream_id: oc.stream_path ?? id,
     hls_url: oc.hls_url ?? null,
     // The organizer API never sets this either; a manually added camera can
-    // set it via the Circle dropdown in AddCameraModal.
-    circle_id: oc.circleId ?? null,
+    // set it via the Area dropdown in AddCameraModal.
+    area_id: oc.areaId ?? null,
   };
 }

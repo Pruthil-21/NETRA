@@ -1,8 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Plus, CheckCircle2 } from 'lucide-react';
 import { createCoverageTarget, CoverageTarget } from '@/services/coverageTargetsService';
+import { locationsService, District } from '@/services/locationsService';
+import { usePermissions } from '@/hooks/usePermissions';
 
 const emptyForm: Omit<CoverageTarget, 'id'> = {
   name: '',
@@ -13,10 +15,22 @@ const emptyForm: Omit<CoverageTarget, 'id'> = {
 };
 
 export default function AddCoverageTargetModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [form, setForm] = useState<Omit<CoverageTarget, 'id'>>(emptyForm);
+  const { scopeType, scopeValue } = usePermissions();
+  const districtLocked = scopeType === 'district';
+  const [form, setForm] = useState<Omit<CoverageTarget, 'id'>>(() =>
+    districtLocked && scopeValue ? { ...emptyForm, district: scopeValue } : emptyForm
+  );
+  const [districts, setDistricts] = useState<District[]>([]);
   const [added, setAdded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Canonical district list -- was previously a free-text field, a real
+  // string-drift source against the same district names used everywhere
+  // else (areas, cameras).
+  useEffect(() => {
+    locationsService.listDistricts().then(setDistricts).catch(() => setDistricts([]));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,13 +123,19 @@ export default function AddCoverageTargetModal({ onClose, onSuccess }: { onClose
 
           <div>
             <label className={labelClass}>District</label>
-            <input
-              className={inputClass}
-              placeholder="e.g., Ahmedabad City"
+            <select
+              className={`${inputClass} disabled:opacity-60 disabled:cursor-not-allowed`}
               value={form.district}
               onChange={(e) => setForm({ ...form, district: e.target.value })}
+              disabled={districtLocked}
+              title={districtLocked ? 'Locked to your own district' : undefined}
               required
-            />
+            >
+              <option value="" disabled>Select a district…</option>
+              {districts.map((d) => (
+                <option key={d.id} value={d.name}>{d.name}</option>
+              ))}
+            </select>
           </div>
 
           <div>

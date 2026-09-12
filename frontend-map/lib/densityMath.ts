@@ -19,8 +19,11 @@ export const DENSITY_RADIUS_METERS = 300;
 // screen pixels and the whole layer reads as empty even with real data
 // underneath. This is the floor DensityCanvasLayer clamps every blob to,
 // so it stays visible at any zoom and only grows past this once zoomed in
-// enough for the real meters-based radius to exceed it.
-export const DENSITY_MIN_RADIUS_PX = 10;
+// enough for the real meters-based radius to exceed it. Large enough to
+// read as a real blob at a Gujarat-wide zoom, not just a smudge -- a
+// smaller floor technically satisfies "never invisible" but doesn't
+// satisfy "obviously there."
+export const DENSITY_MIN_RADIUS_PX = 18;
 
 // Rolling live-window choices surfaced in the filter panel.
 export const DENSITY_WINDOW_OPTIONS = [15, 30, 60] as const;

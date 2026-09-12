@@ -19,9 +19,11 @@ NEW_CAMERA = {
 OTHER_DEPT_CAMERA = {**NEW_CAMERA, "name": "Other Dept Camera", "dept": "Home / Police"}
 
 
-def test_platform_scoped_officer_sees_all_departments(client, officer_headers):
-    client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
-    client.post("/cameras", json=OTHER_DEPT_CAMERA, headers=officer_headers)
+def test_platform_scoped_officer_sees_all_departments(client, officer_headers, gap_analysis_test_cameras):
+    gap_analysis_test_cameras.append(client.post("/cameras", json=NEW_CAMERA, headers=officer_headers).json()["id"])
+    gap_analysis_test_cameras.append(
+        client.post("/cameras", json=OTHER_DEPT_CAMERA, headers=officer_headers).json()["id"]
+    )
 
     token = _token("super_admin", ["view_live_feeds"], scope_type="platform")
     resp = client.get("/cameras", headers={"Authorization": f"Bearer {token}"})
@@ -30,9 +32,11 @@ def test_platform_scoped_officer_sees_all_departments(client, officer_headers):
     assert "Home / Police" in depts
 
 
-def test_district_scoped_officer_only_sees_their_department(client, officer_headers):
-    client.post("/cameras", json=NEW_CAMERA, headers=officer_headers)
-    client.post("/cameras", json=OTHER_DEPT_CAMERA, headers=officer_headers)
+def test_district_scoped_officer_only_sees_their_department(client, officer_headers, gap_analysis_test_cameras):
+    gap_analysis_test_cameras.append(client.post("/cameras", json=NEW_CAMERA, headers=officer_headers).json()["id"])
+    gap_analysis_test_cameras.append(
+        client.post("/cameras", json=OTHER_DEPT_CAMERA, headers=officer_headers).json()["id"]
+    )
 
     token = _token("station_officer", ["view_live_feeds"], scope_type="district", scope_value="Traffic Police")
     resp = client.get("/cameras", headers={"Authorization": f"Bearer {token}"})
@@ -53,8 +57,9 @@ def test_create_camera_still_requires_manage_cameras(client):
     assert resp.status_code == 403
 
 
-def test_delete_camera_still_requires_manage_cameras(client, officer_headers):
+def test_delete_camera_still_requires_manage_cameras(client, officer_headers, gap_analysis_test_cameras):
     created = client.post("/cameras", json=NEW_CAMERA, headers=officer_headers).json()
+    gap_analysis_test_cameras.append(created["id"])
     token = _token("control_room_operator", ["view_live_feeds", "acknowledge_alerts"])
     resp = client.delete(f"/cameras/{created['id']}", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 403

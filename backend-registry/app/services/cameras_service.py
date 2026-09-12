@@ -1,6 +1,22 @@
 """Business logic for cameras — raw SQL via psycopg, no ORM."""
 from datetime import datetime, timezone
 
+from . import audit_service
+
+
+def _format_duration(seconds: float) -> str:
+    """Plain-English "how long did the previous status hold" for a
+    connectivity-transition audit entry's reason_code -- e.g. "3h 12m",
+    "45m", "0m" for anything under a minute."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
 
 def list_cameras(conn, dept: str | None = None):
     with conn.cursor() as cur:
@@ -9,7 +25,7 @@ def list_cameras(conn, dept: str | None = None):
                 SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                        ST_X(location::geometry) AS long, camera_type, ownership,
                        connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url, circle_id
+                       health_status, rtsp_url, stream_id, hls_url, area_id
                 FROM cameras
                 WHERE is_synthetic = false
                 ORDER BY id
@@ -19,7 +35,7 @@ def list_cameras(conn, dept: str | None = None):
                 SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                        ST_X(location::geometry) AS long, camera_type, ownership,
                        connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url, circle_id
+                       health_status, rtsp_url, stream_id, hls_url, area_id
                 FROM cameras
                 WHERE dept = %s AND is_synthetic = false
                 ORDER BY id
@@ -34,7 +50,7 @@ MAX_PAGE_LIMIT = 500
 _CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
                      ST_X(location::geometry) AS long, camera_type, ownership,
                      connectivity_status, storage_type, retention_days,
-                     health_status, rtsp_url, stream_id, hls_url, circle_id,
+                     health_status, rtsp_url, stream_id, hls_url, area_id,
                      is_synthetic, edge_node_id"""
 
 
@@ -93,7 +109,7 @@ def get_camera(conn, camera_id: int):
             SELECT id, name, dept, ST_Y(location::geometry) AS lat,
                    ST_X(location::geometry) AS long, camera_type, ownership,
                    connectivity_status, storage_type, retention_days,
-                   health_status, rtsp_url, stream_id, hls_url, circle_id
+                   health_status, rtsp_url, stream_id, hls_url, area_id
             FROM cameras
             WHERE id = %s
         """, (camera_id,))
@@ -124,18 +140,18 @@ def create_camera(conn, data: dict):
             INSERT INTO cameras (
                 name, dept, location, camera_type, ownership,
                 connectivity_status, storage_type, retention_days,
-                health_status, rtsp_url, stream_id, hls_url, circle_id
+                health_status, rtsp_url, stream_id, hls_url, area_id
             )
             VALUES (
                 %(name)s, %(dept)s,
                 ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326),
                 %(camera_type)s, %(ownership)s, %(connectivity_status)s,
                 %(storage_type)s, %(retention_days)s, %(health_status)s,
-                %(rtsp_url)s, %(stream_id)s, %(hls_url)s, %(circle_id)s
+                %(rtsp_url)s, %(stream_id)s, %(hls_url)s, %(area_id)s
             )
             RETURNING id
         """, {**data, "stream_id": data.get("stream_id"), "hls_url": data.get("hls_url"),
-              "circle_id": data.get("circle_id")})
+              "area_id": data.get("area_id")})
         new_id = cur.fetchone()[0]
         conn.commit()
     return get_camera(conn, new_id)
@@ -143,14 +159,22 @@ def create_camera(conn, data: dict):
 
 def update_camera(conn, camera_id: int, data: dict):
     """Returns (updated_camera, connectivity_changed: bool) -- the router
-    uses connectivity_changed to decide whether to also write an audit_logs
-    entry (skipped for connectivity-only changes; camera_status_history
-    covers that case instead)."""
+    uses connectivity_changed to decide whether it should ALSO write an
+    audit_logs entry for a real, officer-driven field edit (name/area/etc);
+    a connectivity transition gets its own audit_logs entry right here
+    (action camera_online/camera_offline, actor "system" -- these are
+    reported by the health-check poll, not performed by whichever officer's
+    browser happens to be open, so attributing it to their badge would be
+    misleading), in addition to the camera_status_history row every real
+    transition has always written. reason_code carries how long the
+    PREVIOUS status held (e.g. "was online for 3h 12m"), when there's a
+    prior transition to measure that against."""
     fields = {k: v for k, v in data.items() if v is not None}
     if not fields:
         return get_camera(conn, camera_id), False
 
     connectivity_changed = False
+    held_duration_text: str | None = None
     with conn.cursor() as cur:
         if "connectivity_status" in fields:
             cur.execute("SELECT connectivity_status FROM cameras WHERE id = %s", (camera_id,))
@@ -160,6 +184,15 @@ def update_camera(conn, camera_id: int, data: dict):
             current_status = row[0]
             if fields["connectivity_status"] != current_status:
                 connectivity_changed = True
+                cur.execute(
+                    "SELECT changed_at FROM camera_status_history WHERE camera_id = %s "
+                    "ORDER BY changed_at DESC LIMIT 1",
+                    (camera_id,),
+                )
+                prev = cur.fetchone()
+                if prev is not None:
+                    held_seconds = (datetime.now(timezone.utc) - prev[0]).total_seconds()
+                    held_duration_text = f"was {current_status} for {_format_duration(held_seconds)}"
 
         set_clauses = [f"{key} = %({key})s" for key in fields if key not in ("lat", "long")]
         if "lat" in fields and "long" in fields:
@@ -181,6 +214,21 @@ def update_camera(conn, camera_id: int, data: dict):
                 (camera_id, fields["connectivity_status"]),
             )
         conn.commit()
+
+    if connectivity_changed:
+        new_status = fields["connectivity_status"]
+        # connectivity_status isn't a strict online/offline enum server-side
+        # (schema.sql defaults new cameras to "unknown") -- only the two
+        # real states get their own action name; anything else (a manual
+        # "unknown" reset, say) falls back to a generic one rather than
+        # mislabeling it as "offline".
+        if new_status == "online":
+            action = "camera_online"
+        elif new_status == "offline":
+            action = "camera_offline"
+        else:
+            action = "camera_status_changed"
+        audit_service.log(conn, "system", action, "camera", camera_id, reason_code=held_duration_text)
 
     return get_camera(conn, camera_id), connectivity_changed
 

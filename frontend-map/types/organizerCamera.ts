@@ -23,8 +23,8 @@ export interface OrganizerCamera {
   stream_path?: string;
   hls_url?: string;
   // Also not part of the organizer API. Lets a manually added camera be
-  // assigned to a circle (see services/circlesService.ts) at add/edit time.
+  // assigned to a area (see services/areasService.ts) at add/edit time.
   // There's no reliable district for a camera at this point in the form, so
-  // this is set directly from an unfiltered circle list rather than derived.
-  circleId?: number;
+  // this is set directly from an unfiltered area list rather than derived.
+  areaId?: number;
 }

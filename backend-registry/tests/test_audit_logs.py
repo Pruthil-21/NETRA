@@ -2,6 +2,7 @@ import jwt
 import pytest
 from app.config import settings
 from app.db import get_conn
+from app.services.audit_logs_service import categorize
 
 
 def _make_rbac_token(role, scope_type, scope_value=None, badge_number="AUDIT-TEST-001", permissions=None):
@@ -30,11 +31,11 @@ def test_super_admin_sees_audit_logs(client):
 
     token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
     # This is a shared demo DB with a substantial pre-existing audit_logs
-    # history (thousands of rows from prior seeding/test runs); the endpoint
-    # orders ascending by id with no cursor, so an unfiltered request would
-    # return the OLDEST page, never this freshly-inserted row. Scope by
-    # badge_number -- a filter the endpoint already supports -- rather than
-    # relying on unbounded pagination order to surface it.
+    # history (thousands of rows from prior seeding/test runs). The endpoint
+    # orders newest-first, so this freshly-inserted row would actually be on
+    # the first unfiltered page too -- scoping by badge_number here anyway
+    # (a filter the endpoint already supports) so this test stays correct
+    # even if a concurrent test run's row landed at the exact same moment.
     resp = client.get(
         "/audit-logs",
         params={"badge_number": "AUDIT-TEST-001"},
@@ -44,6 +45,52 @@ def test_super_admin_sees_audit_logs(client):
     body = resp.json()
     assert "logs" in body
     assert any(entry["resource_id"] == 999 for entry in body["logs"])
+
+
+def test_logs_are_newest_first_and_load_more_walks_backward_in_time(client):
+    """A real audit log an officer actually looks at needs to open on
+    what just happened, not the oldest row in a years-old, thousands-of-rows
+    history -- see the camera-uptime feature this DB now accumulates dozens
+    of rows a day for. Three fresh rows, oldest to newest, must come back
+    newest-first, and cursor pagination must walk further BACK in time
+    (smaller ids), not skip past them into the future."""
+    badge = "AUDIT-ORDER-TEST"
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            ids = []
+            for i in range(3):
+                cur.execute(
+                    "INSERT INTO audit_logs (badge_number, action, resource_type, resource_id) "
+                    "VALUES (%s, %s, %s, %s) RETURNING id",
+                    (badge, "create", "camera", 9000 + i),
+                )
+                ids.append(cur.fetchone()[0])
+        conn.commit()
+
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    try:
+        resp = client.get(
+            "/audit-logs",
+            params={"badge_number": badge, "limit": 2},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        # Newest-first: the row inserted LAST (highest id) appears FIRST.
+        assert [entry["resource_id"] for entry in body["logs"]] == [9002, 9001]
+        assert body["next_cursor"] is not None
+
+        page2 = client.get(
+            "/audit-logs",
+            params={"badge_number": badge, "limit": 2, "cursor": body["next_cursor"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert [entry["resource_id"] for entry in page2.json()["logs"]] == [9000]
+    finally:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM audit_logs WHERE id = ANY(%s)", (ids,))
+            conn.commit()
 
 
 def test_station_officer_forbidden(client):
@@ -185,7 +232,7 @@ def test_audit_logs_limit_negative_returns_422(client):
 
 @pytest.fixture
 def category_test_data():
-    """One real camera (so camera_id/camera_district/camera_circle_id filters
+    """One real camera (so camera_id/camera_district/camera_area_id filters
     have something genuine to resolve against) plus one audit_logs row per
     category-defining action/resource_type, tagged with a badge_number
     unique to this fixture so assertions never depend on the shared demo
@@ -211,7 +258,7 @@ def category_test_data():
                 (badge, "change_password", "officer", None),
                 (badge, "reassign_posting", "posting", None),
                 (badge, "create", "camera", camera_id),
-                (badge, "create", "circle", None),
+                (badge, "create", "area", None),
                 (badge, "status_change", "alert", None),
                 (badge, "create", "detection", None),
             ]
@@ -314,3 +361,43 @@ def test_categories_endpoint_lists_every_category_plus_other(client):
         "infrastructure", "alerts", "detections", "other",
     ]:
         assert expected in categories
+
+
+@pytest.mark.parametrize(
+    "action,resource_type,expected_category",
+    [
+        # Legacy rows from before the Circle -> Area rename, and from a
+        # separation-of-duties feature -- no live route creates either
+        # anymore, but real historical audit_logs rows still carry them, and
+        # they used to fall into "other" with no real category at all.
+        ("create", "circle", "infrastructure"),
+        ("update", "circle", "infrastructure"),
+        ("delete", "circle", "infrastructure"),
+        ("create_sod_rule", "sod_rule", "user_management"),
+        ("delete_sod_rule", "sod_rule", "user_management"),
+        ("sod_conflict_blocked", "officer", "user_management"),
+    ],
+)
+def test_legacy_resource_types_are_categorized_not_left_as_other(action, resource_type, expected_category):
+    assert categorize(action, resource_type) == expected_category
+
+
+def test_user_management_category_excludes_rows_an_earlier_category_already_claims(client, category_test_data):
+    """resource_type="officer" sits in user_management's resource_types
+    (officer lifecycle actions), but login/change_password rows -- also
+    resource_type="officer" -- belong to authentication/credentials, whose
+    ACTION-based rules are checked first by categorize(). Filtering by
+    category="user_management" must agree with that and exclude them, or
+    the SQL filter and the label shown on an already-fetched row would
+    disagree on the very same row."""
+    data = category_test_data
+    token = _make_rbac_token("super_admin", "platform", permissions=["view_audit_logs"])
+    resp = client.get(
+        "/audit-logs",
+        params={"badge_number": data["badge"], "category": "user_management"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    logs = resp.json()["logs"]
+    assert len(logs) == 1
+    assert logs[0]["action"] == "reassign_posting"

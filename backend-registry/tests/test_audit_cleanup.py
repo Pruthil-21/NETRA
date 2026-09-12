@@ -21,7 +21,7 @@ def test_list_cameras_does_not_write_audit_log(client, viewer_headers):
     conn.close()
 
 
-def test_get_camera_does_not_write_audit_log(client, viewer_headers, officer_headers):
+def test_get_camera_does_not_write_audit_log(client, viewer_headers, officer_headers, gap_analysis_test_cameras):
     conn = psycopg.connect(os.environ["DATABASE_URL"])
 
     create_resp = client.post(
@@ -35,6 +35,7 @@ def test_get_camera_does_not_write_audit_log(client, viewer_headers, officer_hea
         headers=officer_headers,
     )
     camera_id = create_resp.json()["id"]
+    gap_analysis_test_cameras.append(camera_id)
 
     before = _audit_count(conn)
     resp = client.get(f"/cameras/{camera_id}", headers=viewer_headers)
@@ -56,7 +57,7 @@ def test_reports_summary_does_not_write_audit_log(client, viewer_headers):
     conn.close()
 
 
-def test_create_camera_still_writes_audit_log(client, officer_headers):
+def test_create_camera_still_writes_audit_log(client, officer_headers, gap_analysis_test_cameras):
     conn = psycopg.connect(os.environ["DATABASE_URL"])
     before = _audit_count(conn)
 
@@ -71,6 +72,7 @@ def test_create_camera_still_writes_audit_log(client, officer_headers):
         headers=officer_headers,
     )
     assert resp.status_code == 201
+    gap_analysis_test_cameras.append(resp.json()["id"])
 
     after = _audit_count(conn)
     assert after == before + 1, "POST /cameras (a real write) must still write to audit_logs"

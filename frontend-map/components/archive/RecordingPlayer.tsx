@@ -55,6 +55,18 @@ interface RecordingPlayerProps {
    * day's segments so the scrubber's span matches the day it's showing),
    * freshly fetched so each segment's `url` token is still valid. */
   segments: RecordingSegment[];
+  /** A specific moment to jump straight to (e.g. "10 seconds before this
+   * plate was detected", from an alert's deep link) instead of starting
+   * playback at the beginning of the day. Applied once, the first time it
+   * falls within `segments`' span; ignored (falls back to the normal
+   * start-at-0 behavior) if it's outside that span -- the wrong day's
+   * segments may still be loading, or genuinely has no coverage there. */
+  initialPlayFromIso?: string | null;
+  /** Fired once initialPlayFromIso has actually been applied, so the
+   * caller can clear it -- otherwise every later day the officer picks
+   * manually would keep getting silently overridden by the original
+   * deep-linked moment. */
+  onInitialSeekApplied?: () => void;
 }
 
 /** The scrub/play/speed/export controls for a set of recorded segments --
@@ -65,7 +77,13 @@ interface RecordingPlayerProps {
  * existing segment's own boundaries, so that one action mints its own
  * tightly-scoped segment via a fresh backend call instead of reusing
  * whatever was handed in. */
-export function RecordingPlayer({ cameraId, cameraName, segments }: RecordingPlayerProps) {
+export function RecordingPlayer({
+  cameraId,
+  cameraName,
+  segments,
+  initialPlayFromIso,
+  onInitialSeekApplied,
+}: RecordingPlayerProps) {
   // Scrubber position, in seconds from the earliest segment in the current
   // set -- updates continuously as the officer drags, independent of what's
   // actually loaded in the player until they explicitly commit to it.
@@ -80,10 +98,19 @@ export function RecordingPlayer({ cameraId, cameraName, segments }: RecordingPla
   const videoRef = useRef<HTMLVideoElement>(null);
 
   const span = useMemo(() => (segments.length > 0 ? computeSpan(segments) : null), [segments]);
+  // Tracks the last initialPlayFromIso value actually applied, so clearing
+  // that prop back to null right after (the caller's own "consumed" signal
+  // -- see onInitialSeekApplied) doesn't itself look like a fresh reset
+  // request and snap the scrubber straight back to 0 the instant the seek
+  // it just did takes effect.
+  const appliedSeekRef = useRef<string | null>(null);
 
   // Segments changing (a different day picked) resets the scrubber to the
   // start of the new set rather than carrying over a position that belongs
-  // to the previous one.
+  // to the previous one. Declared before the seek effect below so that
+  // when both a new day AND a new deep-linked moment arrive in the same
+  // render, this reset runs first and the seek (not 0) is what's left
+  // standing once both effects have run.
   useEffect(() => {
     setPreviewSeconds(0);
     setPlayFromSeconds(segments.length > 0 ? 0 : null);
@@ -91,6 +118,25 @@ export function RecordingPlayer({ cameraId, cameraName, segments }: RecordingPla
     setClipEndSeconds(null);
     setPlaybackError(null);
   }, [segments]);
+
+  // A genuinely new deep-linked moment (a fresh initialPlayFromIso value,
+  // not just the same one re-handed-in, and not it being cleared back to
+  // null) jumps straight there instead of wherever the effect above left
+  // the scrubber -- independent of whether `segments` itself changed, so
+  // "the same camera's next alert, same day" (segments unchanged) still
+  // re-seeks correctly instead of silently doing nothing.
+  useEffect(() => {
+    if (!initialPlayFromIso || initialPlayFromIso === appliedSeekRef.current || !span) return;
+    appliedSeekRef.current = initialPlayFromIso;
+    const offset = (new Date(initialPlayFromIso).getTime() - span.earliestStartMs) / 1000;
+    if (offset < 0 || offset > span.totalSeconds) return;
+    setPreviewSeconds(offset);
+    setPlayFromSeconds(offset);
+    setClipStartSeconds(null);
+    setClipEndSeconds(null);
+    setPlaybackError(null);
+    onInitialSeekApplied?.();
+  }, [initialPlayFromIso, span, onInitialSeekApplied]);
 
   const previewIso = useMemo(
     () => (span ? new Date(span.earliestStartMs + previewSeconds * 1000).toISOString() : null),

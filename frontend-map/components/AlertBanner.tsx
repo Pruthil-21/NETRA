@@ -1,40 +1,20 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
-import { AlertTriangle } from "lucide-react";
-import { WATCHLIST_API_URL } from "@/config/streams";
-import { authorizedFetch, describeFetchError } from "@/lib/apiClient";
+import React, { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ShieldAlert, AlertTriangle, ChevronLeft, ChevronRight, X, Film } from "lucide-react";
+import { alertsService } from "@/services/alertsService";
+import type { Alert, AlertStatus } from "@/types/alert";
 
-// ids/camera_id/watchlist_id come back as JSON numbers from backend-watchlist (see
-// contract/API_CONTRACT.md's Alert shape) — a prior version of this file typed them as
-// strings, which happened to still render fine but would have broken a strict `===`
-// comparison against a camera's numeric-looking id.
-export interface Alert {
-  id: number;
-  camera_id: number;
-  plate_number: string;
-  watchlist_id: number;
-  matched_at: string;
-  status: "NEW" | "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED" | string;
-  // Attached server-side (alerts_service._with_nearest_station) via a real
-  // PostGIS distance calculation from the alert's camera -- null only when
-  // the environment has zero police_stations rows configured yet.
-  nearest_station?: { name: string; distance_meters: number } | null;
-}
+export type { Alert };
 
 function formatDistance(meters: number): string {
   return meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${Math.round(meters)}m`;
 }
 
-type ActionStatus = "ACKNOWLEDGED" | "DISMISSED" | "ESCALATED";
-
 interface AlertBannerProps {
   /** Reported after every poll so the page header can reflect real alerts-API health. */
   onConnectionChange?: (ok: boolean) => void;
-  /** Every successful poll's full alert list (all statuses) — feeds a persistent log view. */
-  onAlertsUpdate?: (alerts: Alert[]) => void;
-  /** Called with a camera id when the officer wants to jump straight to its live feed. */
-  onJumpToCamera?: (cameraId: string) => void;
 }
 
 function timeAgo(iso: string): string {
@@ -46,18 +26,37 @@ function timeAgo(iso: string): string {
   return `${Math.floor(min / 60)}h ago`;
 }
 
-export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera }: AlertBannerProps = {}) {
-  // A queue, not a single slot — two alerts firing within one poll window used to mean
-  // the second silently overwrote the first before anyone saw it.
+function exactTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+/** A floating overlay, not a permanent fixture -- fixed-positioned just
+ * below the app header so it never pushes page content around when it
+ * shows or hides. Pops up for a NEW watchlist match, stays out of the way
+ * (an X closes it locally) until the next genuinely new one arrives.
+ * Multiple pending alerts page through via the arrows rather than each
+ * silently overwriting the last, newest first. */
+export function AlertBanner({ onConnectionChange }: AlertBannerProps = {}) {
+  const router = useRouter();
   const [alertQueue, setAlertQueue] = useState<Alert[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [seenIds, setSeenIds] = useState<Set<number>>(new Set());
   const [actionPending, setActionPending] = useState(false);
-  // Dismiss reads as final in a way Acknowledge/Escalate don't -- both of those
-  // still leave the alert sitting in NEW/ACKNOWLEDGED where it can be acted on
-  // again, but Dismiss is the "nothing more to do here" call. One extra click
-  // guards against a mis-click on a fast-arriving queue; it reverts on its own
-  // if the officer moves on instead of confirming.
-  const [confirmDismiss, setConfirmDismiss] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // Closed locally by the X -- distinct from the alert's own status. Reset
+  // to false whenever a genuinely new alert arrives, so a real event always
+  // resurfaces the overlay even if an officer closed it a minute ago.
+  const [closed, setClosed] = useState(false);
+  // Dismiss is the one action that reads as final (Acknowledge/Escalate
+  // leave the alert open to further action) and the backend requires a
+  // reason for it -- same rule the Alerts page enforces, kept in sync here
+  // rather than this banner silently sending no reason and having the
+  // PATCH rejected (which used to advance the queue as if it had worked).
+  const [showDismissForm, setShowDismissForm] = useState(false);
+  const [dismissReason, setDismissReason] = useState("");
   // Previously a failed poll only went to console.warn/error -- an officer
   // watching the actual page had no way to know the alerts feed was down at
   // all, since this component renders nothing when there's no active alert.
@@ -66,37 +65,36 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
   useEffect(() => {
     const fetchAlerts = async () => {
       try {
-        const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts`);
-
-        if (!res.ok) {
-          const message =
-            res.status === 401 || res.status === 403
-              ? "Not authorized — log in again to receive alerts."
-              : `Alerts feed unavailable (HTTP ${res.status}).`;
-          console.warn(`Alerts API returned ${res.status} — check you are logged in with a valid officer session.`);
-          setPollError(message);
-          onConnectionChange?.(false);
-          return;
-        }
-
-        const alerts: Alert[] = await res.json();
+        const alerts = await alertsService.list();
         setPollError(null);
         onConnectionChange?.(true);
-        onAlertsUpdate?.(alerts);
 
         setSeenIds((prevSeen) => {
           const newAlerts = alerts.filter((a) => a.status === "NEW" && !prevSeen.has(a.id));
           if (newAlerts.length === 0) return prevSeen;
 
-          setAlertQueue((prevQueue) => [...prevQueue, ...newAlerts]);
+          // Newest first -- an officer should see the most recent match by
+          // default, not whichever happened to be oldest in a large backlog.
+          setAlertQueue((prevQueue) =>
+            [...prevQueue, ...newAlerts].sort(
+              (a, b) => new Date(b.matched_at).getTime() - new Date(a.matched_at).getTime()
+            )
+          );
+          setActiveIndex(0);
+          setClosed(false);
 
           const nextSeen = new Set(prevSeen);
           newAlerts.forEach((a) => nextSeen.add(a.id));
           return nextSeen;
         });
       } catch (err) {
-        console.error("Failed to poll alerts:", describeFetchError(err, "unknown error"));
-        setPollError("Alerts feed unreachable — retrying…");
+        console.error("Failed to poll alerts:", err);
+        const message = err instanceof Error ? err.message : "unknown error";
+        setPollError(
+          message.includes("401") || message.toLowerCase().includes("not authorized")
+            ? "Not authorized — log in again to receive alerts."
+            : "Alerts feed unreachable — retrying…"
+        );
         onConnectionChange?.(false);
       }
     };
@@ -104,122 +102,225 @@ export function AlertBanner({ onConnectionChange, onAlertsUpdate, onJumpToCamera
     fetchAlerts();
     const interval = setInterval(fetchAlerts, 3000);
     return () => clearInterval(interval);
-    // onConnectionChange/onAlertsUpdate are expected to be stable setters from the
-    // parent; re-running this poll loop on every parent render would restart it pointlessly.
+    // onConnectionChange is expected to be a stable setter from the parent;
+    // re-running this poll loop on every parent render would restart it pointlessly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const activeAlert = alertQueue[0] ?? null;
-  const queuedCount = alertQueue.length - 1;
-
-  // A pending confirm is scoped to whichever alert asked for it -- once the
-  // queue advances (this alert got actioned) or a fresh alert jumps the
-  // queue, any leftover "Confirm?" state belongs to an alert that's no
-  // longer on screen.
+  // Keep the pointer in range as the queue shrinks (an action removes the
+  // one currently shown) or grows (a new arrival is spliced in at index 0).
   useEffect(() => {
-    setConfirmDismiss(false);
-  }, [activeAlert?.id]);
+    setActiveIndex((i) => Math.min(i, Math.max(0, alertQueue.length - 1)));
+  }, [alertQueue.length]);
 
-  // Previously "Dismiss" only removed the alert from local browser state — it never
-  // told backend-watchlist anything happened. That meant the append-only audit trail
-  // (alert_status_history) this system is designed around never actually got written
-  // from here: an officer "handling" a match left no record anywhere but their own tab.
-  const handleAction = async (status: ActionStatus) => {
+  const activeAlert = alertQueue[activeIndex] ?? null;
+
+  // Any pending confirm/reason-entry is scoped to whichever alert asked for
+  // it -- once the queue advances or the pointer moves to a different
+  // alert, leftover form state belongs to something no longer on screen.
+  const activeAlertId = activeAlert?.id;
+  useEffect(() => {
+    setShowDismissForm(false);
+    setDismissReason("");
+    setActionError(null);
+  }, [activeAlertId]);
+
+  const handleAction = async (status: AlertStatus, reasonCode?: string) => {
     if (!activeAlert || actionPending) return;
     setActionPending(true);
+    setActionError(null);
     try {
-      const res = await authorizedFetch(`${WATCHLIST_API_URL}/alerts/${activeAlert.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
-      });
-      if (!res.ok) {
-        console.warn(`Failed to update alert ${activeAlert.id}: HTTP ${res.status}`);
-      }
+      await alertsService.updateStatus(activeAlert.id, status, reasonCode);
+      setAlertQueue((prev) => prev.filter((a) => a.id !== activeAlert.id));
+      setActiveIndex(0);
+      setShowDismissForm(false);
+      setDismissReason("");
     } catch (err) {
-      console.error(`Failed to update alert ${activeAlert.id}:`, describeFetchError(err, "unknown error"));
+      // Deliberately does NOT advance the queue on failure -- the previous
+      // version did, which meant a rejected PATCH (e.g. Dismiss with no
+      // reason) looked like it had succeeded.
+      setActionError(err instanceof Error ? err.message : `Failed to update alert ${activeAlert.id}`);
     } finally {
       setActionPending(false);
-      setAlertQueue((prev) => prev.slice(1));
     }
   };
 
-  if (!activeAlert) {
+  // An alert is inherently retrospective -- by the time an officer sees it,
+  // the plate is long gone from the live feed. Recorded footage of the
+  // actual detection is far more useful than the live view, so this jumps
+  // to Archive seeked to ~10s before the exact match instant (Archive's own
+  // ?at= convention -- see app/archive/page.tsx) rather than the dashboard.
+  const viewFootage = (alert: Alert) => {
+    router.push(`/archive?camera=${alert.camera_id}&at=${encodeURIComponent(alert.matched_at)}`);
+  };
+
+  const confirmDismiss = () => {
+    const reason = dismissReason.trim();
+    if (!reason) {
+      setActionError("A reason is required to dismiss an alert.");
+      return;
+    }
+    handleAction("DISMISSED", reason);
+  };
+
+  if (!activeAlert || closed) {
     if (!pollError) return null;
     // Visible even with no active alert -- a dead feed is exactly the kind
     // of failure an officer can't tell apart from "quiet shift" otherwise.
     return (
-      <div className="bg-amber-900/80 text-amber-200 px-4 py-2 flex items-center gap-2 text-xs font-medium w-full">
+      <div className="fixed top-14 inset-x-0 z-[1500] bg-amber-900/90 text-amber-200 px-4 py-2 flex items-center gap-2 text-xs font-medium shadow-lg">
         <AlertTriangle size={14} className="shrink-0" />
         {pollError}
       </div>
     );
   }
 
+  const queuedCount = alertQueue.length;
+
   return (
-    <div className="bg-red-600 text-white px-4 py-3 flex flex-wrap justify-between items-center gap-3 shadow-lg w-full">
-      <div className="flex-1 min-w-[260px]">
-        <span className="font-bold">🚨 ALERT: </span>
-        Plate <span className="underline font-mono">{activeAlert.plate_number}</span> matched watchlist at Camera{" "}
-        <button
-          onClick={() => onJumpToCamera?.(String(activeAlert.camera_id))}
-          className="font-semibold underline decoration-dotted hover:text-red-100"
-        >
-          {activeAlert.camera_id}
-        </button>
-        <span className="ml-2 text-red-100 text-xs">{timeAgo(activeAlert.matched_at)}</span>
-        {activeAlert.nearest_station && (
-          <span className="ml-2 text-red-100 text-xs">
-            &middot; Nearest station: {activeAlert.nearest_station.name} (
-            {formatDistance(activeAlert.nearest_station.distance_meters)})
-          </span>
-        )}
-        {queuedCount > 0 && (
-          <span className="ml-2 text-red-100 text-xs font-medium">
-            (+{queuedCount} more alert{queuedCount === 1 ? "" : "s"} pending)
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <button
-          onClick={() => onJumpToCamera?.(String(activeAlert.camera_id))}
-          className="bg-red-950/60 hover:bg-red-950 px-3 py-1 rounded text-xs font-semibold transition-colors"
-        >
-          View Camera
-        </button>
-        <button
-          disabled={actionPending}
-          onClick={() => handleAction("ACKNOWLEDGED")}
-          title="Seen — I'm handling this"
-          className="bg-emerald-800 hover:bg-emerald-900 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
-        >
-          Acknowledge
-        </button>
-        <button
-          disabled={actionPending}
-          onClick={() => handleAction("ESCALATED")}
-          title="Needs backup / higher priority"
-          className="bg-amber-700 hover:bg-amber-800 px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50"
-        >
-          Escalate
-        </button>
-        <button
-          disabled={actionPending}
-          onClick={() => {
-            if (confirmDismiss) {
-              handleAction("DISMISSED");
-              return;
-            }
-            setConfirmDismiss(true);
-            setTimeout(() => setConfirmDismiss(false), 4000);
-          }}
-          title={confirmDismiss ? "Click again to confirm" : "False positive / not actionable"}
-          className={`px-3 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50 ${
-            confirmDismiss ? "bg-red-950 ring-1 ring-red-300 animate-pulse" : "bg-red-800 hover:bg-red-900"
-          }`}
-        >
-          {confirmDismiss ? "Confirm Dismiss?" : "Dismiss"}
-        </button>
+    <div className="fixed top-14 inset-x-0 z-[1500] px-3 pt-3 pointer-events-none">
+      <div className="pointer-events-auto max-w-3xl mx-auto rounded-lg border border-line bg-panel shadow-2xl border-l-4 border-l-signal-red overflow-hidden">
+        <div className="px-4 py-3 flex items-start gap-3">
+          <ShieldAlert size={18} className="text-signal-red shrink-0 mt-0.5" />
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 text-[10px] font-semibold tracking-wider text-signal-red uppercase">
+              Watchlist Match
+              {queuedCount > 1 && (
+                <span className="text-slate-500 font-normal tracking-normal">
+                  {activeIndex + 1} of {queuedCount}
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-white mt-0.5">
+              Plate <span className="underline font-mono">{activeAlert.plate_number}</span> matched at Camera{" "}
+              <button
+                onClick={() => viewFootage(activeAlert)}
+                className="font-semibold underline decoration-dotted hover:text-command"
+              >
+                {activeAlert.camera_id}
+              </button>
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {timeAgo(activeAlert.matched_at)} &middot; {exactTimestamp(activeAlert.matched_at)}
+              {activeAlert.nearest_station && (
+                <>
+                  {" "}
+                  &middot; Nearest station: {activeAlert.nearest_station.name} (
+                  {formatDistance(activeAlert.nearest_station.distance_meters)})
+                </>
+              )}
+            </p>
+
+            {actionError && <p className="text-[11px] text-signal-red mt-1.5">{actionError}</p>}
+
+            {showDismissForm ? (
+              <div className="mt-2.5 flex items-center gap-2">
+                <input
+                  autoFocus
+                  value={dismissReason}
+                  onChange={(e) => {
+                    setDismissReason(e.target.value);
+                    setActionError(null);
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && confirmDismiss()}
+                  placeholder="Reason for dismissing (required)"
+                  className="flex-1 bg-ink border border-line rounded px-2.5 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-command"
+                />
+                <button
+                  type="button"
+                  disabled={actionPending}
+                  onClick={confirmDismiss}
+                  className="px-2.5 py-1.5 rounded text-xs font-semibold bg-signal-red hover:bg-signal-red/80 text-white disabled:opacity-50"
+                >
+                  Confirm
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDismissForm(false);
+                    setDismissReason("");
+                    setActionError(null);
+                  }}
+                  className="px-2 py-1.5 rounded text-xs text-slate-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="mt-2.5 flex items-center gap-2">
+                {/* One clear primary action (solid fill) and everything else
+                    outlined -- four equally-loud solid buttons all competing
+                    for attention was itself part of what made this overlay
+                    hard to read at a glance. */}
+                <button
+                  disabled={actionPending}
+                  onClick={() => handleAction("ACKNOWLEDGED")}
+                  title="Seen — I'm handling this"
+                  className="px-3 py-1.5 rounded text-xs font-semibold bg-signal-green text-white hover:bg-signal-green/90 disabled:opacity-50"
+                >
+                  Acknowledge
+                </button>
+                <button
+                  disabled={actionPending}
+                  onClick={() => handleAction("ESCALATED")}
+                  title="Needs backup / higher priority"
+                  className="px-3 py-1.5 rounded text-xs font-semibold border border-signal-amber text-signal-amber hover:bg-signal-amber/15 disabled:opacity-50"
+                >
+                  Escalate
+                </button>
+                <button
+                  disabled={actionPending}
+                  onClick={() => setShowDismissForm(true)}
+                  title="False positive / not actionable"
+                  className="px-3 py-1.5 rounded text-xs font-semibold border border-signal-red/60 text-signal-red hover:bg-signal-red/15 disabled:opacity-50"
+                >
+                  Dismiss
+                </button>
+                <button
+                  onClick={() => viewFootage(activeAlert)}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded text-xs text-slate-400 hover:text-white"
+                >
+                  <Film size={12} />
+                  View Footage
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            {queuedCount > 1 && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Previous alert"
+                  onClick={() => setActiveIndex((i) => Math.max(0, i - 1))}
+                  disabled={activeIndex === 0}
+                  className="p-1 rounded text-slate-500 hover:text-white disabled:opacity-30 disabled:hover:text-slate-500"
+                >
+                  <ChevronLeft size={16} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Next alert"
+                  onClick={() => setActiveIndex((i) => Math.min(queuedCount - 1, i + 1))}
+                  disabled={activeIndex === queuedCount - 1}
+                  className="p-1 rounded text-slate-500 hover:text-white disabled:opacity-30 disabled:hover:text-slate-500"
+                >
+                  <ChevronRight size={16} />
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              aria-label="Close alert overlay"
+              onClick={() => setClosed(true)}
+              className="p-1 rounded text-slate-500 hover:text-white"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

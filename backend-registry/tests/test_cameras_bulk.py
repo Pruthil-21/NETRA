@@ -24,7 +24,7 @@ def test_bulk_create_requires_officer(client, viewer_headers):
     assert resp.status_code == 403
 
 
-def test_bulk_create_partial_success(client, officer_headers):
+def test_bulk_create_partial_success(client, officer_headers, gap_analysis_test_cameras):
     resp = client.post(
         "/cameras/bulk",
         json=[VALID_CAMERA, INVALID_CAMERA],
@@ -44,6 +44,7 @@ def test_bulk_create_partial_success(client, officer_headers):
     assert results[1]["reason"]
 
     created_id = results[0]["camera"]["id"]
+    gap_analysis_test_cameras.append(created_id)
     get_resp = client.get(f"/cameras/{created_id}", headers=officer_headers)
     assert get_resp.status_code == 200
 
@@ -54,15 +55,15 @@ def test_bulk_create_empty_list(client, officer_headers):
     assert resp.json() == []
 
 
-def test_bulk_create_rejects_cross_district_circle(client, officer_headers, circle_test_rows):
-    circle_resp = client.post(
-        "/circles", json={"name": "Bulk Cross-District Circle", "district": "Vadodara"},
+def test_bulk_create_rejects_cross_district_area(client, officer_headers, area_test_rows, village_for_district):
+    area_resp = client.post(
+        "/areas", json={"name": "Bulk Cross-District Area", "village_id": village_for_district("Vadodara")},
         headers=officer_headers,
     )
-    circle_id = circle_resp.json()["id"]
-    circle_test_rows.append(circle_id)
+    area_id = area_resp.json()["id"]
+    area_test_rows.append(area_id)
 
-    cross_district_camera = {**VALID_CAMERA, "dept": "Anand", "circle_id": circle_id}
+    cross_district_camera = {**VALID_CAMERA, "dept": "Anand", "area_id": area_id}
     resp = client.post(
         "/cameras/bulk",
         json=[cross_district_camera],

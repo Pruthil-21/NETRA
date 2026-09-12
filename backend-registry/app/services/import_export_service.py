@@ -25,10 +25,10 @@ from pydantic import ValidationError
 
 from ..schemas import CameraCreate
 from . import (
+    areas_service,
     audit_logs_service,
     auth_service,
     cameras_service,
-    circles_service,
     coverage_targets_service,
     police_stations_service,
     registration_service,
@@ -208,7 +208,7 @@ def _export_camera_status_history(conn, filters: dict) -> list[dict]:
 
 
 def _filter_by_district(rows: list[dict], filters: dict) -> list[dict]:
-    """Shared by the small reference-data exports below (circles/police
+    """Shared by the small reference-data exports below (areas/police
     stations/coverage targets) -- none of their own list_* functions
     support server-side district filtering, and at this table size (tens
     to low hundreds of rows) filtering the already-fetched list in Python
@@ -220,11 +220,46 @@ def _filter_by_district(rows: list[dict], filters: dict) -> list[dict]:
     return [r for r in rows if r.get("district") == district]
 
 
-def _export_circles(conn, filters: dict) -> list[dict]:
-    # circles_service.list_circles already filters server-side -- no need
+def _export_areas(conn, filters: dict) -> list[dict]:
+    # areas_service.list_areas already filters server-side -- no need
     # for the Python-side _filter_by_district helper the two tables below
     # (which have no such support) rely on.
-    return circles_service.list_circles(conn, filters.get("district"))
+    return areas_service.list_areas(conn, filters.get("district"))
+
+
+_REQUIRED_AREA_FIELDS = {"name", "district", "taluka", "village"}
+
+
+def _validate_area_row(conn, row: dict):
+    """Bulk area import takes human-readable district/taluka/village names
+    (a spreadsheet author has no reason to know internal village_id numbers),
+    resolved here against the seeded reference hierarchy -- an unmatched
+    triple is reported back as this row's specific error, not a generic
+    foreign-key failure at commit time."""
+    missing = _REQUIRED_AREA_FIELDS - {k for k in row if str(row.get(k) or "").strip()}
+    if missing:
+        return None, f"missing required field(s): {', '.join(sorted(missing))}"
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT v.id FROM villages v
+            JOIN talukas t ON t.id = v.taluka_id
+            JOIN districts d ON d.id = t.district_id
+            WHERE d.name = %s AND t.name = %s AND v.name = %s
+            """,
+            (row["district"].strip(), row["taluka"].strip(), row["village"].strip()),
+        )
+        match = cur.fetchone()
+    if match is None:
+        return None, (
+            f"no village '{row['village']}' found in taluka '{row['taluka']}', "
+            f"district '{row['district']}' -- check spelling against the Areas page's pickers"
+        )
+    return {"name": row["name"].strip(), "village_id": match[0]}, None
+
+
+def _commit_area_row(conn, data: dict) -> dict:
+    return areas_service.create_area(conn, data)
 
 
 def _export_police_stations(conn, filters: dict) -> list[dict]:
@@ -233,6 +268,191 @@ def _export_police_stations(conn, filters: dict) -> list[dict]:
 
 def _export_coverage_targets(conn, filters: dict) -> list[dict]:
     return _filter_by_district(coverage_targets_service.list_targets(conn), filters)
+
+
+def _export_plate_sightings(conn, filters: dict) -> list[dict]:
+    """Raw detections rows (backend-watchlist's plate-sighting history) --
+    same cross-service-same-DB pattern reports_service already uses for
+    watchlist tables (they're separate codebases sharing one physical
+    Postgres instance, not separate databases)."""
+    clauses = []
+    params: list = []
+    if filters.get("plate_number"):
+        clauses.append("d.plate_number = %s")
+        params.append("".join(filters["plate_number"].split()).upper())
+    if filters.get("camera_id"):
+        clauses.append("d.camera_id = %s")
+        params.append(filters["camera_id"])
+    if filters.get("date_from"):
+        clauses.append("d.detected_at >= %s")
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        clauses.append("d.detected_at <= %s")
+        params.append(filters["date_to"])
+    joins = ""
+    if filters.get("district"):
+        joins = "JOIN cameras c ON c.id = d.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(filters["district"])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT d.id, d.plate_number, d.camera_id, d.detected_at, d.confidence, d.source
+            FROM detections d {joins}
+            {where}
+            ORDER BY d.detected_at DESC
+            """,
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _export_traffic_alerts(conn, filters: dict) -> list[dict]:
+    """Congestion alerts (density/flow threshold breaches) -- see
+    backend-watchlist's traffic_alerts table/traffic_alerts_service, same
+    cross-service-same-DB pattern as _export_plate_sightings above."""
+    clauses = []
+    params: list = []
+    if filters.get("status"):
+        clauses.append("status = %s")
+        params.append(filters["status"])
+    if filters.get("alert_type"):
+        clauses.append("alert_type = %s")
+        params.append(filters["alert_type"])
+    if filters.get("district"):
+        clauses.append("district = %s")
+        params.append(filters["district"])
+    if filters.get("date_from"):
+        clauses.append("triggered_at >= %s")
+        params.append(filters["date_from"])
+    if filters.get("date_to"):
+        clauses.append("triggered_at <= %s")
+        params.append(filters["date_to"])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM traffic_alerts {where} ORDER BY triggered_at DESC", params)
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _live_or_hour_window_clauses(filters: dict) -> tuple[list[str], list]:
+    """The live-vs-hour window filter shared by _export_traffic_density and
+    _export_traffic_flows below -- duplicated from backend-watchlist's
+    detections_service._time_window_clauses (same reasoning as
+    _export_plate_sightings: separate codebases, one shared Postgres
+    instance, no cross-service Python import)."""
+    window_minutes = filters.get("window_minutes")
+    hour = filters.get("hour")
+    if (window_minutes is None) == (hour is None):
+        raise ValueError("Provide exactly one of window_minutes (live) or hour (time-of-day playback)")
+    if window_minutes is not None:
+        return ["d.detected_at >= now() - (%s || ' minutes')::interval"], [window_minutes]
+    return (
+        [
+            "(d.detected_at AT TIME ZONE 'Asia/Kolkata')::date = %s",
+            "EXTRACT(HOUR FROM d.detected_at AT TIME ZONE 'Asia/Kolkata') = %s",
+        ],
+        [filters.get("date"), hour],
+    )
+
+
+def _export_traffic_density(conn, filters: dict) -> list[dict]:
+    """Per-camera detection counts for the same live/hour-window snapshot
+    the Map page's density layer shows -- see backend-watchlist's
+    detections_service.camera_density_counts."""
+    clauses, params = _live_or_hour_window_clauses(filters)
+    joins = ""
+    if filters.get("district"):
+        joins = "JOIN cameras c ON c.id = d.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(filters["district"])
+    where = f"WHERE {' AND '.join(clauses)}"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT d.camera_id, COUNT(*) AS count
+            FROM detections d {joins}
+            {where}
+            GROUP BY d.camera_id
+            ORDER BY count DESC
+            """,
+            params,
+        )
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# Matches backend-watchlist's detections_service.MAX_FLOW_TRANSITION_GAP_HOURS.
+_MAX_FLOW_TRANSITION_GAP_HOURS = 3
+
+
+def _export_traffic_flows(conn, filters: dict) -> list[dict]:
+    """Camera-to-camera transition volume and average speed for the same
+    live/hour-window snapshot the Map page's Flow layer shows -- see
+    backend-watchlist's detections_service.camera_flow_pairs. Speed is
+    computed in SQL via ST_Distance on cameras.location (a native
+    GEOGRAPHY column here in backend-registry) rather than the Python
+    haversine helper camera_flow_pairs uses -- that helper exists there
+    because backend-watchlist only has cameras' coordinates via a metadata
+    lookup shim; backend-registry owns the table directly."""
+    clauses, params = _live_or_hour_window_clauses(filters)
+    joins = ""
+    if filters.get("district"):
+        joins = "JOIN cameras c ON c.id = d.camera_id"
+        clauses.append("c.dept = %s")
+        params.append(filters["district"])
+    where = f"WHERE {' AND '.join(clauses)}"
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            WITH ordered AS (
+                SELECT d.plate_number, d.camera_id, d.detected_at,
+                       LEAD(d.camera_id) OVER (
+                           PARTITION BY d.plate_number ORDER BY d.detected_at
+                       ) AS next_camera_id,
+                       LEAD(d.detected_at) OVER (
+                           PARTITION BY d.plate_number ORDER BY d.detected_at
+                       ) AS next_detected_at
+                FROM detections d {joins}
+                {where}
+            ),
+            transitions AS (
+                SELECT camera_id AS from_camera_id, next_camera_id AS to_camera_id,
+                       EXTRACT(EPOCH FROM (next_detected_at - detected_at)) AS gap_seconds
+                FROM ordered
+                WHERE next_camera_id IS NOT NULL
+                  AND next_camera_id != camera_id
+                  AND next_detected_at > detected_at
+                  AND next_detected_at - detected_at <= (%s || ' hours')::interval
+            )
+            SELECT t.from_camera_id, t.to_camera_id, COUNT(*) AS transitions,
+                   CASE WHEN AVG(t.gap_seconds) > 0
+                        THEN ROUND((
+                            ST_Distance(c1.location, c2.location) / 1000.0 / (AVG(t.gap_seconds) / 3600.0)
+                        )::numeric, 1)
+                        ELSE NULL END AS avg_speed_kmh
+            FROM transitions t
+            JOIN cameras c1 ON c1.id = t.from_camera_id
+            JOIN cameras c2 ON c2.id = t.to_camera_id
+            GROUP BY t.from_camera_id, t.to_camera_id, c1.location, c2.location
+            ORDER BY transitions DESC
+            """,
+            [*params, _MAX_FLOW_TRANSITION_GAP_HOURS],
+        )
+        cols = [c.name for c in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    # ROUND(...)::numeric comes back as a Decimal, which json.dumps(rows,
+    # default=str) below would stringify instead of serializing as a
+    # number (every other exported numeric column is a plain int/float
+    # that doesn't hit this) -- cast explicitly so the API returns
+    # avg_speed_kmh as a real number, matching CorridorFlow's shape on the
+    # backend-watchlist side.
+    for row in rows:
+        if row["avg_speed_kmh"] is not None:
+            row["avg_speed_kmh"] = float(row["avg_speed_kmh"])
+    return rows
 
 
 # Export-only entities: append-only/system-generated data (audit_logs,
@@ -247,9 +467,13 @@ ENTITY_HANDLERS = {
     "postings": {"export": _export_postings},
     "registration_requests": {"export": _export_registration_requests},
     "camera_status_history": {"export": _export_camera_status_history},
-    "circles": {"export": _export_circles},
+    "areas": {"validate": _validate_area_row, "commit": _commit_area_row, "export": _export_areas},
     "police_stations": {"export": _export_police_stations},
     "coverage_targets": {"export": _export_coverage_targets},
+    "plate_sightings": {"export": _export_plate_sightings},
+    "traffic_alerts": {"export": _export_traffic_alerts},
+    "traffic_density": {"export": _export_traffic_density},
+    "traffic_flows": {"export": _export_traffic_flows},
 }
 
 

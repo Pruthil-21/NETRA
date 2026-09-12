@@ -31,7 +31,7 @@ def _headers(permissions, role="district_command"):
 
 
 _ALL_DATA_CONSOLE_PERMISSIONS = [
-    "manage_cameras", "manage_users_roles", "view_audit_logs", "manage_circles", "manage_stations",
+    "manage_cameras", "manage_users_roles", "view_audit_logs", "manage_areas", "manage_stations",
 ]
 
 
@@ -174,12 +174,12 @@ def test_postings_export_includes_a_seeded_posting(client, data_job_test_rows):
     assert all(r["role"] == "district_command" and r["is_active"] for r in rows)
 
 
-def test_circles_police_stations_and_coverage_targets_export(
-    client, circle_test_rows, police_station_test_rows, gap_analysis_test_targets, data_job_test_rows
+def test_areas_police_stations_and_coverage_targets_export(
+    client, area_test_rows, police_station_test_rows, gap_analysis_test_targets, data_job_test_rows, village_for_district
 ):
     district = "Data Console Reference District"
-    circle = client.post("/circles", json={"name": "Data Console Circle", "district": district}, headers=_admin_headers())
-    circle_test_rows.append(circle.json()["id"])
+    area = client.post("/areas", json={"name": "Data Console Area", "village_id": village_for_district(district)}, headers=_admin_headers())
+    area_test_rows.append(area.json()["id"])
     station = client.post(
         "/police-stations",
         json={"name": "Data Console Station", "lat": 23.0, "long": 72.5, "district": district},
@@ -194,7 +194,7 @@ def test_circles_police_stations_and_coverage_targets_export(
     gap_analysis_test_targets.append(target.json()["id"])
 
     for entity_type, created_id in (
-        ("circles", circle.json()["id"]),
+        ("areas", area.json()["id"]),
         ("police_stations", station.json()["id"]),
         ("coverage_targets", target.json()["id"]),
     ):

@@ -18,15 +18,17 @@ from .logging_config import configure_logging
 from .services import recording_health_stream
 from .routers import (
     admin_ops,
+    areas,
     audit_logs,
     auth,
     cameras,
-    circles,
     coverage_targets,
     duties,
+    locations,
     notifications,
     police_stations,
     postings,
+    push,
     recording_webhooks,
     registration_admin,
     reports,
@@ -56,6 +58,7 @@ app.add_middleware(
 app.include_router(build_federation_router(get_current_user, has_permission, get_conn))
 
 app.include_router(auth.router)
+app.include_router(push.router)
 app.include_router(registration_admin.router)
 app.include_router(postings.router)
 app.include_router(notifications.router)
@@ -67,7 +70,8 @@ app.include_router(coverage_targets.router)
 app.include_router(reports.router)
 app.include_router(audit_logs.router)
 app.include_router(police_stations.router)
-app.include_router(circles.router)
+app.include_router(areas.router)
+app.include_router(locations.router)
 app.include_router(recording_webhooks.router)
 
 

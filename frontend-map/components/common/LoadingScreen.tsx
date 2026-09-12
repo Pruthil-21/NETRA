@@ -11,7 +11,7 @@ import { Shield } from 'lucide-react';
  * identical -- an officer shouldn't be able to tell which case they hit. */
 export function LoadingScreen() {
   return (
-    <main className="min-h-screen bg-ink flex items-center justify-center p-4">
+    <main className="min-h-screen w-full bg-ink flex items-center justify-center p-4">
       <div className="flex flex-col items-center gap-4">
         <div className="inline-flex p-3 bg-command/10 border border-command/30 text-command rounded-lg animate-pulse">
           <Shield size={32} />

@@ -74,7 +74,8 @@ def test_multiple_status_changes_append_multiple_rows(client, officer_headers, s
         "DISMISSED": officer_headers,
     }
     for status in ("ACKNOWLEDGED", "ESCALATED", "DISMISSED"):
-        resp = client.patch(f"/alerts/{alert_id}", json={"status": status}, headers=headers_by_status[status])
+        body = {"status": status, "reason_code": "test cleanup"} if status == "DISMISSED" else {"status": status}
+        resp = client.patch(f"/alerts/{alert_id}", json=body, headers=headers_by_status[status])
         assert resp.status_code == 200
         assert resp.json()["status"] == status
 
@@ -89,6 +90,36 @@ def test_multiple_status_changes_append_multiple_rows(client, officer_headers, s
 def test_status_update_missing_alert_404(client, officer_headers):
     resp = client.patch("/alerts/999999", json={"status": "ACKNOWLEDGED"}, headers=officer_headers)
     assert resp.status_code == 404
+
+
+def test_dismiss_without_reason_is_rejected(client, officer_headers, internal_headers):
+    # A dismissed watchlist hit with no recorded reason is an accountability
+    # gap -- unlike Acknowledge/Escalate, Dismiss is final, so the backend
+    # requires reason_code rather than leaving it optional.
+    alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+    resp = client.patch(f"/alerts/{alert['id']}", json={"status": "DISMISSED"}, headers=officer_headers)
+    assert resp.status_code == 422
+
+    resp = client.patch(f"/alerts/{alert['id']}", json={"status": "DISMISSED", "reason_code": "   "}, headers=officer_headers)
+    assert resp.status_code == 422
+
+
+def test_alert_history_records_each_status_change(client, officer_headers, internal_headers):
+    alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+    alert_id = alert["id"]
+
+    client.patch(f"/alerts/{alert_id}", json={"status": "ACKNOWLEDGED"}, headers=officer_headers)
+    client.patch(
+        f"/alerts/{alert_id}", json={"status": "DISMISSED", "reason_code": "false match"}, headers=officer_headers
+    )
+
+    history = client.get(f"/alerts/{alert_id}/history", headers=officer_headers)
+    assert history.status_code == 200
+    entries = history.json()
+    actions = [e["action"] for e in entries]
+    assert actions == ["create", "alert_acknowledged", "alert_dismissed"]
+    assert entries[-1]["reason_code"] == "false match"
+    assert entries[-1]["badge_number"] == "test-officer"
 
 
 def test_require_role_accepts_rbac_role_names(client):

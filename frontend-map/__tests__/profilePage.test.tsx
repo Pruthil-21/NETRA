@@ -4,6 +4,7 @@ import ProfilePage from '@/app/profile/page';
 import { usePermissions } from '@/hooks/usePermissions';
 import { updateProfilePhoto, updateMyEmail, verifyMyEmail } from '@/services/profileService';
 import { fileToAvatarDataUri, ImageUploadError } from '@/lib/imageUpload';
+import { isPushSupported, isSubscribed, subscribe, unsubscribe } from '@/services/pushSubscriptionService';
 
 vi.mock('@/hooks/usePermissions');
 vi.mock('@/services/profileService');
@@ -11,6 +12,7 @@ vi.mock('@/lib/imageUpload', async () => {
   const actual = await vi.importActual<typeof import('@/lib/imageUpload')>('@/lib/imageUpload');
   return { ...actual, fileToAvatarDataUri: vi.fn() };
 });
+vi.mock('@/services/pushSubscriptionService');
 
 const BASE_PERMISSIONS = {
   badgeNumber: 'GJ-SO-001',
@@ -30,6 +32,8 @@ describe('ProfilePage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (usePermissions as any).mockReturnValue(BASE_PERMISSIONS);
+    (isPushSupported as any).mockReturnValue(true);
+    (isSubscribed as any).mockResolvedValue(false);
   });
 
   it('shows a loading state while permissions are loading', () => {
@@ -134,5 +138,44 @@ describe('ProfilePage', () => {
 
     await waitFor(() => expect(verifyMyEmail).toHaveBeenCalledWith('pending-abc', '123456'));
     expect(BASE_PERMISSIONS.refetch).toHaveBeenCalled();
+  });
+
+  it('shows the push notifications section with a Turn On button when not yet subscribed', async () => {
+    render(<ProfilePage />);
+    expect(await screen.findByText('Push Notifications')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /turn on/i })).toBeInTheDocument();
+  });
+
+  it('shows a Turn Off button when already subscribed', async () => {
+    (isSubscribed as any).mockResolvedValue(true);
+    render(<ProfilePage />);
+    expect(await screen.findByRole('button', { name: /turn off/i })).toBeInTheDocument();
+  });
+
+  it('subscribes when turned on', async () => {
+    (subscribe as any).mockResolvedValue(undefined);
+    render(<ProfilePage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /turn on/i }));
+    await waitFor(() => expect(subscribe).toHaveBeenCalled());
+    expect(await screen.findByRole('button', { name: /turn off/i })).toBeInTheDocument();
+  });
+
+  it('unsubscribes when turned off, and surfaces a failure without flipping state', async () => {
+    (isSubscribed as any).mockResolvedValue(true);
+    (unsubscribe as any).mockRejectedValue(new Error('network blip'));
+    render(<ProfilePage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /turn off/i }));
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalled());
+    expect(await screen.findByText('network blip')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /turn off/i })).toBeInTheDocument();
+  });
+
+  it('shows a not-supported message instead of a toggle when push is unavailable', async () => {
+    (isPushSupported as any).mockReturnValue(false);
+    render(<ProfilePage />);
+    expect(await screen.findByText(/not supported in this browser/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /turn on/i })).not.toBeInTheDocument();
   });
 });

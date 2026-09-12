@@ -157,10 +157,10 @@ def police_station_test_rows():
 
 
 @pytest.fixture
-def circle_test_rows():
-    """Guaranteed cleanup for circles rows a test creates, even if an
+def area_test_rows():
+    """Guaranteed cleanup for areas rows a test creates, even if an
     assertion fails first. Must run after any camera FK'ing to these rows
-    is deleted -- tests that assign a camera to a circle append that
+    is deleted -- tests that assign a camera to an area append that
     camera's id to gap_analysis_test_cameras (or synthetic_test_cameras),
     not this fixture, so ordering is handled by pytest tearing down
     fixtures in reverse dependency order."""
@@ -169,8 +169,61 @@ def circle_test_rows():
     if created_ids:
         with get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM circles WHERE id = ANY(%s)", (created_ids,))
+                cur.execute("DELETE FROM areas WHERE id = ANY(%s)", (created_ids,))
             conn.commit()
+
+
+def _village_id_for_district(district_name: str) -> int:
+    """Resolves a village_id whose district is exactly `district_name` --
+    lets every test that used to POST /areas with a flat "district" string
+    keep expressing the same district-scoping intent now that Area requires
+    a real village_id. A real seeded district (Anand, Vadodara, Ahmedabad,
+    ...) gets its own dedicated "<district> Test Taluka" / "<district> Test
+    Village" rather than reusing one of its real seeded villages, so test
+    runs never collide with real reference data; a district name a test
+    invents purely to be "some other district" (e.g. "Traffic Police",
+    "Some Other District") gets a throwaway district too. Idempotent --
+    get-or-create at every level, safe to call repeatedly across a run or
+    across runs against the same dev DB."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM districts WHERE name = %s", (district_name,))
+            row = cur.fetchone()
+            if row is None:
+                cur.execute("INSERT INTO districts (name) VALUES (%s) RETURNING id", (district_name,))
+                row = cur.fetchone()
+            district_id = row[0]
+
+            taluka_name = f"{district_name} Test Taluka"
+            cur.execute("SELECT id FROM talukas WHERE district_id = %s AND name = %s", (district_id, taluka_name))
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    "INSERT INTO talukas (name, district_id) VALUES (%s, %s) RETURNING id",
+                    (taluka_name, district_id),
+                )
+                row = cur.fetchone()
+            taluka_id = row[0]
+
+            village_name = f"{district_name} Test Village"
+            cur.execute("SELECT id FROM villages WHERE taluka_id = %s AND name = %s", (taluka_id, village_name))
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    "INSERT INTO villages (name, taluka_id) VALUES (%s, %s) RETURNING id",
+                    (village_name, taluka_id),
+                )
+                row = cur.fetchone()
+            village_id = row[0]
+        conn.commit()
+    return village_id
+
+
+@pytest.fixture
+def village_for_district():
+    """Callable fixture: village_for_district("Anand") -> a real village_id
+    whose district is "Anand" -- see _village_id_for_district above."""
+    return _village_id_for_district
 
 
 @pytest.fixture

@@ -7,9 +7,7 @@ import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { useCameraUptime, formatDuration, formatTimeRange } from '@/hooks/useCameraUptime';
 import { useCameraHealth } from '@/hooks/useCameraHealth';
 import { useRecordingHealthEvents } from '@/hooks/useRecordingHealthEvents';
-import { usePermissions } from '@/hooks/usePermissions';
-import { circlesService, Circle } from '@/services/circlesService';
-import { cameraService } from '@/services/cameraService';
+import { areasService, Area } from '@/services/areasService';
 import CameraLivePlayer from './CameraLivePlayer';
 import Badge from '@/components/common/Badge';
 
@@ -34,65 +32,36 @@ function formatEventTime(iso: string | null | undefined): string {
 }
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
-  const { updateCameraConnectivity, applyCameraCircleAssignment } = useCameraRegistry();
+  const { updateCameraConnectivity } = useCameraRegistry();
   const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera?.id ?? null);
   const { device: health, loading: healthLoading } = useCameraHealth(camera?.id ?? null);
   const { events: recordingHealthEvents, loading: recordingHealthLoading } = useRecordingHealthEvents(camera?.id ?? null);
-  const { has } = usePermissions();
-  const canManageCameras = has('manage_cameras');
 
-  // Circle assignment -- the one write path for a REAL registry camera's
-  // circle_id (see services/cameraService.ts's updateCameraCircle). Fetched
-  // once here rather than lifted to a shared context: this is the only place
-  // in the app that needs the full circle list alongside a single camera to
-  // edit against.
-  const [circles, setCircles] = useState<Circle[]>([]);
-  const [circleUpdatePending, setCircleUpdatePending] = useState(false);
-  const [circleError, setCircleError] = useState<string | null>(null);
+  // Read-only display only -- editing a camera's area now happens in one
+  // place, the right-click menu's "Configure…" modal, instead of also being
+  // editable independently from here (that duplicate path is what let the
+  // two drift into different validation/error handling).
+  const [areas, setAreas] = useState<Area[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    circlesService
-      .listCircles()
+    areasService
+      .listAreas()
       .then((data) => {
-        if (!cancelled) setCircles(data);
+        if (!cancelled) setAreas(data);
       })
       .catch(() => {
-        // Non-fatal -- the control just shows no circle options until this succeeds/retries.
+        // Non-fatal -- the display just shows "Unassigned" until this succeeds/retries.
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  // Only this camera's own district's circles are valid choices -- matches
-  // the backend's own cross-district guard (circle.district must equal
-  // camera.dept). Unlike AddCameraModal's manual-camera circle picker (which
-  // has no real camera.dept to filter by), this control always has one.
-  const districtCircles = useMemo(
-    () => (camera ? circles.filter((c) => c.district === camera.dept) : []),
-    [circles, camera]
+  const currentAreaName = useMemo(
+    () => areas.find((c) => c.id === camera?.area_id)?.name ?? 'Unassigned',
+    [areas, camera]
   );
-  const currentCircleName = useMemo(
-    () => circles.find((c) => c.id === camera?.circle_id)?.name ?? 'Unassigned',
-    [circles, camera]
-  );
-
-  const handleCircleChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    if (!camera) return;
-    const raw = e.target.value;
-    const newCircleId = raw === '' ? null : Number(raw);
-    setCircleError(null);
-    setCircleUpdatePending(true);
-    try {
-      await cameraService.updateCameraCircle(camera.id, newCircleId);
-      applyCameraCircleAssignment(camera.id, newCircleId);
-    } catch (err) {
-      setCircleError(err instanceof Error ? err.message : 'Failed to update circle');
-    } finally {
-      setCircleUpdatePending(false);
-    }
-  };
 
   if (!camera) {
     return <div className="p-4 text-xs text-slate-500">No camera selected. Pick one from the list or the map.</div>;
@@ -136,26 +105,8 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
             <p className="text-slate-200">{camera.dept}</p>
             <p className="text-slate-500">{camera.ownership}</p>
             <div className="mt-1.5">
-              <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">Circle</p>
-              {canManageCameras ? (
-                <select
-                  aria-label="Circle"
-                  value={camera.circle_id ?? ''}
-                  onChange={handleCircleChange}
-                  disabled={circleUpdatePending}
-                  className="w-full bg-ink border border-line rounded px-1.5 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-command focus:border-command"
-                >
-                  <option value="">Unassigned</option>
-                  {districtCircles.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p className="text-slate-200">{currentCircleName}</p>
-              )}
-              {circleError && <p className="text-[10px] text-signal-red mt-1">{circleError}</p>}
+              <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">Area</p>
+              <p className="text-slate-200">{currentAreaName}</p>
             </div>
           </div>
           <div>

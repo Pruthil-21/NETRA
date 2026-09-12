@@ -23,9 +23,13 @@ _DATA_JOB_ENTITY_PERMISSIONS = {
     "postings": "manage_users_roles",
     "registration_requests": "manage_users_roles",
     "camera_status_history": "manage_cameras",
-    "circles": "manage_circles",
+    "areas": "manage_areas",
     "police_stations": "manage_stations",
     "coverage_targets": "manage_cameras",
+    "plate_sightings": "view_analytics",
+    "traffic_alerts": "view_analytics",
+    "traffic_density": "view_analytics",
+    "traffic_flows": "view_analytics",
 }
 
 

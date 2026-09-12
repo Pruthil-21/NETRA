@@ -14,7 +14,8 @@ import {
 
 type FilterField =
   | 'district' | 'date_range' | 'status' | 'category' | 'role' | 'scope_type'
-  | 'active_only' | 'camera_id' | 'department' | 'badge_number';
+  | 'active_only' | 'camera_id' | 'department' | 'badge_number'
+  | 'plate_number' | 'alert_type' | 'live_or_hour_window';
 
 interface EntityConfig {
   label: string;
@@ -22,6 +23,11 @@ interface EntityConfig {
   permission: string;
   fields: FilterField[];
   supportsImport?: boolean;
+  /** Shown above the import button when the expected columns aren't
+   * self-evident (areas' district/taluka/village names have to match the
+   * seeded hierarchy exactly -- easiest to get right by exporting a few
+   * existing rows first and editing that as a template). */
+  importHint?: string;
 }
 
 const ENTITY_CONFIG: Record<DataConsoleEntity, EntityConfig> = {
@@ -45,19 +51,42 @@ const ENTITY_CONFIG: Record<DataConsoleEntity, EntityConfig> = {
     label: 'Camera Status History', group: 'Camera Registry', permission: 'manage_cameras',
     fields: ['camera_id', 'district', 'date_range'],
   },
-  circles: { label: 'Circles', group: 'Camera Registry', permission: 'manage_circles', fields: ['district'] },
+  areas: {
+    label: 'Areas', group: 'Camera Registry', permission: 'manage_areas',
+    fields: ['district'], supportsImport: true,
+    importHint: 'The district/taluka/village names must exactly match the Areas page\'s pickers -- download the '
+      + 'sample below for the real column format.',
+  },
   police_stations: { label: 'Police Stations', group: 'Camera Registry', permission: 'manage_stations', fields: ['district'] },
   coverage_targets: { label: 'Coverage Targets', group: 'Camera Registry', permission: 'manage_cameras', fields: ['district'] },
   audit_logs: {
     label: 'Audit Logs', group: 'Security & Audit', permission: 'view_audit_logs',
     fields: ['category', 'badge_number', 'date_range'],
   },
+  plate_sightings: {
+    label: 'Plate Sightings', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['plate_number', 'camera_id', 'district', 'date_range'],
+  },
+  traffic_alerts: {
+    label: 'Traffic Alerts', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['status', 'alert_type', 'district', 'date_range'],
+  },
+  traffic_density: {
+    label: 'Traffic Density', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['live_or_hour_window', 'district'],
+  },
+  traffic_flows: {
+    label: 'Traffic Flows', group: 'Traffic Analytics', permission: 'view_analytics',
+    fields: ['live_or_hour_window', 'district'],
+  },
 };
 
-const GROUP_ORDER = ['Identity & Access', 'Camera Registry', 'Security & Audit'];
+const GROUP_ORDER = ['Identity & Access', 'Camera Registry', 'Security & Audit', 'Traffic Analytics'];
 
 const REGISTRATION_STATUS_OPTIONS = ['pending', 'approved', 'rejected'];
 const OFFICER_STATUS_OPTIONS = ['active', 'pending', 'suspended', 'deactivated'];
+const TRAFFIC_ALERT_STATUS_OPTIONS = ['NEW', 'ACKNOWLEDGED', 'DISMISSED'];
+const TRAFFIC_ALERT_TYPE_OPTIONS = ['density', 'flow'];
 const SCOPE_TYPE_OPTIONS = ['platform', 'district'];
 
 const CATEGORY_META: Record<string, { label: string; icon: LucideIcon }> = {
@@ -81,6 +110,78 @@ const inputClass =
   'w-full bg-ink border border-line rounded px-2.5 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-command';
 const labelClass = 'block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1';
 
+// Downloadable import templates, one entity at a time -- same reasoning as
+// AddCameraModal's own sample CSV/JSON (lib/manualCameras.ts): the expected
+// columns for a real bulk import aren't self-evident (areas' district/
+// taluka/village names in particular have to match the seeded hierarchy
+// exactly), so a real, correctly-shaped example beats prose alone. Column
+// order here is deliberately "flow-wise" (identity first, then whatever a
+// person filling the sheet would naturally reach for next) and matches each
+// entity's real import validator exactly -- import_export_service.py's
+// _validate_camera_row / _validate_officer_row / _validate_area_row.
+const SAMPLE_COLUMNS: Partial<Record<DataConsoleEntity, string[]>> = {
+  cameras: ['name', 'dept', 'lat', 'long', 'camera_type', 'ownership', 'storage_type', 'retention_days', 'rtsp_url', 'stream_id', 'hls_url'],
+  officers: ['badge_number', 'name', 'password', 'rank', 'department', 'contact_info'],
+  areas: ['name', 'district', 'taluka', 'village'],
+};
+
+const SAMPLE_ROWS: Partial<Record<DataConsoleEntity, Record<string, string>[]>> = {
+  cameras: [
+    {
+      name: 'Airport Circle Cam', dept: 'Ahmedabad', lat: '23.0733', long: '72.6314',
+      camera_type: 'ip', ownership: 'traffic-police', storage_type: 'nvr', retention_days: '30',
+      rtsp_url: 'rtsp://192.168.1.50:554/stream1', stream_id: '', hls_url: '',
+    },
+    {
+      // Shows "add now, connect the video later" -- every streaming column
+      // left blank is a valid row, same as the camera registry's own single
+      // -add flow.
+      name: 'Temporary Cam (no feed yet)', dept: 'Anand', lat: '22.5645', long: '72.9289',
+      camera_type: 'ptz', ownership: 'municipal', storage_type: 'cloud', retention_days: '15',
+      rtsp_url: '', stream_id: '', hls_url: '',
+    },
+  ],
+  officers: [
+    { badge_number: 'GJ-SO-101', name: 'Ravi Patel', password: 'ChangeMe123!', rank: 'Sub Inspector', department: 'Ahmedabad', contact_info: 'ravi.patel@example.gov.in' },
+    { badge_number: 'GJ-SO-102', name: 'Priya Shah', password: 'ChangeMe456!', rank: '', department: '', contact_info: '' },
+  ],
+  areas: [
+    { name: 'Sample Landmark', district: 'Anand', taluka: 'Anand City', village: 'Anand' },
+    { name: 'Another Landmark', district: 'Ahmedabad', taluka: 'Daskroi', village: 'Ahmedabad' },
+  ],
+};
+
+function downloadTextFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildSampleCsv(entity: DataConsoleEntity): string | null {
+  const columns = SAMPLE_COLUMNS[entity];
+  const rows = SAMPLE_ROWS[entity];
+  if (!columns || !rows) return null;
+  const escape = (value: string) => (value.includes(',') || value.includes('"') ? `"${value.replace(/"/g, '""')}"` : value);
+  const lines = [columns.join(',')];
+  for (const row of rows) lines.push(columns.map((col) => escape(row[col] ?? '')).join(','));
+  return lines.join('\r\n');
+}
+
+function buildSampleJson(entity: DataConsoleEntity): string | null {
+  const columns = SAMPLE_COLUMNS[entity];
+  const rows = SAMPLE_ROWS[entity];
+  if (!columns || !rows) return null;
+  return JSON.stringify(
+    rows.map((row) => Object.fromEntries(columns.map((col) => [col, row[col]]).filter(([, v]) => v !== ''))),
+    null,
+    2
+  );
+}
+
 // How many of this session's own runs stay visible for quick redownload/
 // resubmit -- kept deliberately small. The *permanent* record of every
 // export/import ever run already exists as a data_jobs-category entry in
@@ -100,8 +201,10 @@ interface DataConsoleSectionProps {
  * holds -- pick the entity, narrow it with real filters, see how many rows
  * match before committing, then download as CSV/XLSX/JSON. Reuses the
  * pre-existing generic job engine (admin_ops.py's /admin/data-jobs) rather
- * than a one-off screen per entity; watchlist/detections/traffic-analytics
- * data (backend-watchlist) is a separate phase, not covered here. */
+ * than a one-off screen per entity. The four Traffic Analytics entities
+ * read backend-watchlist-owned tables (detections, traffic_alerts) --
+ * export-only, no import support, same cross-service-same-DB pattern the
+ * rest of this job engine already uses for areas/police_stations. */
 export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) {
   const { permissions } = usePermissions();
 
@@ -128,6 +231,13 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
   const [recentRuns, setRecentRuns] = useState<DataJob[]>([]);
   const [importing, setImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Live vs. hour-of-day playback for traffic_density/traffic_flows --
+  // mirrors the Map page's own Density/Flow layer window toggle. The two
+  // are mutually exclusive server-side (backend-registry's
+  // _live_or_hour_window_clauses 400s if both or neither are set), so
+  // switching modes clears the other mode's filter keys entirely rather
+  // than leaving a stale one behind.
+  const [windowMode, setWindowMode] = useState<'live' | 'hour'>('live');
 
   const addRecentRun = (job: DataJob) => {
     setRecentRuns((prev) => [job, ...prev].slice(0, MAX_RECENT_RUNS));
@@ -135,9 +245,17 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
 
   // Reset filters/preview/recent-runs whenever the selected entity changes --
   // a district filter (or a just-run job) left over from Cameras has no
-  // meaning once you're looking at Postings.
+  // meaning once you're looking at Postings. traffic_density/traffic_flows
+  // require exactly one of window_minutes/hour, so a fresh default (live,
+  // 30 minutes) is seeded immediately rather than leaving filters empty
+  // (which the preview/export calls would otherwise 400 on).
   useEffect(() => {
-    setFilters({});
+    setWindowMode('live');
+    setFilters(
+      selected && ENTITY_CONFIG[selected].fields.includes('live_or_hour_window')
+        ? { window_minutes: 30 }
+        : {}
+    );
     setPreviewCount(null);
     setError(null);
     setRecentRuns([]);
@@ -332,6 +450,18 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                     />
                   </div>
                 )}
+                {config.fields.includes('plate_number') && (
+                  <div>
+                    <label className={labelClass} htmlFor="filter-plate">Plate Number</label>
+                    <input
+                      id="filter-plate"
+                      className={inputClass}
+                      placeholder="e.g. GJ01AB1234"
+                      value={(filters.plate_number as string) ?? ''}
+                      onChange={(e) => setFilter('plate_number', e.target.value)}
+                    />
+                  </div>
+                )}
                 {config.fields.includes('camera_id') && (
                   <div>
                     <label className={labelClass} htmlFor="filter-camera-id">Camera ID</label>
@@ -383,7 +513,29 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                       onChange={(e) => setFilter('status', e.target.value)}
                     >
                       <option value="">Any</option>
-                      {(selected === 'officers' ? OFFICER_STATUS_OPTIONS : REGISTRATION_STATUS_OPTIONS).map((opt) => (
+                      {(selected === 'officers'
+                        ? OFFICER_STATUS_OPTIONS
+                        : selected === 'traffic_alerts'
+                        ? TRAFFIC_ALERT_STATUS_OPTIONS
+                        : REGISTRATION_STATUS_OPTIONS
+                      ).map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <ChevronDown size={11} className="absolute right-2 top-[26px] text-slate-500 pointer-events-none" />
+                  </div>
+                )}
+                {config.fields.includes('alert_type') && (
+                  <div className="relative">
+                    <label className={labelClass} htmlFor="filter-alert-type">Alert Type</label>
+                    <select
+                      id="filter-alert-type"
+                      className={`${inputClass} appearance-none pr-7`}
+                      value={(filters.alert_type as string) ?? ''}
+                      onChange={(e) => setFilter('alert_type', e.target.value)}
+                    >
+                      <option value="">Any</option>
+                      {TRAFFIC_ALERT_TYPE_OPTIONS.map((opt) => (
                         <option key={opt} value={opt}>{opt}</option>
                       ))}
                     </select>
@@ -426,6 +578,73 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                   </label>
                 )}
               </div>
+
+              {config.fields.includes('live_or_hour_window') && (
+                <div className="mt-3">
+                  <p className={labelClass}>Window</p>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex rounded border border-line overflow-hidden shrink-0">
+                      {(['live', 'hour'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => {
+                            setWindowMode(mode);
+                            setFilters((prev) => {
+                              const next = { ...prev };
+                              delete next.window_minutes;
+                              delete next.hour;
+                              delete next.date;
+                              if (mode === 'live') next.window_minutes = 30;
+                              else {
+                                next.hour = new Date().getHours();
+                                next.date = new Date().toISOString().slice(0, 10);
+                              }
+                              return next;
+                            });
+                          }}
+                          className={`px-2.5 py-1.5 text-[11px] font-semibold transition ${
+                            windowMode === mode ? 'bg-command text-white' : 'bg-ink text-slate-300 hover:bg-panel-raised'
+                          }`}
+                        >
+                          {mode === 'live' ? 'Live' : 'Hour of day'}
+                        </button>
+                      ))}
+                    </div>
+                    {windowMode === 'live' ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="number"
+                          min={1}
+                          max={selected === 'traffic_flows' ? 360 : 180}
+                          className={`${inputClass} w-20`}
+                          value={(filters.window_minutes as number) ?? 30}
+                          onChange={(e) => setFilter('window_minutes', Number(e.target.value) || 1)}
+                        />
+                        <span className="text-[11px] text-slate-500">minutes back</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          className={`${inputClass} w-16`}
+                          value={(filters.hour as number) ?? 0}
+                          onChange={(e) => setFilter('hour', Number(e.target.value))}
+                        >
+                          {Array.from({ length: 24 }, (_, h) => (
+                            <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>
+                          ))}
+                        </select>
+                        <input
+                          type="date"
+                          className={inputClass}
+                          value={(filters.date as string) ?? ''}
+                          onChange={(e) => setFilter('date', e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {config.fields.includes('category') && (
                 <div className="mt-3">
@@ -586,6 +805,35 @@ export function DataConsoleSection({ onViewAuditLog }: DataConsoleSectionProps) 
                   never blocks the rows around it, and failed rows can be resubmitted from Just Ran below once
                   fixed.
                 </p>
+                {config.importHint && (
+                  <p className="text-[11px] text-slate-500 mb-3 italic">{config.importHint}</p>
+                )}
+                {SAMPLE_COLUMNS[selected] && (
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const csv = buildSampleCsv(selected);
+                        if (csv) downloadTextFile(`${selected}-import-sample.csv`, csv, 'text/csv');
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold rounded border border-line bg-panel-raised text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+                    >
+                      <Download size={12} />
+                      Download sample CSV
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const json = buildSampleJson(selected);
+                        if (json) downloadTextFile(`${selected}-import-sample.json`, json, 'application/json');
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-[11px] font-semibold rounded border border-line bg-panel-raised text-slate-300 hover:text-white hover:border-slate-500 transition-colors"
+                    >
+                      <Download size={12} />
+                      Download sample JSON
+                    </button>
+                  </div>
+                )}
                 <input
                   ref={fileInputRef}
                   type="file"

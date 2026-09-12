@@ -39,13 +39,13 @@ class AlertsConnectionManager:
             return True
         return scope["scope_type"] == "district" and scope["scope_value"] == camera_district
 
-    async def _broadcast_async(self, alert: dict, camera_district: str | None):
+    async def _broadcast_async(self, payload: dict, camera_district: str | None):
         dead = []
         for ws, scope in list(self._connections.items()):
             if not self._matches(scope, camera_district):
                 continue
             try:
-                await ws.send_text(json.dumps(alert, default=_json_default))
+                await ws.send_text(json.dumps(payload, default=_json_default))
             except Exception:  # noqa: BLE001 -- any send failure means this connection is dead; evict it regardless of cause
                 logger.exception(f"alert broadcast send failed for connection scope={scope}; evicting")
                 dead.append(ws)
@@ -56,17 +56,27 @@ class AlertsConnectionManager:
             except Exception as exc:  # noqa: BLE001 -- best-effort; a failure to close one dead connection must not block evicting the rest
                 logger.debug(f"failed to close already-dead connection: {exc!r}")
 
-    def broadcast_sync(self, alert: dict, camera_district: str | None) -> None:
+    def broadcast_sync(self, alert: dict, camera_district: str | None, kind: str = "watchlist") -> None:
         """Safe to call from sync code (e.g. alerts_service.process_detection,
         which runs in FastAPI's sync-route threadpool). Best-effort: if the
         event loop hasn't been captured yet (e.g. app startup event never
         fired, as in a bare non-context-manager TestClient), this is a no-op
         rather than an error -- a missed broadcast is recoverable via the
         existing 5s poll; raising here is not worth breaking detection
-        recording over."""
+        recording over.
+
+        `kind` discriminates this one WS channel between the two alert
+        families it now carries -- "watchlist" (a plate-match alert, the
+        original/default) or "congestion" (a traffic_alerts row, see
+        traffic_alerts_service.evaluate_and_broadcast) -- so a single
+        frontend listener can route each message to the right panel without
+        a second WS endpoint/connection. Merged into a shallow copy so the
+        caller's own dict (e.g. an already-serialized alert row) is never
+        mutated."""
         if self.loop is None:
             return
-        future = asyncio.run_coroutine_threadsafe(self._broadcast_async(alert, camera_district), self.loop)
+        payload = {**alert, "kind": kind}
+        future = asyncio.run_coroutine_threadsafe(self._broadcast_async(payload, camera_district), self.loop)
 
         def _log_if_failed(fut: "asyncio.Future"):
             # _broadcast_async's own try/except already handles per-send

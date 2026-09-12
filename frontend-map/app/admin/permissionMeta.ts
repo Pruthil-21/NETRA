@@ -20,7 +20,7 @@ export const PERMISSION_META: Record<string, PermissionMeta> = {
   acknowledge_alerts: { label: 'Acknowledge Alerts', module: 'Alerts', description: 'Acknowledge, dismiss, or escalate alerts' },
   manage_roles: { label: 'Manage Roles', module: 'Admin', description: 'Create, edit, and delete roles and their permissions' },
   manage_stations: { label: 'Manage Police Stations', module: 'Registry', description: 'Create, edit, and delete police station records' },
-  manage_circles: { label: 'Manage Circles', module: 'Registry', description: 'Create, edit, and delete area/circle records' },
+  manage_areas: { label: 'Manage Areas', module: 'Registry', description: 'Create, edit, and delete area records' },
   reset_officer_passwords: { label: "Reset Officers' Passwords", module: 'Admin', description: "Directly reset another officer's password" },
 };
 

@@ -30,8 +30,8 @@ vi.mock('@/context/CameraRegistryContext', () => ({
   HEALTH_CHECK_INTERVAL_MS: 20000,
 }));
 
-vi.mock('@/services/circlesService', () => ({
-  circlesService: { listCircles: () => Promise.resolve([]) },
+vi.mock('@/services/areasService', () => ({
+  areasService: { listAreas: () => Promise.resolve([]) },
 }));
 
 vi.mock('@/components/AlertBanner', () => ({

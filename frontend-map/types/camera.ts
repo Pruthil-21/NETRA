@@ -31,10 +31,10 @@ export interface Camera {
    */
   hls_url?: string | null;
   /**
-   * The District→Circle tree grouping this camera belongs to (see
-   * services/circlesService.ts). `null`/absent means the camera is
+   * The District→Area tree grouping this camera belongs to (see
+   * services/areasService.ts). `null`/absent means the camera is
    * unassigned — it still appears in its district's combined grid, just
-   * not under any Circle node.
+   * not under any Area node.
    */
-  circle_id?: number | null;
+  area_id?: number | null;
 }

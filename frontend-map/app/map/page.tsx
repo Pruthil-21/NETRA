@@ -2,16 +2,18 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import CameraDetailDrawer from '@/components/registry/CameraDetailDrawer';
 import { CameraRegistrySidebar } from '@/components/registry/CameraRegistrySidebar';
 import { usePermissions } from '@/hooks/usePermissions';
-import { TreeSelection } from '@/components/tree/DistrictCircleTree';
+import { TreeSelection } from '@/components/tree/DistrictAreaTree';
 import { CameraInfoOverlay } from '@/components/overlay/CameraInfoOverlay';
 import { MapFilterControl } from '@/components/map/MapFilterControl';
+import { TrafficAlertsPanel } from '@/components/map/TrafficAlertsPanel';
 import { DensityLoadStatus } from '@/components/map/DensityCanvasLayer';
 import { FlowLoadStatus } from '@/components/map/FlowCanvasLayer';
-import { circlesService, Circle } from '@/services/circlesService';
+import { areasService, Area } from '@/services/areasService';
 
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
   ssr: false,
@@ -33,9 +35,10 @@ const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
 export default function MapPage() {
   const { cameras, filteredCameras, filters, selectedCamera, setSelectedCamera } = useCameraRegistry();
   const { scopeValue: homeDistrict } = usePermissions();
+  const searchParams = useSearchParams();
 
   const [treeSelection, setTreeSelection] = useState<TreeSelection>(null);
-  const [circles, setCircles] = useState<Circle[]>([]);
+  const [areas, setAreas] = useState<Area[]>([]);
   const [hoveredCameraId, setHoveredCameraId] = useState<number | null>(null);
   // See app/page.tsx's identical ref for the full explanation: CameraMap's
   // per-marker hover-grace timer reports a clear (null) via onHoverChange
@@ -55,12 +58,31 @@ export default function MapPage() {
   const [flowStatus, setFlowStatus] = useState<FlowLoadStatus | null>(null);
 
   useEffect(() => {
-    circlesService.listCircles().then(setCircles).catch(() => {
-      // Non-fatal: the tree just shows no circles until this succeeds/retries.
+    areasService.listAreas().then(setAreas).catch(() => {
+      // Non-fatal: the tree just shows no areas until this succeeds/retries.
     });
   }, []);
 
-  // Tree structure (districts/circles) always reflects the full registry, not
+  // "Locate on Map" (the registry tree's right-click menu, any page) lands
+  // here as ?camera=<id> -- select it once the registry has actually
+  // loaded, the same "apply once per distinct value, not once ever" ref
+  // pattern as Archive's ?camera=&at= deep link, so clicking it again for a
+  // *different* camera while already on this page still takes effect.
+  // Selecting it is enough: CameraMap's MapController already flyTo()s the
+  // selected camera, and CameraDetailDrawer already renders off the same
+  // selectedCamera state.
+  const requestedCameraId = searchParams.get('camera');
+  const lastAppliedCameraId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!requestedCameraId || lastAppliedCameraId.current === requestedCameraId || cameras.length === 0) return;
+    const found = cameras.find((cam) => String(cam.id) === requestedCameraId);
+    if (!found) return;
+    lastAppliedCameraId.current = requestedCameraId;
+    setSelectedCamera(found);
+    setTreeSelection({ type: 'camera', value: found.id });
+  }, [requestedCameraId, cameras, setSelectedCamera]);
+
+  // Tree structure (districts/areas) always reflects the full registry, not
   // whatever CameraFilterBar currently narrows filteredCameras to -- otherwise
   // picking a department filter would make the tree lose branches out from
   // under the officer navigating it.
@@ -81,7 +103,7 @@ export default function MapPage() {
     } else if (treeSelection.type === 'camera') {
       matches = filteredCameras.filter((cam) => cam.id === treeSelection.value);
     } else {
-      matches = filteredCameras.filter((cam) => cam.circle_id === treeSelection.value);
+      matches = filteredCameras.filter((cam) => cam.area_id === treeSelection.value);
     }
     return new Set(matches.map((cam) => cam.id));
   }, [treeSelection, filteredCameras]);
@@ -90,16 +112,16 @@ export default function MapPage() {
     () => (hoveredCameraId != null ? cameras.find((cam) => cam.id === hoveredCameraId) ?? null : null),
     [cameras, hoveredCameraId]
   );
-  const hoveredCircleName = useMemo(
-    () => circles.find((circle) => circle.id === hoveredCamera?.circle_id)?.name ?? null,
-    [circles, hoveredCamera]
+  const hoveredAreaName = useMemo(
+    () => areas.find((area) => area.id === hoveredCamera?.area_id)?.name ?? null,
+    [areas, hoveredCamera]
   );
 
   return (
     <div className="flex-1 flex overflow-hidden relative min-h-0">
       <CameraRegistrySidebar
         districts={districts}
-        circles={circles}
+        areas={areas}
         cameras={cameras}
         selected={treeSelection}
         onSelect={(selection) => {
@@ -110,6 +132,7 @@ export default function MapPage() {
           }
         }}
         homeDistrict={homeDistrict}
+        enableDrag={false}
       />
 
       <main className="flex-1 flex flex-col h-full overflow-hidden">
@@ -132,6 +155,7 @@ export default function MapPage() {
               }}
               highlightedCameraIds={highlightedCameraIds}
               hideMarkers={filters.mapLayer !== 'none'}
+              showPoliceStations={filters.showPoliceStations}
               coverage={filters.mapLayer === 'coverage' ? { cameras: filteredCameras } : undefined}
               density={
                 filters.mapLayer === 'density'
@@ -160,6 +184,7 @@ export default function MapPage() {
               densityStatus={filters.mapLayer === 'density' ? densityStatus : null}
               flowStatus={filters.mapLayer === 'flow' ? flowStatus : null}
             />
+            <TrafficAlertsPanel />
           </div>
         </div>
         <CameraDetailDrawer camera={selectedCamera} />
@@ -167,7 +192,7 @@ export default function MapPage() {
 
       <CameraInfoOverlay
         camera={hoveredCamera}
-        circleName={hoveredCircleName}
+        areaName={hoveredAreaName}
         onClose={() => setHoveredCameraId(null)}
         onMouseEnterOverlay={() => {
           overlayHoveredRef.current = true;

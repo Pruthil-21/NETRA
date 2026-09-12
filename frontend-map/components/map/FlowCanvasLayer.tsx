@@ -159,13 +159,62 @@ export function FlowCanvasLayer({ cameras, mode, windowMinutes, hour, onStatusCh
         const congestionRatio =
           flow.avg_speed_kmh != null && maxSpeed > 0 ? 1 - flow.avg_speed_kmh / maxSpeed : 0.5;
 
-        ctx.strokeStyle = densityColorForRatio(congestionRatio);
-        ctx.lineWidth = flowWidthForRatio(volumeRatio);
-        ctx.globalAlpha = 0.75;
+        const color = densityColorForRatio(congestionRatio);
+        const width = flowWidthForRatio(volumeRatio);
+        ctx.strokeStyle = color;
+
+        // Road-following path when OSRM resolved one (see
+        // route_geometry_service.get_or_fetch_route) -- a straight line
+        // between two cameras cuts through buildings/parks with no regard
+        // for the actual street network. Falls back to the old straight
+        // segment when routing failed/was unavailable for this pair,
+        // rather than dropping the corridor.
+        const points = flow.route && flow.route.length >= 2
+          ? flow.route.map(([lat, lon]) => map.latLngToContainerPoint(L.latLng(lat, lon)))
+          : [fromPoint, toPoint];
+
+        const strokePath = () => {
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+          ctx.stroke();
+        };
+
+        // Soft, wide halo first -- same reasoning as the density layer's
+        // edge ring, inverted: against satellite imagery a single crisp
+        // line at the floor width can still disappear into a similarly-
+        // colored basemap, but a low-alpha glow around it never does.
+        ctx.globalAlpha = 0.25;
+        ctx.lineWidth = width + 6;
+        strokePath();
+
+        ctx.globalAlpha = 0.85;
+        ctx.lineWidth = width;
+        strokePath();
+
+        // Directional arrowhead at the path's middle vertex, rotated to
+        // that segment's local bearing (not the straight endpoint-to-
+        // endpoint bearing, which would point the wrong way once the path
+        // bends) -- a plain line can carry volume (width) and congestion
+        // (color) but not direction, which an officer reading the map
+        // needs just as much as the other two.
+        const midIdx = Math.floor((points.length - 1) / 2);
+        const a = points[midIdx];
+        const b = points[Math.min(midIdx + 1, points.length - 1)];
+        const angle = Math.atan2(b.y - a.y, b.x - a.x);
+        const arrowLen = 6 + width * 0.6;
+        ctx.save();
+        ctx.translate((a.x + b.x) / 2, (a.y + b.y) / 2);
+        ctx.rotate(angle);
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.moveTo(fromPoint.x, fromPoint.y);
-        ctx.lineTo(toPoint.x, toPoint.y);
-        ctx.stroke();
+        ctx.moveTo(arrowLen, 0);
+        ctx.lineTo(-arrowLen * 0.6, arrowLen * 0.55);
+        ctx.lineTo(-arrowLen * 0.6, -arrowLen * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
       }
 
       renderedBounds = map.getBounds();

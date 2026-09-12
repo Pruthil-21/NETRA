@@ -35,5 +35,7 @@ def test_dismiss_is_not_subject_to_the_sod_rule(client, officer_headers, interna
     alert_id = _create_watchlist_and_matching_detection(client, officer_headers, internal_headers, plate="GJ01SOD003")
 
     client.patch(f"/alerts/{alert_id}", json={"status": "ACKNOWLEDGED"}, headers=officer_headers)
-    dismiss = client.patch(f"/alerts/{alert_id}", json={"status": "DISMISSED"}, headers=officer_headers)
+    dismiss = client.patch(
+        f"/alerts/{alert_id}", json={"status": "DISMISSED", "reason_code": "not relevant"}, headers=officer_headers
+    )
     assert dismiss.status_code == 200

@@ -20,13 +20,13 @@ PERMISSIONS = {
     "super_admin": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
-        "acknowledge_alerts", "manage_roles", "manage_stations", "manage_circles",
+        "acknowledge_alerts", "manage_roles", "manage_stations", "manage_areas",
         "reset_officer_passwords",
     ],
     "district_command": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
         "view_analytics", "export_data", "manage_users_roles", "acknowledge_alerts",
-        "view_audit_logs", "manage_stations", "manage_circles",
+        "view_audit_logs", "manage_stations", "manage_areas",
     ],
     "station_officer": [
         "view_live_feeds", "search_vehicles", "edit_watchlist", "acknowledge_alerts",

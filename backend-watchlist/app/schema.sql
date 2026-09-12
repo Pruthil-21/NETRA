@@ -126,3 +126,87 @@ CREATE TABLE vehicle_daily_sightings (
 
 CREATE INDEX idx_vehicle_daily_sightings_plate
     ON vehicle_daily_sightings (plate_number, sighting_date);
+
+-- Congestion alerts (traffic-analysis Phase 3) -- a density/flow threshold
+-- breach, not a plate match, so this is deliberately its own table rather
+-- than forced into `alerts` above (which is keyed to watchlist_id/
+-- detection_id and carries a 1:1 plate-hit chain-of-custody model this
+-- doesn't need). A single `status` column with acknowledged_by/at is
+-- enough here -- no separate append-only history table, since the
+-- separation-of-duty workflow `alert_status_history` exists for doesn't
+-- apply to a density/corridor reading.
+--
+-- Exactly one of camera_id (a density breach) or
+-- from_camera_id/to_camera_id (a flow/corridor breach) is set, matching
+-- which of camera_density_counts/camera_flow_pairs produced the reading --
+-- see traffic_alerts_service.evaluate_and_broadcast.
+CREATE TABLE IF NOT EXISTS traffic_alerts (
+    id               SERIAL PRIMARY KEY,
+    alert_type       TEXT NOT NULL CHECK (alert_type IN ('density', 'flow', 'camera_offline')),
+    camera_id        INTEGER,
+    from_camera_id   INTEGER,
+    to_camera_id     INTEGER,
+    metric_value     REAL NOT NULL,
+    threshold_value  REAL NOT NULL,
+    district         TEXT,
+    status           TEXT NOT NULL DEFAULT 'NEW' CHECK (status IN ('NEW', 'ACKNOWLEDGED', 'DISMISSED')),
+    triggered_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    acknowledged_by  TEXT,
+    acknowledged_at  TIMESTAMPTZ
+);
+
+-- 'camera_offline' added after this table's original release -- a bare
+-- CREATE TABLE IF NOT EXISTS above never re-runs against an already
+-- initialized database (see docker-entrypoint-initdb.d), so the widened
+-- constraint needs its own idempotent statement to actually reach one.
+ALTER TABLE traffic_alerts DROP CONSTRAINT IF EXISTS traffic_alerts_alert_type_check;
+ALTER TABLE traffic_alerts ADD CONSTRAINT traffic_alerts_alert_type_check
+    CHECK (alert_type IN ('density', 'flow', 'camera_offline'));
+
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_status ON traffic_alerts (status);
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_district ON traffic_alerts (district);
+-- The evaluation loop's cooldown check (skip re-firing for a camera/corridor
+-- that already has an unresolved alert) filters on these plus status/type,
+-- run every 5 minutes -- worth a real index rather than a sequential scan.
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_camera_open
+    ON traffic_alerts (camera_id, alert_type, status);
+CREATE INDEX IF NOT EXISTS idx_traffic_alerts_corridor_open
+    ON traffic_alerts (from_camera_id, to_camera_id, alert_type, status);
+
+-- Web Push subscriptions -- shared across backend-registry and
+-- backend-watchlist (same Postgres instance, same convention as
+-- audit_logs): declared identically, behind IF NOT EXISTS, in both
+-- services' schema.sql so either one can run first with zero cross-folder
+-- migration coordination. badge_number, not a FK to officers(id) (that
+-- table belongs to backend-registry), so either service can write/read
+-- this without depending on the other's ownership.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id           SERIAL PRIMARY KEY,
+    badge_number TEXT NOT NULL,
+    endpoint     TEXT NOT NULL,
+    p256dh_key   TEXT NOT NULL,
+    auth_key     TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (badge_number, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_badge ON push_subscriptions (badge_number);
+
+-- Road-following path for a Flow-layer corridor between two cameras (see
+-- route_geometry_service.py) -- without this the Map page drew a straight
+-- line between two lat/longs, which cuts through buildings/parks/water
+-- with no regard for the actual road network. Computed via OSRM at most
+-- ONCE per camera pair, ever, and cached here permanently: two fixed
+-- points' shortest road path doesn't change over this project's lifetime,
+-- so this table is what keeps real call volume against OSRM's public demo
+-- server (rate-limited, best-effort) far under its 1 req/sec policy
+-- regardless of how many officers view the layer.
+CREATE TABLE IF NOT EXISTS flow_route_cache (
+    from_camera_id   INTEGER NOT NULL,
+    to_camera_id     INTEGER NOT NULL,
+    geometry         JSONB NOT NULL,
+    distance_meters  REAL,
+    duration_seconds REAL,
+    computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (from_camera_id, to_camera_id)
+);

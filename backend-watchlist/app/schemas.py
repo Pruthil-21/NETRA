@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 def normalize_plate(value: str) -> str:
@@ -93,6 +93,53 @@ class CorridorFlow(BaseModel):
     to_camera_id: int
     transitions: int
     avg_speed_kmh: Optional[float] = None
+    # Road-following [[lat, lon], ...] path between the two cameras (see
+    # route_geometry_service.get_or_fetch_route) -- None when OSRM couldn't
+    # resolve one, which the frontend falls back to a straight line for.
+    route: Optional[list[list[float]]] = None
+
+
+class TrendBucket(BaseModel):
+    """One time bucket in a historical trends chart -- see
+    detections_service.camera_density_trend/camera_flow_trend. bucket_start
+    is an IST calendar boundary (midnight or the top of the hour), matching
+    the hour-of-day playback convention the live density/flow endpoints
+    already use."""
+    bucket_start: datetime
+    count: int
+
+
+class DensityTrendResponse(BaseModel):
+    trend: list[TrendBucket]
+    top_cameras: list[DensityPoint]
+
+
+class FlowTrendResponse(BaseModel):
+    trend: list[TrendBucket]
+    top_corridors: list[CorridorFlow]
+
+
+class TrafficAlertOut(BaseModel):
+    """A congestion or camera-health breach -- see traffic_alerts_service and
+    schema.sql's traffic_alerts table. Exactly one of camera_id (a density or
+    camera_offline breach) or from_camera_id/to_camera_id (a flow/corridor
+    breach) is set, matching alert_type."""
+    id: int
+    alert_type: Literal["density", "flow", "camera_offline"]
+    camera_id: Optional[int] = None
+    from_camera_id: Optional[int] = None
+    to_camera_id: Optional[int] = None
+    metric_value: float
+    threshold_value: float
+    district: Optional[str] = None
+    status: Literal["NEW", "ACKNOWLEDGED", "DISMISSED"]
+    triggered_at: datetime
+    acknowledged_by: Optional[str] = None
+    acknowledged_at: Optional[datetime] = None
+
+
+class TrafficAlertStatusUpdate(BaseModel):
+    status: Literal["ACKNOWLEDGED", "DISMISSED"]
 
 
 class DetectionResult(BaseModel):
@@ -124,6 +171,22 @@ class AlertOut(BaseModel):
 
 class AlertStatusUpdate(BaseModel):
     status: Literal["ACKNOWLEDGED", "DISMISSED", "ESCALATED"]
+    reason_code: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _require_reason_on_dismiss(self):
+        # A dismissed watchlist hit with no recorded reason is an
+        # accountability gap -- Acknowledge/Escalate leave the alert open to
+        # further action so they don't need one, but Dismiss is final.
+        if self.status == "DISMISSED" and not (self.reason_code or "").strip():
+            raise ValueError("reason_code is required when dismissing an alert")
+        return self
+
+
+class AlertHistoryEntry(BaseModel):
+    action: str
+    badge_number: Optional[str] = None
+    timestamp: datetime
     reason_code: Optional[str] = None
 
 

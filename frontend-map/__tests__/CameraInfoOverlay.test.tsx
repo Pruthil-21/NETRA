@@ -23,7 +23,7 @@ const CAMERA: Camera = {
   id: 42, name: 'Junagadh Gate Cam', dept: 'Anand', lat: 22.5, long: 72.9,
   camera_type: 'Bullet', ownership: 'Traffic Police', connectivity_status: 'online',
   storage_type: 'Cloud', retention_days: 30, health_status: 'operational',
-  rtsp_url: '', circle_id: 7,
+  rtsp_url: '', area_id: 7,
 };
 
 describe('CameraInfoOverlay', () => {
@@ -33,9 +33,9 @@ describe('CameraInfoOverlay', () => {
   });
 
   it('renders camera details and the live preview player when camera is set', () => {
-    render(<CameraInfoOverlay camera={CAMERA} circleName="APC Circle" onClose={() => {}} />);
+    render(<CameraInfoOverlay camera={CAMERA} areaName="APC Area" onClose={() => {}} />);
     expect(screen.getByText('Junagadh Gate Cam')).toBeInTheDocument();
-    expect(screen.getByText('APC Circle')).toBeInTheDocument();
+    expect(screen.getByText('APC Area')).toBeInTheDocument();
     expect(screen.getByText('Anand')).toBeInTheDocument();
     expect(screen.getByTestId('preview-player')).toBeInTheDocument();
   });
@@ -63,7 +63,7 @@ describe('CameraInfoOverlay', () => {
     expect(screen.getByText('48°C')).toBeInTheDocument();
   });
 
-  it('shows "Unassigned" when circleName is not provided', () => {
+  it('shows "Unassigned" when areaName is not provided', () => {
     render(<CameraInfoOverlay camera={CAMERA} onClose={() => {}} />);
     expect(screen.getByText('Unassigned')).toBeInTheDocument();
   });

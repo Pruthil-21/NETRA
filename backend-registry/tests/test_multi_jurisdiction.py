@@ -89,7 +89,7 @@ def test_a_pending_officer_with_zero_postings_sees_no_cameras(client):
         headers = {"Authorization": f"Bearer {login_resp.json()['token']}"}
 
         assert client.get("/cameras", headers=headers).json() == []
-        assert client.get("/circles", headers=headers).json() == []
+        assert client.get("/areas", headers=headers).json() == []
     finally:
         with get_conn() as conn:
             with conn.cursor() as cur:
