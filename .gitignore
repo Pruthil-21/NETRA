@@ -32,6 +32,11 @@ streaming/videos/
 *.mp4
 docker-compose.override.yml
 *.pt
+# Fine-tuned model this project actually produced and ships with --
+# unlike the blanket *.pt rule above (pretrained base weights teammates
+# can just re-download), this one has no other source, so it needs to
+# be tracked for the plate-presence speed gate to work for anyone else.
+!ml-anpr/plate_presence_classifier.pt
 debug_*.jpg
 
 # Local dev tunnel script (machine-specific)

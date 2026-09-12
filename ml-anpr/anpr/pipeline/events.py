@@ -62,10 +62,17 @@ class DetectionEvent:
             "camera_id": numeric_camera_id,
             "plate_number": self.plate_number,
             "confidence": self.confidence,
+            "event_id": self.event_id,
+            # Documented optional field ("free-text tag for where the read
+            # came from", ANPR Integration Handoff p.2, 2026-09-10) -- the
+            # pipeline-side camera_id string (e.g. "direct-cam06") is real,
+            # human-readable provenance distinct from the required numeric
+            # camera_id above, so it's a natural fit rather than an
+            # arbitrary string.
+            "source": self.camera_id,
             # Extra fields, not in the documented contract -- see module
             # docstring. Included for forward-compatibility and our own
             # audit trail even if the backend ignores them today.
-            "event_id": self.event_id,
             "model_version": self.model_version,
             "detection_type": self.detection_type,
         }

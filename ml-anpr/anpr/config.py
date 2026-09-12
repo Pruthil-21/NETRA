@@ -88,18 +88,29 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # timeout/5xx with backoff (same event_id), never retry 401 (bad key,
 # retrying won't fix it) or 409 (retrying with the same ID just repeats
 # the same collision -- see event_sender.py's status-code handling).
+# Confirmed correct by P6 directly (2026-09-10): this is
+# backend-watchlist's own committed tunnel hostname (named explicitly in
+# their docker-compose.yml and .env), and /detections lives on
+# backend-watchlist -- not the "hostname not in repo, ask before using"
+# flag from the original handoff doc, which was about backend-registry's
+# tunnel specifically (a different, undocumented hostname).
 DETECTION_API_URL = "https://api.digdhrishti.me/detections"
-# STILL OPEN: the handoff is explicit that this key is a *new*,
-# ML-ingestion-specific credential -- "don't reuse the tunnel token or
-# anything else" -- and no real value was included in the handoff text.
-# The old key almost certainly won't authenticate against this new
-# gateway (a wrong key fails closed with 401, per the handoff's own
-# retry table -- event_sender.py already won't waste retries on that).
-# Deliberately not carrying the old key forward silently here, since a
-# present-but-wrong key is a real risk of a confusing 401 nobody
-# investigates as "the key is stale," not just "the code is unfinished
-# in an obvious way." Get the real key from P6 directly.
-INTERNAL_KEY = "REQUEST_FROM_P6_FOR_ML_INGESTION"
+# Real value confirmed by P6 (2026-09-10): INTERNAL_SERVICE_KEY in
+# backend-watchlist's own root .env. Deliberately NOT hardcoded here as a
+# literal -- per P6's own explicit instruction, a real secret sitting in
+# a committed source file stays in git history forever, readable by
+# anyone with repo access, even after it's rotated. Read from the
+# environment instead (same variable name backend-watchlist itself
+# uses); falls back to the old placeholder (which fails closed with a
+# real, debuggable 401, not a silent wrong-key mismatch) if unset, so a
+# machine that hasn't been given the real value yet degrades safely
+# rather than crashing.
+INTERNAL_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "REQUEST_FROM_P6_FOR_ML_INGESTION")
+# Resolution strategy confirmed FINAL by P6 (2026-09-10): a static map
+# handed to us per physical rig, not a service-account JWT calling
+# GET /cameras live -- the other option raised in the original handoff
+# doc's "decide together, don't assume" flag. Nothing to build here; this
+# map already is the agreed approach.
 CAMERA_ID_MAP = {
     "direct-cam01": 1,
     "direct-cam02": 2,
