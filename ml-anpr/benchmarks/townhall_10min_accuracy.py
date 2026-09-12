@@ -108,28 +108,42 @@ def main():
     cap.release()
 
     # Tracks near the end of the window may have just dispatched a VLM
-    # call (0.5-7s real latency) that hasn't completed yet -- give it
-    # real wall-clock time rather than dropping a rescue that was almost
-    # there. VehicleTracker's _vlm_executor only runs 2 concurrent
-    # workers (see tracking.py), so draining N pending calls takes real
-    # minutes, not seconds, once N gets into the hundreds -- scale the
-    # timeout with the backlog instead of a naive fixed constant (a
-    # fixed 30s drained 0 of 172 pending calls on the first real run of
-    # this script, not because the VLM fallback failed, just because
-    # the wait was nowhere near long enough).
+    # call that hasn't completed yet -- give it real wall-clock time
+    # rather than dropping a rescue that was almost there.
+    #
+    # This timeout has been wrong twice now, in the same direction (too
+    # short), so this version logs each individual result as it lands
+    # instead of only a final count -- if the timing is STILL wrong, at
+    # least the real per-call outcomes aren't lost again. Real measured
+    # rate on the first full run of this drain: ~20s per call with only
+    # 2 concurrent workers (_vlm_executor's fixed pool size, see
+    # tracking.py) -- 4x slower than the ~5s/call this script's first
+    # version assumed, and far slower than the ~0.5s warm-latency an
+    # earlier, different session measured for a single isolated call
+    # (real resource contention on this hardware/model combo, most
+    # likely -- not investigated further here, this script's job is the
+    # rescue count, not the latency root cause).
     pending = tracker.pending_vlm_futures()
     if pending:
-        drain_timeout = min(1200, max(60, len(pending) * 4))
-        print(f"draining {len(pending)} pending VLM future(s), up to {drain_timeout}s...")
+        drain_timeout = min(3600, len(pending) * 15)
+        print(f"draining {len(pending)} pending VLM future(s), up to {drain_timeout}s "
+              f"({drain_timeout/60:.1f} min)...")
         deadline = time.time() + drain_timeout
-        last_report = time.time()
+        seen = set()
         while time.time() < deadline and any(not f.done() for f in pending):
             time.sleep(2)
-            if time.time() - last_report > 15:
-                still_pending = sum(1 for f in pending if not f.done())
-                print(f"  still pending: {still_pending}/{len(pending)} "
-                      f"({time.time()-deadline+drain_timeout:.0f}s elapsed)", flush=True)
-                last_report = time.time()
+            for i, f in enumerate(pending):
+                if i in seen or not f.done():
+                    continue
+                seen.add(i)
+                try:
+                    outcome = f.result()
+                except Exception as e:
+                    outcome = f"EXCEPTION: {e!r}"
+                print(f"  VLM result [{len(seen)}/{len(pending)}]: {outcome}", flush=True)
+        still_pending = sum(1 for f in pending if not f.done())
+        if still_pending:
+            print(f"  giving up on {still_pending} still-pending call(s) after {drain_timeout}s")
         confirmed_events.extend(tracker.pop_ready_vlm_confirmations())
 
     elapsed = time.perf_counter() - t0

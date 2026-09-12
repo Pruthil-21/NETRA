@@ -46,16 +46,33 @@ class DetectionEvent:
         (e.g. "direct-cam06"), matching every other camera_id_str used
         throughout anpr/streaming.py and anpr/watchlist_client.py, not
         the backend's numeric id.
+
+        Deliberately does NOT send `detected_at`: the real handoff
+        (2026-09-07) documents it as ISO 8601, optional, "omit it and we
+        timestamp it server-side at receipt time -- only send this if
+        you need to backfill a specific capture time." This event's own
+        `timestamp` is a raw Unix-epoch float (see the field above), not
+        ISO 8601 -- sending it as `detected_at` would have been a real
+        format mismatch, not just an unnecessary field, for every live
+        detection this pipeline produces (none of them are backfills).
+        Kept on the Python object for our own logging/audit use; just
+        not put on the wire.
         """
         return {
             "camera_id": numeric_camera_id,
             "plate_number": self.plate_number,
             "confidence": self.confidence,
+            "event_id": self.event_id,
+            # Documented optional field ("free-text tag for where the read
+            # came from", ANPR Integration Handoff p.2, 2026-09-10) -- the
+            # pipeline-side camera_id string (e.g. "direct-cam06") is real,
+            # human-readable provenance distinct from the required numeric
+            # camera_id above, so it's a natural fit rather than an
+            # arbitrary string.
+            "source": self.camera_id,
             # Extra fields, not in the documented contract -- see module
             # docstring. Included for forward-compatibility and our own
             # audit trail even if the backend ignores them today.
-            "event_id": self.event_id,
-            "detected_at": self.timestamp,
             "model_version": self.model_version,
             "detection_type": self.detection_type,
         }

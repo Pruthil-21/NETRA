@@ -57,38 +57,91 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # direct-camNN is a separate task, not done here. This map is ready for
 # that wiring, just not connected to anything live yet.
 #
-# The old "livecam"/"camera1"/"camera16" entries are removed, not kept as
-# a fallback -- P6 confirmed directly against the registry that id 1 was
-# a fictional demo camera with no real stream and id 16 doesn't exist at
-# all, so keeping them would silently send real detections to a
-# nonexistent/wrong camera_id instead of just not sending at all
-# (watchlist_client.send_detection_to_watchlist already no-ops with a
-# clear [WARN] when a camera_id string isn't in this map, e.g.
-# detect_plate.py's own test invocation still uses "camera16" and will
-# now correctly skip the network call instead of silently misreporting).
+# The old "livecam"/"camera1"/"camera16" entries were removed, not kept
+# as a fallback -- at the time, id 1 was a fictional demo camera with no
+# real stream and id 16 didn't exist at all. That's now stale in a new
+# way, not just historical: backend-registry has since renumbered the
+# whole camera table (see backend-registry/scripts/backups/
+# cleanup_and_renumber_cameras.sql on main, applied ~2026-09-03) down to
+# a clean 30-camera set where id == the organizer's own camera number --
+# id 1 is now direct-cam01's real id, not the old fictional one. Found
+# by diffing this branch against main directly, not guessed: confirmed
+# against backend-registry/scripts/backups/cameras_snapshot_2026-09-03.csv,
+# which lists each camera's real stream_id (e.g. id 48 -> stream_id
+# "direct-cam06") alongside its post-renumber id. Still true either way:
+# watchlist_client.send_detection_to_watchlist no-ops with a clear [WARN]
+# for any camera_id string not in this map, so an ever-stale-again
+# mapping fails safe (silently skips sending) rather than misreporting
+# to the wrong camera.
 # ---------------------------------------------------------------------------
-# P6's real backend-watchlist gateway, confirmed live and working: bare
-# POST /detections (no prefix needed -- an earlier gateway config gap
-# that made it look like /watchlist/detections was required has been
-# fixed by P6), server-side event_id idempotency verified working,
-# INTERNAL_KEY below verified correct against this same host. This is a
-# Cloudflare quick tunnel, though -- it can change if P6's container
-# restarts, same caveat as any other trycloudflare.com URL in this
-# project; if calls start failing, ask P6 for a fresh URL before
-# assuming anything else broke.
-DETECTION_API_URL = "https://receiving-intl-mothers-santa.trycloudflare.com/detections"
-INTERNAL_KEY = "3fdcd2e3b5fe0ecacd29d0b011c6cca74caddcbae5196a6b"
+# P6's real, permanent backend-watchlist gateway (handoff doc, 2026-09-07):
+# a named domain behind a persistent Cloudflare tunnel, not a disposable
+# trycloudflare.com quick-tunnel URL that dies whenever P6's container
+# restarts (the old URL here failed with a real connection error on
+# every single test this whole session -- this replaces it). Full
+# contract: POST /detections, 201 with {detection, alert}, alert is
+# non-null only on a real watchlist match. Idempotency: event_id (UUID)
+# is a genuine server-side dedup key -- a retried POST with the same
+# event_id returns the original detection instead of creating a second
+# one; a *different* detection accidentally reusing an event_id gets
+# 409, not silently overwritten. Retry guidance from the handoff: retry
+# timeout/5xx with backoff (same event_id), never retry 401 (bad key,
+# retrying won't fix it) or 409 (retrying with the same ID just repeats
+# the same collision -- see event_sender.py's status-code handling).
+# Confirmed correct by P6 directly (2026-09-10): this is
+# backend-watchlist's own committed tunnel hostname (named explicitly in
+# their docker-compose.yml and .env), and /detections lives on
+# backend-watchlist -- not the "hostname not in repo, ask before using"
+# flag from the original handoff doc, which was about backend-registry's
+# tunnel specifically (a different, undocumented hostname).
+DETECTION_API_URL = "https://api.digdhrishti.me/detections"
+# Real value confirmed by P6 (2026-09-10): INTERNAL_SERVICE_KEY in
+# backend-watchlist's own root .env. Deliberately NOT hardcoded here as a
+# literal -- per P6's own explicit instruction, a real secret sitting in
+# a committed source file stays in git history forever, readable by
+# anyone with repo access, even after it's rotated. Read from the
+# environment instead (same variable name backend-watchlist itself
+# uses); falls back to the old placeholder (which fails closed with a
+# real, debuggable 401, not a silent wrong-key mismatch) if unset, so a
+# machine that hasn't been given the real value yet degrades safely
+# rather than crashing.
+INTERNAL_KEY = os.environ.get("INTERNAL_SERVICE_KEY", "REQUEST_FROM_P6_FOR_ML_INGESTION")
+# Resolution strategy confirmed FINAL by P6 (2026-09-10): a static map
+# handed to us per physical rig, not a service-account JWT calling
+# GET /cameras live -- the other option raised in the original handoff
+# doc's "decide together, don't assume" flag. Nothing to build here; this
+# map already is the agreed approach.
 CAMERA_ID_MAP = {
-    "direct-cam01": 43,
-    "direct-cam02": 44,
-    "direct-cam03": 45,
-    "direct-cam04": 46,
-    "direct-cam05": 47,
-    "direct-cam06": 48,
-    "direct-cam07": 49,
-    "direct-cam08": 50,
-    "direct-cam09": 51,
-    "direct-cam10": 52,
+    "direct-cam01": 1,
+    "direct-cam02": 2,
+    "direct-cam03": 3,
+    "direct-cam04": 4,
+    "direct-cam05": 5,
+    "direct-cam06": 6,
+    "direct-cam07": 7,
+    "direct-cam08": 8,
+    "direct-cam09": 9,
+    "direct-cam10": 10,
+    "direct-cam11": 11,
+    "direct-cam12": 12,
+    "direct-cam13": 13,
+    "direct-cam14": 14,
+    "direct-cam15": 15,
+    "direct-cam16": 16,
+    "direct-cam17": 17,
+    "direct-cam18": 18,
+    "direct-cam19": 19,
+    "direct-cam20": 20,
+    "direct-cam21": 21,
+    "direct-cam22": 22,
+    "direct-cam23": 23,
+    "direct-cam24": 24,
+    "direct-cam25": 25,
+    "direct-cam26": 26,
+    "direct-cam27": 27,
+    "direct-cam28": 28,
+    "direct-cam29": 29,
+    "direct-cam30": 30,
 }
 
 if torch.backends.mps.is_available():
