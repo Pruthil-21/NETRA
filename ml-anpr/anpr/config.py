@@ -51,11 +51,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # ("Timbavadi Gate, Junagadh") -- don't assume cam06.mp4 corresponds to
 # direct-cam06 without checking further.
 #
-# STILL OPEN: nothing in this codebase actually calls
-# send_detection_to_watchlist with a "direct-camNN" camera_id string yet
-# -- wiring an actual live/replay source to report as the correct
-# direct-camNN is a separate task, not done here. This map is ready for
-# that wiring, just not connected to anything live yet.
+# UPDATE: wired -- anpr/streaming.py's process_stream() and
+# process_video_file() both take a camera_id string and call
+# send_detection_to_watchlist for every confirmed plate. The caller just
+# needs to pass a real key from this map (e.g. "direct-cam06").
 #
 # The old "livecam"/"camera1"/"camera16" entries were removed, not kept
 # as a fallback -- at the time, id 1 was a fictional demo camera with no
@@ -94,7 +93,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 # backend-watchlist -- not the "hostname not in repo, ask before using"
 # flag from the original handoff doc, which was about backend-registry's
 # tunnel specifically (a different, undocumented hostname).
-DETECTION_API_URL = "https://api.digdhrishti.me/detections"
+# Overridable via env var (same pattern as INTERNAL_KEY below) -- needed
+# to point at a local docker-compose stack (http://localhost:8001/detections)
+# or a teammate's shared dev instance for integration testing without
+# editing this file each time.
+DETECTION_API_URL = os.environ.get("DETECTION_API_URL", "https://api.digdhrishti.me/detections")
 # Real value confirmed by P6 (2026-09-10): INTERNAL_SERVICE_KEY in
 # backend-watchlist's own root .env. Deliberately NOT hardcoded here as a
 # literal -- per P6's own explicit instruction, a real secret sitting in
@@ -142,6 +145,18 @@ CAMERA_ID_MAP = {
     "direct-cam28": 28,
     "direct-cam29": 29,
     "direct-cam30": 30,
+    # Anand replay streams (Dhruv's demo-* RTSP paths, MediaMTX host
+    # 100.105.88.26): real registry rows confirmed by Pruthil directly
+    # (2026-09-13), dept="Anand", not part of the direct-camNN organizer
+    # rig. CAMERA_ID_MAP already does exactly the string->registry-ID
+    # lookup Pruthil asked about -- these are a straight addition, no
+    # design change needed.
+    "demo-cam67": 40166,          # Mota Bazar
+    "demo-cam88": 40167,          # Raghuveer Circle
+    "demo-cam142": 40168,         # Town Hall
+    "demo-cam161": 40169,         # APC Circle
+    "demo-cam180": 40170,         # Samarkha Chokdi
+    "demo-railway-exit": 40171,   # Railway Station
 }
 
 if torch.backends.mps.is_available():
