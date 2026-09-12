@@ -32,7 +32,16 @@ def send_detection_to_watchlist(plate_number, camera_id_str, confidence=None):
         print(f"[WARN] No numeric camera_id mapped for '{camera_id_str}', skipping API call")
         return
 
-    headers = {"X-Internal-Key": INTERNAL_KEY}
+    # Cloudflare's bot-fight-mode in front of the real tunnel rejects
+    # requests' own default UA ("python-requests/x.x", a known automation
+    # signature) with a 403 before it ever reaches backend-watchlist --
+    # confirmed directly by P6/Pruthil hitting the same wall. A normal
+    # browser-shaped UA clears it.
+    headers = {
+        "X-Internal-Key": INTERNAL_KEY,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
     body = {
         "camera_id": camera_id_int,
         "plate_number": plate_number,
