@@ -4,12 +4,14 @@ Run locally: uvicorn app.main:app --reload --port 8001
 """
 import os
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from .database import get_connection
 from .logging_config import configure_logging
 from .routers import (
     alerts,
+    anpr_jobs,
     detections,
     license_lookup,
     traces,
@@ -72,8 +74,18 @@ app.include_router(detections.router)
 app.include_router(traces.router)
 app.include_router(vehicle_lookup.router)
 app.include_router(license_lookup.router)
+app.include_router(anpr_jobs.router)
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(response: Response):
+    # A process that's up but can't reach the database is not healthy --
+    # a load balancer/orchestrator trusting a static {"status": "ok"} would
+    # keep routing traffic to a replica that 500s on every real endpoint.
+    try:
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception:  # noqa: BLE001 -- any DB failure means "unhealthy", not a 500
+        response.status_code = 503
+        return {"status": "degraded", "database": "unreachable"}
+    return {"status": "ok", "database": "reachable"}

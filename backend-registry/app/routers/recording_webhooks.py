@@ -12,7 +12,15 @@ own /list and /api/health)."""
 import os
 
 import jwt
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 
 from ..auth import _RBAC_ROLES
 from ..config import settings
@@ -20,7 +28,11 @@ from ..db import get_conn
 from ..logging_config import logger
 from ..rbac_scope import effective_district_scopes
 from ..schemas import RecordingHealthEventAccepted, RecordingHealthEventIn
-from ..services import cameras_service, recording_health_events_service, recording_health_stream
+from ..services import (
+    cameras_service,
+    recording_health_events_service,
+    recording_health_stream,
+)
 
 router = APIRouter(prefix="/recordings", tags=["recording webhooks"])
 

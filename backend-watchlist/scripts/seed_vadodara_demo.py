@@ -32,7 +32,7 @@ import psycopg2
 import psycopg2.extras
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from app.config import settings  # noqa: E402
+from app.config import settings
 
 _IST = ZoneInfo("Asia/Kolkata")
 SOURCE_TAG = "demo-seed-vadodara"
