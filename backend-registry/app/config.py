@@ -37,6 +37,16 @@ class Settings:
     vapid_public_key: str = os.environ.get("VAPID_PUBLIC_KEY", "")
     vapid_private_key: str = os.environ.get("VAPID_PRIVATE_KEY", "")
     vapid_subject: str = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
+    # Same shared secret backend-watchlist uses to gate POST /detections --
+    # here it gates GET /internal/cameras/{id}/recording-clip-url, the one
+    # internal-only endpoint Manual Plate Lookup's archive-clip dispatch
+    # calls to mint a fresh clip URL, so backend-watchlist never needs
+    # RECORDING_SERVICE_KEY itself (see recordings_service.py's module
+    # docstring: that key never leaves this file).
+    # Required, no fallback -- a well-known default here would let anyone
+    # who's read this file forge the internal-service header every
+    # service-to-service endpoint trusts (see require_internal_key).
+    internal_service_key: str = os.environ["INTERNAL_SERVICE_KEY"]
 
 
 settings = Settings()

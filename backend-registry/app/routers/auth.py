@@ -34,6 +34,8 @@ from ..services import (
     auth_service,
     email_otp_service,
     email_service,
+    locations_service,
+    password_policy_service,
     rbac_service,
     registration_service,
     sessions_service,
@@ -166,6 +168,13 @@ def reset_password_with_otp(body: ResetPasswordWithOtpBody):
         if not email_otp_service.verify_otp(conn, officer["id"], "password_reset", body.code):
             raise HTTPException(status_code=401, detail="Incorrect or expired code")
 
+        try:
+            password_policy_service.validate_password_or_raise(
+                body.new_password, user_inputs=[officer["badge_number"], officer["name"]]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
         auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
         # A password reset force-logs-out every other session -- if someone
         # else had the old password, this is the point that shuts them out,
@@ -245,6 +254,7 @@ def me(user=Depends(get_current_user)):
         "rank": None,
         "photo_url": None,
         "email": None,
+        "contact_info": None,
         "last_login": None,
         "status": "active",
         "scope_type": user.get("scope_type", "platform"),
@@ -264,6 +274,7 @@ def me(user=Depends(get_current_user)):
                 response["rank"] = officer["rank"]
                 response["photo_url"] = officer["photo_url"]
                 response["email"] = officer["email"]
+                response["contact_info"] = officer["contact_info"]
                 response["last_login"] = auth_service.get_last_login(conn, officer["id"])
                 # 'pending' is the only status that ever reaches here with a
                 # valid token (suspended/deactivated are rejected at login) --
@@ -289,11 +300,32 @@ def register(body: RegisterRequest):
     with get_conn() as conn:
         if auth_service.get_officer_by_badge(conn, body.badge_number) is not None:
             raise HTTPException(status_code=409, detail="Badge number already registered")
+        # The frontend now offers this as a dropdown populated from the same
+        # canonical list, but the server can't trust that a client actually
+        # used it -- a free-typed or replayed request must still match a
+        # real district, since this becomes the officer's own posting scope
+        # the moment they verify (see register/verify below), with no admin
+        # left in the loop to catch a typo.
+        if not locations_service.district_exists(conn, body.department):
+            raise HTTPException(status_code=400, detail="Department/District must be a valid Gujarat district")
+        try:
+            password_policy_service.validate_password_or_raise(
+                body.password, user_inputs=[body.badge_number, body.name, body.email]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO officers (badge_number, name, rank, password_hash, email, status) "
-                "VALUES (%s, %s, %s, %s, %s, 'pending') RETURNING id",
-                (body.badge_number, body.name, body.rank, auth_service.hash_password(body.password), body.email),
+                "INSERT INTO officers (badge_number, name, rank, password_hash, email, contact_info, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'pending') RETURNING id",
+                (
+                    body.badge_number,
+                    body.name,
+                    body.rank,
+                    auth_service.hash_password(body.password),
+                    body.email,
+                    body.contact_info,
+                ),
             )
             officer_id = cur.fetchone()[0]
         conn.commit()

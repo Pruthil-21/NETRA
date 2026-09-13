@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { UserCircle2, ShieldCheck, MapPin, Clock, Mail, Image as ImageIcon, Upload, X, CheckCircle2, AlertTriangle, Bell, BellOff } from 'lucide-react';
+import { UserCircle2, ShieldCheck, MapPin, Clock, Mail, Phone, Image as ImageIcon, Upload, X, CheckCircle2, AlertTriangle, Bell, BellOff } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { updateProfilePhoto, updateMyEmail, verifyMyEmail } from '@/services/profileService';
 import { fileToAvatarDataUri, ImageUploadError } from '@/lib/imageUpload';
@@ -491,7 +491,7 @@ function PushNotificationsSection() {
 }
 
 export default function ProfilePage() {
-  const { badgeNumber, name, role, rank, scopeValue, lastLogin, loading } = usePermissions();
+  const { badgeNumber, name, role, rank, scopeValue, contactInfo, lastLogin, loading } = usePermissions();
 
   if (loading) {
     return <main className="flex-1 p-6 text-sm text-slate-500">Loading profile…</main>;
@@ -523,6 +523,15 @@ export default function ProfilePage() {
               }
             />
             <DetailRow label="Rank" value={rank ?? '—'} />
+            <DetailRow
+              label="Phone"
+              value={
+                <span className="inline-flex items-center gap-1.5">
+                  <Phone size={13} className="text-slate-500" />
+                  {contactInfo ?? '—'}
+                </span>
+              }
+            />
             <DetailRow
               label="Jurisdiction"
               value={

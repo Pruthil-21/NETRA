@@ -50,7 +50,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 _OFFICER_COLUMNS = (
-    "id, badge_number, name, rank, password_hash, photo_url, email, "
+    "id, badge_number, name, rank, password_hash, photo_url, email, contact_info, "
     "status, last_login_at, failed_login_count, locked_until"
 )
 

@@ -4,9 +4,13 @@ services:
   db:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_USER: netra
-      POSTGRES_PASSWORD: netra
-      POSTGRES_DB: netra
+      # Required, no hardcoded fallback -- a credential baked into a
+      # versioned compose file is a credential anyone with repo access
+      # already knows. Set these in .env for any deployment beyond local
+      # single-developer use.
+      POSTGRES_USER: "${POSTGRES_USER:?POSTGRES_USER must be set in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}"
+      POSTGRES_DB: "${POSTGRES_DB:?POSTGRES_DB must be set in .env}"
     ports:
       - "${DB_HOST_PORT:-5432}:5432"
     volumes:
@@ -14,7 +18,7 @@ services:
       - ./backend-registry/app/schema.sql:/docker-entrypoint-initdb.d/01-registry-schema.sql:ro
       - ./backend-watchlist/app/schema.sql:/docker-entrypoint-initdb.d/02-watchlist-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U netra -d netra"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -41,8 +45,8 @@ services:
     build:
       context: ./backend-registry
     environment:
-      DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
-      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:?POSTGRES_USER must be set in .env}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:?POSTGRES_DB must be set in .env}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
       # Web Push (VAPID) -- see push_service.py. Same three values passed to
       # backend-watchlist below; camera-down alerts are sent from here,
       # watchlist/congestion/escalation alerts from there.
@@ -60,6 +64,14 @@ services:
       # unset means those endpoints just report "unavailable".
       RECORDING_SERVICE_URL: "${RECORDING_SERVICE_URL:-}"
       RECORDING_SERVICE_KEY: "${RECORDING_SERVICE_KEY:-}"
+      # Same shared secret backend-watchlist uses for ml-anpr's /detections
+      # calls -- here it also gates one new internal-only endpoint (Manual
+      # Plate Lookup's archive-clip dispatch calls GET
+      # /internal/cameras/{id}/recording-clip-url to mint a fresh, short-
+      # lived clip URL) so backend-watchlist never needs RECORDING_SERVICE_KEY
+      # itself -- that key stays confined to this file, per
+      # recordings_service.py's own design.
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:?INTERNAL_SERVICE_KEY must be set in .env}"
       # DIGDHRISHTI Federation (D:\middleware) camera-inventory proxy target
       # -- see app/federation_proxy.py. host.docker.internal, not
       # 127.0.0.1: the federation API is published on the *host's*
@@ -110,17 +122,30 @@ services:
     build:
       context: ./backend-watchlist
     environment:
-      DATABASE_URL: "postgresql://netra:netra@db:5432/netra"
-      JWT_SECRET: "${JWT_SECRET:-dev-jwt-secret-change-me}"
-      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:-dev-internal-key}"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:?POSTGRES_USER must be set in .env}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@db:5432/${POSTGRES_DB:?POSTGRES_DB must be set in .env}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      INTERNAL_SERVICE_KEY: "${INTERNAL_SERVICE_KEY:?INTERNAL_SERVICE_KEY must be set in .env}"
       # Web Push (VAPID) -- see push_service.py and backend-registry's copy above.
       VAPID_PUBLIC_KEY: "${VAPID_PUBLIC_KEY:-}"
       VAPID_PRIVATE_KEY: "${VAPID_PRIVATE_KEY:-}"
       VAPID_SUBJECT: "${VAPID_SUBJECT:-mailto:admin@example.com}"
+      # Manual Plate Lookup (see services/anpr_jobs_service.py). In-network
+      # service name + container port, not the host-published one -- same
+      # convention FEDERATION_URL/RECORDING_SERVICE_URL already follow above.
+      REGISTRY_INTERNAL_URL: "${REGISTRY_INTERNAL_URL:-http://backend-registry:8000}"
+      ANPR_UPLOAD_DIR: "${ANPR_UPLOAD_DIR:-uploads/anpr_jobs}"
+      ANPR_PIPELINE_URL: "${ANPR_PIPELINE_URL:-}"
+      ANPR_PIPELINE_FALLBACK_URL: "${ANPR_PIPELINE_FALLBACK_URL:-}"
+      ANPR_CALLBACK_BASE_URL: "${ANPR_CALLBACK_BASE_URL:-https://api.digdhrishti.me}"
       # From inside the compose network, not the host-published port above.
       KAFKA_BROKERS: "kafka:19092"
     ports:
       - "${WATCHLIST_HOST_PORT:-8001}:8001"
+    volumes:
+      # Uploaded clips/images survive a container restart -- otherwise a
+      # completed job's file_sha256/stored_file_path would point at bytes
+      # that no longer exist the moment this container recreates.
+      - anpr_uploads:/app/uploads/anpr_jobs
     depends_on:
       db:
         condition: service_healthy
@@ -176,3 +201,4 @@ services:
 volumes:
   db_data:
   mediamtx_recordings:
+  anpr_uploads:

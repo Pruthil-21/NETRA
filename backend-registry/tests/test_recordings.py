@@ -36,8 +36,15 @@ def test_camera_recordings_404s_for_a_camera_that_does_not_exist(client, viewer_
 
 
 def test_camera_recordings_reports_unavailable_when_service_unset(
-    client, viewer_headers, officer_headers, gap_analysis_test_cameras
+    client, viewer_headers, officer_headers, monkeypatch, gap_analysis_test_cameras
 ):
+    # Force-cleared rather than assumed absent -- a real deployment's own
+    # .env legitimately configures these (see recordings_service.py), so
+    # relying on the ambient environment to simulate "unset" is exactly the
+    # kind of test that silently breaks once a real value is ever added.
+    monkeypatch.delenv("RECORDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("RECORDING_SERVICE_KEY", raising=False)
+
     created = client.post(
         "/cameras",
         json={
@@ -51,7 +58,7 @@ def test_camera_recordings_reports_unavailable_when_service_unset(
 
     resp = client.get(f"/cameras/{created['id']}/recordings", headers=viewer_headers)
     assert resp.status_code == 200
-    assert resp.json() == {"available": False, "segments": []}
+    assert resp.json() == {"available": False, "segments": [], "service_reachable": False}
 
 
 def test_camera_recordings_reports_unavailable_when_service_unreachable(
@@ -78,7 +85,7 @@ def test_camera_recordings_reports_unavailable_when_service_unreachable(
 
     resp = client.get(f"/cameras/{created['id']}/recordings", headers=viewer_headers)
     assert resp.status_code == 200
-    assert resp.json() == {"available": False, "segments": []}
+    assert resp.json() == {"available": False, "segments": [], "service_reachable": False}
 
 
 def test_camera_recordings_returns_no_segments_when_camera_has_no_stream_id(client, viewer_headers, officer_headers, gap_analysis_test_cameras):
@@ -94,7 +101,7 @@ def test_camera_recordings_returns_no_segments_when_camera_has_no_stream_id(clie
 
     resp = client.get(f"/cameras/{created['id']}/recordings", headers=viewer_headers)
     assert resp.status_code == 200
-    assert resp.json() == {"available": False, "segments": []}
+    assert resp.json() == {"available": False, "segments": [], "service_reachable": False}
 
 
 def test_camera_recordings_returns_the_recording_services_segment_list(
@@ -127,7 +134,7 @@ def test_camera_recordings_returns_the_recording_services_segment_list(
 
     resp = client.get(f"/cameras/{created['id']}/recordings", headers=viewer_headers)
     assert resp.status_code == 200
-    assert resp.json() == {"available": True, "segments": segments}
+    assert resp.json() == {"available": True, "segments": segments, "service_reachable": True}
     assert captured["url"] == "http://recording.invalid/list"
     # The recording service's own `path` convention is "stream/<id>",
     # matching every other stream_id consumer (frontend-map's
@@ -176,6 +183,36 @@ def test_camera_recordings_forwards_explicit_start_and_end(
     assert captured["params"]["end"] == "2026-09-05T09:00:00Z"
 
 
+def test_camera_recordings_distinguishes_service_unreachable_from_genuinely_empty(
+    client, viewer_headers, officer_headers, monkeypatch, gap_analysis_test_cameras
+):
+    """service_reachable is the field the frontend uses to tell "the
+    recording service is down" apart from "this camera really has no
+    footage in range" -- both used to collapse into the same
+    available: False, len(segments) == 0 shape."""
+    monkeypatch.setenv("RECORDING_SERVICE_URL", "http://recording.invalid")
+    monkeypatch.setenv("RECORDING_SERVICE_KEY", "test-key")
+    monkeypatch.setattr(recordings_service.httpx, "get", lambda *a, **k: _FakeResponse([]))
+
+    created = client.post(
+        "/cameras",
+        json={
+            "name": "Genuinely Empty Camera", "dept": "Traffic Police", "lat": 23.0, "long": 72.5,
+            "camera_type": "IP", "ownership": "test", "storage_type": "Cloud", "retention_days": 30,
+            "stream_id": "78",
+        },
+        headers=officer_headers,
+    ).json()
+    gap_analysis_test_cameras.append(created["id"])
+
+    resp = client.get(f"/cameras/{created['id']}/recordings", headers=viewer_headers)
+    assert resp.status_code == 200
+    # Reachable (a real response came back), just legitimately empty --
+    # distinct from the unset/unreachable cases above, both of which report
+    # service_reachable: False even though they also have segments: [].
+    assert resp.json() == {"available": False, "segments": [], "service_reachable": True}
+
+
 def test_camera_recordings_denied_for_officer_outside_camera_district(
     client, officer_headers, gap_analysis_test_cameras
 ):
@@ -216,6 +253,66 @@ def test_camera_recordings_allowed_for_officer_posted_to_the_cameras_district(
     token_headers = _rbac_headers("station_officer", ["view_live_feeds"], scope_type="district", scope_value="Ahmedabad")
     resp = client.get(f"/cameras/{created['id']}/recordings", headers=token_headers)
     assert resp.status_code == 200
+
+
+def test_internal_recording_clip_url_requires_internal_key(client):
+    resp = client.get(
+        "/internal/cameras/1/recording-clip-url",
+        params={"start": "2026-09-05T08:00:00Z", "end": "2026-09-05T09:00:00Z"},
+    )
+    assert resp.status_code == 422  # missing X-Internal-Key header entirely
+
+
+def test_internal_recording_clip_url_rejects_wrong_key(client):
+    resp = client.get(
+        "/internal/cameras/1/recording-clip-url",
+        params={"start": "2026-09-05T08:00:00Z", "end": "2026-09-05T09:00:00Z"},
+        headers={"X-Internal-Key": "wrong-key"},
+    )
+    assert resp.status_code == 401
+
+
+def test_internal_recording_clip_url_returns_none_for_unknown_camera(client):
+    from app.config import settings
+
+    resp = client.get(
+        "/internal/cameras/999999/recording-clip-url",
+        params={"start": "2026-09-05T08:00:00Z", "end": "2026-09-05T09:00:00Z"},
+        headers={"X-Internal-Key": settings.internal_service_key},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"url": None}
+
+
+def test_internal_recording_clip_url_returns_the_recording_services_first_segment(
+    client, officer_headers, monkeypatch, gap_analysis_test_cameras
+):
+    from app.config import settings
+    from app.services import recordings_service
+
+    segments = [{"start": "2026-09-05T08:00:00Z", "duration": 600.0, "url": "https://playback.example/get?token=fresh"}]
+    monkeypatch.setenv("RECORDING_SERVICE_URL", "http://recording.invalid")
+    monkeypatch.setenv("RECORDING_SERVICE_KEY", "test-key")
+    monkeypatch.setattr(recordings_service.httpx, "get", lambda *a, **k: _FakeResponse(segments))
+
+    created = client.post(
+        "/cameras",
+        json={
+            "name": "Internal Clip URL Test Camera", "dept": "Traffic Police", "lat": 23.0, "long": 72.5,
+            "camera_type": "IP", "ownership": "test", "storage_type": "Cloud", "retention_days": 30,
+            "stream_id": "77",
+        },
+        headers=officer_headers,
+    ).json()
+    gap_analysis_test_cameras.append(created["id"])
+
+    resp = client.get(
+        f"/internal/cameras/{created['id']}/recording-clip-url",
+        params={"start": "2026-09-05T08:00:00Z", "end": "2026-09-05T08:10:00Z"},
+        headers={"X-Internal-Key": settings.internal_service_key},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"url": "https://playback.example/get?token=fresh"}
 
 
 def test_camera_recording_health_requires_auth(client):

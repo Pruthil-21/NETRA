@@ -13,6 +13,7 @@ interface MeResponse {
   rank: string | null;
   photo_url: string | null;
   email: string | null;
+  contact_info: string | null;
   last_login: string | null;
   status: string;
   scope_type: string | null;
@@ -30,6 +31,7 @@ interface UsePermissionsResult {
    * this officer" means -- see backend-registry's schema.sql comment on
    * officers.email. Set via PUT /auth/me/email (profile page). */
   email: string | null;
+  contactInfo: string | null;
   lastLogin: string | null;
   status: string | null;
   scopeType: string | null;
@@ -84,6 +86,7 @@ export function usePermissions(): UsePermissionsResult {
     rank: me?.rank ?? null,
     photoUrl: me?.photo_url ?? null,
     email: me?.email ?? null,
+    contactInfo: me?.contact_info ?? null,
     lastLogin: me?.last_login ?? null,
     status: me?.status ?? null,
     scopeType: me?.scope_type ?? null,

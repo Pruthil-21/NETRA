@@ -15,6 +15,7 @@ import { CoverageCanvasLayer } from './CoverageCanvasLayer';
 import { DensityCanvasLayer, DensityLoadStatus } from './DensityCanvasLayer';
 import { FlowCanvasLayer, FlowLoadStatus } from './FlowCanvasLayer';
 import { LayerWindowMode } from '@/types/filters';
+import { fetchDrivingRoute } from '@/lib/routing';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
@@ -243,6 +244,59 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     [sightingPoints]
   );
 
+  // Road-snapped version of the same route, for display only -- a straight
+  // line between two consecutive camera sightings routinely cuts through
+  // buildings/blocks a real vehicle can't drive through. Fetches one real
+  // driving route per leg (same OSRM helper LiveRouteMap already uses for
+  // live pursuit) and stitches them into one dense path, tracking which
+  // dense-path index each original stop landed at so the timeline scrubber
+  // and traveled/remaining split below still line up with the actual camera
+  // stops rather than the road geometry's own (much denser) point count.
+  // Falls back to the plain straight-line route above while snapping is in
+  // flight, or leg-by-leg to a straight line if OSRM is unreachable for a
+  // given leg (fetchDrivingRoute's own fallback) -- never blocks rendering.
+  const [snappedRoute, setSnappedRoute] = useState<{
+    positions: [number, number][];
+    stopIndices: number[];
+  } | null>(null);
+
+  const routePositionsKey = useMemo(() => JSON.stringify(routePositions), [routePositions]);
+
+  useEffect(() => {
+    if (routePositions.length < 2) {
+      setSnappedRoute(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const legs = await Promise.all(
+        routePositions.slice(0, -1).map((pos, i) =>
+          fetchDrivingRoute(
+            { lat: pos[0], long: pos[1] },
+            { lat: routePositions[i + 1][0], long: routePositions[i + 1][1] }
+          )
+        )
+      );
+      if (cancelled) return;
+      const positions: [number, number][] = [routePositions[0]];
+      const stopIndices: number[] = [0];
+      for (const leg of legs) {
+        const coords = leg.coordinates.length > 1 ? leg.coordinates.slice(1) : leg.coordinates;
+        positions.push(...coords);
+        stopIndices.push(positions.length - 1);
+      }
+      setSnappedRoute({ positions, stopIndices });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routePositionsKey]);
+
+  const displayRoutePositions = snappedRoute?.positions ?? routePositions;
+  const displayTimelineIndex =
+    timelineIndex !== undefined && snappedRoute ? snappedRoute.stopIndices[timelineIndex] : timelineIndex;
+
   const routeCameraIds = useMemo(
     () => new Set(sightingPoints.map(({ camera }) => camera.id)),
     [sightingPoints]
@@ -456,27 +510,27 @@ export const CameraMap: React.FC<CameraMapProps> = ({
           />
         )}
 
-        {routePositions.length > 1 && timelineIndex === undefined && (
+        {routePositions.length > 1 && displayTimelineIndex === undefined && (
           <Polyline
-            positions={routePositions}
+            positions={displayRoutePositions}
             pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.8 }}
           />
         )}
 
-        {routePositions.length > 1 && timelineIndex !== undefined && (
+        {routePositions.length > 1 && displayTimelineIndex !== undefined && (
           <>
             {/* Traveled leg: solid + brighter, up to and including the
                 scrubber's current stop. */}
             <Polyline
-              positions={routePositions.slice(0, timelineIndex + 1)}
+              positions={displayRoutePositions.slice(0, displayTimelineIndex + 1)}
               pathOptions={{ color: '#60A5FA', weight: 4, opacity: 0.95 }}
             />
             {/* Remaining leg: same dashed styling as the free-running route,
                 starting at the current stop so the two segments join with no
                 visible gap. */}
-            {timelineIndex < routePositions.length - 1 && (
+            {displayTimelineIndex < displayRoutePositions.length - 1 && (
               <Polyline
-                positions={routePositions.slice(timelineIndex)}
+                positions={displayRoutePositions.slice(displayTimelineIndex)}
                 pathOptions={{ color: '#3B82F6', weight: 3, dashArray: '6 6', opacity: 0.5 }}
               />
             )}

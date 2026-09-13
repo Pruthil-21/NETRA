@@ -65,6 +65,10 @@ streaming/.organizer-password
 # Local planning/working docs (never pushed)
 docs/
 
+# Manual Plate Lookup's uploaded clips/images (local disk, never committed --
+# see backend-watchlist/app/services/anpr_jobs_service.py)
+backend-watchlist/uploads/
+
 # Federation middleware secrets/local config (machine-specific)
 middleware/.env.federation
 middleware/sources.local.json

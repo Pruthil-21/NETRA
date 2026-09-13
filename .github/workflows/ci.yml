@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  backend-registry:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: netra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: backend-registry
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/netra_test
+      JWT_SECRET: ci-test-secret-not-for-production
+      INTERNAL_SERVICE_KEY: ci-test-internal-key-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff pytest httpx
+      - name: Lint
+        run: ruff check .
+      - name: Apply schema, seed data, and reference/RBAC setup
+        # Both services' schemas are applied here (not just this one's own):
+        # this service's own tests (e.g. test_traffic_data_console.py) query
+        # tables backend-watchlist owns (detections, traffic_alerts), since
+        # both share one physical Postgres instance in every real
+        # deployment. Explicit, ordered file list -- never a blind
+        # `find . -iname '*.sql'` glob, which previously also picked up
+        # scripts/backups/cleanup_and_renumber_cameras.sql, a one-off
+        # production-data migration that assumes pre-existing camera ids in
+        # the 40s-100s range: applied to a freshly-seeded database (ids
+        # 1-12), it silently deleted every seed camera instead of doing
+        # nothing, breaking any test that expected seed data to exist.
+        run: |
+          export PGPASSWORD=postgres
+          echo "Applying backend-registry/app/schema.sql"
+          psql -h localhost -U postgres -d netra_test -f app/schema.sql
+          echo "Applying backend-registry/app/seed.sql"
+          psql -h localhost -U postgres -d netra_test -f app/seed.sql
+          echo "Applying backend-watchlist/app/schema.sql"
+          psql -h localhost -U postgres -d netra_test -f ../backend-watchlist/app/schema.sql
+          if [ -f ../backend-watchlist/app/seed.sql ]; then
+            echo "Applying backend-watchlist/app/seed.sql"
+            psql -h localhost -U postgres -d netra_test -f ../backend-watchlist/app/seed.sql
+          fi
+          if [ -f ../backend-watchlist/scripts/add_vehicle_daily_sightings.sql ]; then
+            echo "Applying backend-watchlist/scripts/add_vehicle_daily_sightings.sql"
+            psql -h localhost -U postgres -d netra_test -f ../backend-watchlist/scripts/add_vehicle_daily_sightings.sql
+          fi
+          echo "Seeding districts/talukas/villages reference data"
+          python scripts/seed_locations.py
+          echo "Seeding RBAC roles"
+          python scripts/seed_rbac.py
+          echo "Seeding Manual Plate Lookup virtual-capture cameras"
+          python scripts/seed_virtual_cameras.py
+      - name: Run tests (if any exist)
+        run: |
+          if find . -iname "test_*.py" -o -iname "*_test.py" | grep -q .; then
+            pytest
+          else
+            echo "No test files found yet -- skipping pytest."
+          fi
+
+  backend-watchlist:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: netra_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: backend-watchlist
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/netra_test
+      JWT_SECRET: ci-test-secret-not-for-production
+      INTERNAL_SERVICE_KEY: ci-test-internal-key-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          pip install ruff pytest httpx
+          # Also needed to actually run backend-registry's seed scripts
+          # below (seed_locations.py/seed_rbac.py/seed_virtual_cameras.py
+          # import app.db, which needs psycopg[pool] etc.) -- this job's
+          # own requirements.txt has no reason to declare backend-registry's
+          # dependencies itself.
+          pip install -r ../backend-registry/requirements.txt
+      - name: Lint
+        run: ruff check .
+      - name: Apply schema, seed data, and reference/RBAC setup
+        # This job gets its own separate, empty Postgres service container
+        # (GitHub Actions services are per-job, never shared with the
+        # backend-registry job above) -- so every piece of registry-owned
+        # setup its tests actually depend on (cameras, districts, RBAC
+        # roles, Manual Plate Lookup virtual-capture cameras) has to be
+        # (re)established here too, not assumed to already exist. Explicit,
+        # ordered file list for the same reason as backend-registry's job:
+        # never a blind `find . -iname '*.sql'` glob.
+        run: |
+          export PGPASSWORD=postgres
+          echo "Applying backend-registry/app/schema.sql"
+          psql -h localhost -U postgres -d netra_test -f ../backend-registry/app/schema.sql
+          echo "Applying backend-registry/app/seed.sql"
+          psql -h localhost -U postgres -d netra_test -f ../backend-registry/app/seed.sql
+          echo "Applying backend-watchlist/app/schema.sql"
+          psql -h localhost -U postgres -d netra_test -f app/schema.sql
+          if [ -f app/seed.sql ]; then
+            echo "Applying backend-watchlist/app/seed.sql"
+            psql -h localhost -U postgres -d netra_test -f app/seed.sql
+          fi
+          if [ -f scripts/add_vehicle_daily_sightings.sql ]; then
+            echo "Applying backend-watchlist/scripts/add_vehicle_daily_sightings.sql"
+            psql -h localhost -U postgres -d netra_test -f scripts/add_vehicle_daily_sightings.sql
+          fi
+          echo "Seeding districts/talukas/villages reference data"
+          python ../backend-registry/scripts/seed_locations.py
+          echo "Seeding RBAC roles"
+          python ../backend-registry/scripts/seed_rbac.py
+          echo "Seeding Manual Plate Lookup virtual-capture cameras"
+          python ../backend-registry/scripts/seed_virtual_cameras.py
+      - name: Run tests (if any exist)
+        run: |
+          if find . -iname "test_*.py" -o -iname "*_test.py" | grep -q .; then
+            pytest
+          else
+            echo "No test files found yet -- skipping pytest."
+          fi
+
+  frontend-map:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend-map
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend-map/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build

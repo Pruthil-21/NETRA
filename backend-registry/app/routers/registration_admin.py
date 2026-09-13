@@ -21,6 +21,7 @@ from ..services import (
     audit_service,
     auth_service,
     notifications_service,
+    password_policy_service,
     rbac_service,
     registration_service,
     sessions_service,
@@ -163,5 +164,11 @@ def reset_officer_password(
         officer = auth_service.get_officer_by_id(conn, officer_id)
         if officer is None:
             raise HTTPException(status_code=404, detail="Officer not found")
+        try:
+            password_policy_service.validate_password_or_raise(
+                body.new_password, user_inputs=[officer["badge_number"], officer["name"]]
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         auth_service.set_password(conn, officer["id"], auth_service.hash_password(body.new_password))
         audit_service.log(conn, user.get("badge_number", user.get("sub")), "reset_password", "officer", officer["id"])

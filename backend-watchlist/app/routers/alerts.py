@@ -16,7 +16,7 @@ from fastapi import (
 )
 from psycopg2.extras import RealDictCursor  # type: ignore
 
-from ..auth import _RBAC_ROLES, require_role
+from ..auth import _RBAC_ROLES, require_permission, require_role
 from ..config import settings
 from ..database import get_db
 from ..logging_config import logger
@@ -67,7 +67,12 @@ def update_alert_status(
     alert_id: int,
     body: AlertStatusUpdate,
     db: RealDictCursor = Depends(get_db),
-    user=Depends(require_role("officer")),
+    # acknowledge_alerts, not require_role("officer") -- being staff (any
+    # RBAC role, including auditor) is not the same as being allowed to
+    # change an alert's status. Mirrors traffic_alerts.py's identical PATCH
+    # gate; require_permission's own legacy-token bypass keeps every
+    # pre-RBAC officer/admin fixture working unchanged.
+    user=Depends(require_permission("acknowledge_alerts")),
 ):
     actor = user.get("badge_number", user.get("sub"))
     _require_alert_in_scope(db, alert_id, user, audit_denial=True)
@@ -85,16 +90,15 @@ def update_alert_status(
     logger.info(f"alert {alert_id} status changed to {body.status} by {actor}")
 
     if body.status == "ESCALATED":
-        db.execute("SELECT dept FROM cameras WHERE id = %s", (alert["camera_id"],))
-        dept_row = db.fetchone()
-        district = dept_row["dept"] if dept_row else None
         # Every officer scoped to see this alert, not just one named
         # assignee -- there's no "escalate to a specific officer" concept
         # in the alert model today (AlertStatusUpdate is just a status
-        # enum), so this reuses the same district/platform scoping the WS
-        # broadcast already applies rather than inventing new assignment UI.
+        # enum), so this reuses the same dual detecting/flagging-district
+        # scoping GET/PATCH /alerts already applies (alert already carries
+        # both from update_status -> get_alert, no extra camera query
+        # needed) rather than inventing new assignment UI.
         push_service.send_to_badges(
-            db, push_service.recipients_for_scope(db, district),
+            db, push_service.recipients_for_scope(db, [alert.get("camera_district"), alert.get("flagged_district")]),
             {
                 "title": "Alert escalated",
                 "body": f"{alert['plate_number']} escalated by {actor}",
@@ -132,15 +136,27 @@ async def alerts_stream_ws(websocket: WebSocket, token: str = Query(...)):
         await websocket.close(code=4403)
         return
 
-    # scope_type must be explicit -- an unknown/missing value is rejected,
-    # never defaulted to "platform" (fails open to every district's alerts)
-    # or guessed as district-scoped-with-no-district.
-    scope_type = payload.get("scope_type")
-    if scope_type not in ("platform", "district"):
+    # A legacy token (no `scopes` claim -- every hand-crafted test/demo
+    # token) still needs an explicit scope_type: unknown/missing is
+    # rejected, never defaulted to "platform" (fails open to every
+    # district's alerts) or guessed as district-scoped-with-no-district.
+    # A real multi-posting token (a `scopes` claim present) skips this
+    # specific legacy check -- its jurisdiction comes from that claim, not
+    # a top-level scope_type, and is resolved below exactly the way every
+    # REST alert endpoint already does.
+    if payload.get("scopes") is None and payload.get("scope_type") not in ("platform", "district"):
         await websocket.close(code=4403)
         return
 
-    await alerts_stream.manager.connect(websocket, scope_type, payload.get("scope_value"))
+    # rbac_scope.effective_district_scopes is the same function every REST
+    # alert endpoint resolves scope through -- previously this route only
+    # ever read the single legacy scope_type/scope_value pair directly off
+    # the token, so a multi-posting officer's `scopes` claim was silently
+    # ignored and the live feed would never match every district they're
+    # actually posted to. Reusing it here means this connection sees
+    # exactly what GET /alerts would show that officer.
+    districts = effective_district_scopes(payload)
+    await alerts_stream.manager.connect(websocket, districts)
     try:
         while True:
             await websocket.receive_text()

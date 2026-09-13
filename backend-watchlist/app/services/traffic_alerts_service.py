@@ -89,7 +89,7 @@ def _create_and_broadcast(
             "/alerts",
         )
     push_service.send_to_badges(
-        db, push_service.recipients_for_scope(db, district),
+        db, push_service.recipients_for_scope(db, [district]),
         {"title": title, "body": body, "url": url},
     )
 

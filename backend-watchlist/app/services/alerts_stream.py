@@ -24,30 +24,43 @@ def _json_default(value):
 
 class AlertsConnectionManager:
     def __init__(self):
-        self._connections: dict[WebSocket, dict] = {}
+        self._connections: dict[WebSocket, list[str] | None] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
 
-    async def connect(self, websocket: WebSocket, scope_type: str, scope_value: str | None):
+    async def connect(self, websocket: WebSocket, districts: list[str] | None):
+        """`districts` is this connection's effective jurisdiction -- `None`
+        for platform-wide (matches every alert), or the deduplicated list of
+        every district this officer is actively posted to (see
+        rbac_scope.effective_district_scopes, the same function every REST
+        alert endpoint already resolves scope through -- callers should pass
+        its result directly rather than re-deriving scope some other way, so
+        a multi-posting officer's live feed always matches what GET /alerts
+        would show them)."""
         await websocket.accept()
-        self._connections[websocket] = {"scope_type": scope_type, "scope_value": scope_value}
+        self._connections[websocket] = districts
 
     def disconnect(self, websocket: WebSocket):
         self._connections.pop(websocket, None)
 
-    def _matches(self, scope: dict, camera_district: str | None) -> bool:
-        if scope["scope_type"] == "platform":
+    def _matches(self, districts: list[str] | None, camera_district: str | None, flagged_district: str | None) -> bool:
+        # Same dual rule _require_alert_in_scope/list_alerts apply over
+        # REST: a connection sees an alert if EITHER the detecting camera's
+        # district OR the watchlist entry's flagging district is one of its
+        # own -- a look-out notice must reach the district that issued it
+        # live, not only whoever's camera happened to catch the plate.
+        if districts is None:
             return True
-        return scope["scope_type"] == "district" and scope["scope_value"] == camera_district
+        return camera_district in districts or flagged_district in districts
 
-    async def _broadcast_async(self, payload: dict, camera_district: str | None):
+    async def _broadcast_async(self, payload: dict, camera_district: str | None, flagged_district: str | None):
         dead = []
-        for ws, scope in list(self._connections.items()):
-            if not self._matches(scope, camera_district):
+        for ws, districts in list(self._connections.items()):
+            if not self._matches(districts, camera_district, flagged_district):
                 continue
             try:
                 await ws.send_text(json.dumps(payload, default=_json_default))
             except Exception:  # noqa: BLE001 -- any send failure means this connection is dead; evict it regardless of cause
-                logger.exception(f"alert broadcast send failed for connection scope={scope}; evicting")
+                logger.exception(f"alert broadcast send failed for connection districts={districts}; evicting")
                 dead.append(ws)
         for ws in dead:
             self._connections.pop(ws, None)
@@ -56,7 +69,9 @@ class AlertsConnectionManager:
             except Exception as exc:  # noqa: BLE001 -- best-effort; a failure to close one dead connection must not block evicting the rest
                 logger.debug(f"failed to close already-dead connection: {exc!r}")
 
-    def broadcast_sync(self, alert: dict, camera_district: str | None, kind: str = "watchlist") -> None:
+    def broadcast_sync(
+        self, alert: dict, camera_district: str | None, flagged_district: str | None = None, kind: str = "watchlist"
+    ) -> None:
         """Safe to call from sync code (e.g. alerts_service.process_detection,
         which runs in FastAPI's sync-route threadpool). Best-effort: if the
         event loop hasn't been captured yet (e.g. app startup event never
@@ -64,6 +79,11 @@ class AlertsConnectionManager:
         rather than an error -- a missed broadcast is recoverable via the
         existing 5s poll; raising here is not worth breaking detection
         recording over.
+
+        `flagged_district` defaults to None -- traffic_alerts (kind=
+        "congestion") has no separate flagging concept, just one `district`,
+        so callers there only ever pass camera_district and this simply
+        never contributes a match.
 
         `kind` discriminates this one WS channel between the two alert
         families it now carries -- "watchlist" (a plate-match alert, the
@@ -76,7 +96,9 @@ class AlertsConnectionManager:
         if self.loop is None:
             return
         payload = {**alert, "kind": kind}
-        future = asyncio.run_coroutine_threadsafe(self._broadcast_async(payload, camera_district), self.loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._broadcast_async(payload, camera_district, flagged_district), self.loop
+        )
 
         def _log_if_failed(fut: "asyncio.Future"):
             # _broadcast_async's own try/except already handles per-send

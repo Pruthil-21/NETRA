@@ -18,7 +18,7 @@ describe('recordingsService.fetchRecordingSegments', () => {
   });
 
   it('appends start/end query params when a range is given', async () => {
-    (fetch as any).mockResolvedValue({ ok: true, json: async () => ({ available: false, segments: [] }) });
+    (fetch as any).mockResolvedValue({ ok: true, json: async () => ({ available: false, segments: [], service_reachable: true }) });
     await fetchRecordingSegments(1, { start: '2026-09-05T00:00:00.000Z', end: '2026-09-06T00:00:00.000Z' });
     const url = (fetch as any).mock.calls[0][0] as string;
     expect(url).toContain('start=2026-09-05T00%3A00%3A00.000Z');

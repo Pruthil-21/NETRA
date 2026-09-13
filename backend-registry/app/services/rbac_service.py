@@ -39,7 +39,7 @@ VALID_PERMISSIONS = {
     "view_live_feeds", "search_vehicles", "edit_watchlist", "manage_cameras",
     "view_analytics", "export_data", "manage_users_roles", "view_audit_logs",
     "acknowledge_alerts", "manage_roles", "manage_stations", "manage_areas",
-    "reset_officer_passwords",
+    "reset_officer_passwords", "run_anpr_lookup",
 }
 
 

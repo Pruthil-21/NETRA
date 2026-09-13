@@ -176,7 +176,7 @@ def main():
     print("Fetching villages (zipped, ~13MB)...")
     village_zip = fetch("administrative/4-village.csv.zip")
     zf = zipfile.ZipFile(io.BytesIO(village_zip))
-    name = [n for n in zf.namelist() if n.endswith(".csv")][0]
+    name = next(n for n in zf.namelist() if n.endswith(".csv"))
     with zf.open(name) as f:
         text = io.TextIOWrapper(f, encoding="utf-8", errors="replace")
         reader = csv.reader(text)
@@ -236,20 +236,26 @@ def main():
         "mirror": "https://github.com/planemad/india-local-government-directory",
         "dataset_dated": "2022-03-11",
         "patches_applied": [
-            "Added Vav-Tharad district (established 2 October 2025 from Banaskantha). "
-            "Re-homed 6 of its 8 talukas (Vav, Tharad, Suigam, Bhabhar, Deodar, Lakhani) "
-            "from Banaskantha by exact name match. The remaining 2 (Rah, Dharnidhar) do "
-            "not exist under any district in this 2022 LGD dump -- added as talukas with "
-            "no LGD code and no villages (no_lgd_data: true), not guessed.",
-            "Not exhaustively re-audited: taluka-level splits elsewhere in the state newer "
-            "than this dataset's 2022-03-11 retrieval date may exist and have not been "
-            "individually checked district-by-district against a live source.",
-            "Added 18 of Gujarat's 30 largest cities (Wikipedia's 'List of cities in Gujarat "
-            "by population') that don't appear in the LGD village directory under their own "
-            "name at all -- each nested under the one taluka it unambiguously belongs to. "
-            "Ahmedabad, Surat and Vadodara were deliberately NOT patched this way: each spans "
-            "several zone-level talukas with no single taluka meaning 'the whole city' -- see "
-            "MAJOR_CITIES_MISSING_FROM_LGD_VILLAGES's comment.",
+            (
+                "Added Vav-Tharad district (established 2 October 2025 from Banaskantha). "
+                "Re-homed 6 of its 8 talukas (Vav, Tharad, Suigam, Bhabhar, Deodar, Lakhani) "
+                "from Banaskantha by exact name match. The remaining 2 (Rah, Dharnidhar) do "
+                "not exist under any district in this 2022 LGD dump -- added as talukas with "
+                "no LGD code and no villages (no_lgd_data: true), not guessed."
+            ),
+            (
+                "Not exhaustively re-audited: taluka-level splits elsewhere in the state newer "
+                "than this dataset's 2022-03-11 retrieval date may exist and have not been "
+                "individually checked district-by-district against a live source."
+            ),
+            (
+                "Added 18 of Gujarat's 30 largest cities (Wikipedia's 'List of cities in Gujarat "
+                "by population') that don't appear in the LGD village directory under their own "
+                "name at all -- each nested under the one taluka it unambiguously belongs to. "
+                "Ahmedabad, Surat and Vadodara were deliberately NOT patched this way: each spans "
+                "several zone-level talukas with no single taluka meaning 'the whole city' -- see "
+                "MAJOR_CITIES_MISSING_FROM_LGD_VILLAGES's comment."
+            ),
         ],
         "built_at": "2026-09-11",
         "counts": {

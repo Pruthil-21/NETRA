@@ -33,6 +33,12 @@ function ArchivePageInner() {
 
   const [allSegments, setAllSegments] = useState<RecordingSegment[] | null>(null);
   const [available, setAvailable] = useState(true);
+  // False only when the recording service itself couldn't be reached (down,
+  // unconfigured, or this camera has no stream_id) -- distinct from
+  // `available: false` with this still true, which means the service
+  // answered fine and this camera genuinely has no footage. See
+  // RecordingsAvailability.service_reachable.
+  const [serviceReachable, setServiceReachable] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>(() => toLocalDateKey(new Date()));
   // Freshly fetched for whichever day is selected, separately from
@@ -40,6 +46,7 @@ function ArchivePageInner() {
   // token, so the broad history fetch below (which only exists to feed the
   // calendar's "which days have anything" dots) can't double as this.
   const [daySegments, setDaySegments] = useState<RecordingSegment[] | null>(null);
+  const [dayServiceReachable, setDayServiceReachable] = useState(true);
   const [dayError, setDayError] = useState<string | null>(null);
 
   // Cameras dragged in from the sidebar to browse side by side -- takes over
@@ -156,6 +163,7 @@ function ArchivePageInner() {
       .then((result) => {
         if (cancelled) return;
         setAvailable(result.available);
+        setServiceReachable(result.service_reachable);
         setAllSegments(result.segments);
         // A deep-linked moment (?at=) picks its own calendar day via the
         // effect above, which runs independently of this fetch -- only
@@ -193,7 +201,9 @@ function ArchivePageInner() {
     const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
     fetchRecordingSegments(selectedCamera.id, { start: dayStart.toISOString(), end: dayEnd.toISOString() })
       .then((result) => {
-        if (!cancelled) setDaySegments(result.segments);
+        if (cancelled) return;
+        setDaySegments(result.segments);
+        setDayServiceReachable(result.service_reachable);
       })
       .catch((err) => {
         if (!cancelled) setDayError(err instanceof Error ? err.message : 'Failed to load recordings for this day');
@@ -273,7 +283,13 @@ function ArchivePageInner() {
 
             {!error && allSegments === null && <p className="text-xs text-slate-500">Loading recordings…</p>}
 
-            {!error && allSegments !== null && (!available || allSegments.length === 0) && (
+            {!error && allSegments !== null && !serviceReachable && (
+              <p className="text-xs text-signal-red">
+                Recording service is currently unreachable — try again shortly.
+              </p>
+            )}
+
+            {!error && allSegments !== null && serviceReachable && (!available || allSegments.length === 0) && (
               <p className="text-xs text-slate-500">No recorded footage available for this camera yet.</p>
             )}
 
@@ -287,7 +303,12 @@ function ArchivePageInner() {
                 <div className="flex-1 min-w-0">
                   {dayError && <p className="text-xs text-signal-red mb-2">{dayError}</p>}
                   {!dayError && daySegments === null && <p className="text-xs text-slate-500">Loading this day…</p>}
-                  {!dayError && daySegments !== null && (
+                  {!dayError && daySegments !== null && !dayServiceReachable && daySegments.length === 0 && (
+                    <p className="text-xs text-signal-red">
+                      Recording service is currently unreachable for this day — try again shortly.
+                    </p>
+                  )}
+                  {!dayError && daySegments !== null && (dayServiceReachable || daySegments.length > 0) && (
                     <RecordingPlayer
                       cameraId={selectedCamera.id}
                       cameraName={selectedCamera.name}

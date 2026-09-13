@@ -389,6 +389,44 @@ def test_density_hour_mode_counts_current_hour_bucket_only(client, internal_head
     assert 8 not in {row["camera_id"] for row in resp_other.json()}
 
 
+def _insert_virtual_capture_camera(dept: str) -> int:
+    """A Manual Plate Lookup dispatch target (cameras.is_virtual_capture) --
+    never a real installed camera, so it must never contribute to density/
+    flow analytics (see reports_service.get_summary and this file's density/
+    flow query sites, all of which now filter is_virtual_capture = false)."""
+    with contextlib.closing(psycopg2.connect(settings.database_url)) as conn, \
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type,
+                                  retention_days, is_virtual_capture)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'mobile_handheld', 'department', 'none', 0, true)
+            RETURNING id
+            """,
+            ("Virtual Capture Test Camera", dept),
+        )
+        return cur.fetchone()["id"]
+
+
+def test_density_excludes_virtual_capture_cameras(client, internal_headers, scoping_test_cameras):
+    real_cam = _insert_test_camera("Virtual Capture Density Test")
+    scoping_test_cameras.append(real_cam)
+    virtual_cam = _insert_virtual_capture_camera("Virtual Capture Density Test")
+    scoping_test_cameras.append(virtual_cam)
+
+    client.post("/detections", json={"camera_id": real_cam, "plate_number": _random_plate()}, headers=internal_headers)
+    client.post("/detections", json={"camera_id": virtual_cam, "plate_number": _random_plate()}, headers=internal_headers)
+
+    token = _make_rbac_token("super_admin", "platform")
+    resp = client.get(
+        "/detections/density", params={"window_minutes": 30}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    camera_ids = {row["camera_id"] for row in resp.json()}
+    assert real_cam in camera_ids
+    assert virtual_cam not in camera_ids
+
+
 def test_density_district_scoped_only_counts_own_district(client, internal_headers, scoping_test_cameras):
     cam_a = _insert_test_camera("Scoping Test District A")
     scoping_test_cameras.append(cam_a)
@@ -430,6 +468,7 @@ def test_flows_requires_exactly_one_window_param(client):
 
 def test_flows_counts_a_transition_with_correct_average_speed(client, internal_headers, scoping_test_cameras):
     from datetime import datetime, timedelta, timezone
+
     from app.services import geo
 
     # ~1.11km apart (0.01 degrees latitude) with an exact 1-hour gap between
@@ -600,6 +639,7 @@ def test_flows_trend_requires_view_analytics_permission(client):
 
 def test_flows_trend_ranks_top_corridors_with_speed(client, internal_headers, scoping_test_cameras):
     from datetime import datetime, timedelta, timezone
+
     from app.services import geo
 
     cam_a = _insert_test_camera("Flow Trend District", lat=23.0, long=72.5)

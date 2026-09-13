@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import psycopg2
 import psycopg2.extras
-import pytest
 from app.config import settings
 from app.services import traffic_alerts_service
 

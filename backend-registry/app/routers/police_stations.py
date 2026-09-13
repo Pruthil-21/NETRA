@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import get_current_user, require_permission
 from ..db import get_conn
-from ..rbac_scope import effective_district_scopes, guard_dept_in_scope, resolve_district_scoped
+from ..rbac_scope import (
+    effective_district_scopes,
+    guard_dept_in_scope,
+    resolve_district_scoped,
+)
 from ..schemas import PoliceStationCreate, PoliceStationOut, PoliceStationUpdate
 from ..services import audit_service, police_stations_service
 

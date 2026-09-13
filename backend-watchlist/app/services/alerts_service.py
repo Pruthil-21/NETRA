@@ -145,10 +145,11 @@ def process_detection(db: RealDictCursor, camera_id: int, plate_number: str, det
     db.execute("SELECT dept FROM cameras WHERE id = %s", (camera_id,))
     dept_row = db.fetchone()
     camera_district = dept_row["dept"] if dept_row else None
-    alerts_stream.manager.broadcast_sync(alert, camera_district)
+    flagged_district = alert.get("flagged_district") if alert else None
+    alerts_stream.manager.broadcast_sync(alert, camera_district, flagged_district)
 
     push_service.send_to_badges(
-        db, push_service.recipients_for_scope(db, camera_district),
+        db, push_service.recipients_for_scope(db, [camera_district, flagged_district]),
         {
             "title": "Watchlist match",
             "body": f"{plate_number} spotted at camera {camera_id}",

@@ -14,7 +14,12 @@ router = APIRouter(tags=["locations"])
 
 
 @router.get("/districts", response_model=list[DistrictOut])
-def list_districts(user=Depends(get_current_user)):
+def list_districts():
+    """No auth dependency, deliberately -- the public self-registration
+    form (POST /auth/register) needs the canonical district list to
+    populate its own District/Department dropdown before an officer has
+    any token at all. Government reference data (district names), not a
+    jurisdiction-scoped resource, so there's nothing sensitive to gate."""
     with get_conn() as conn:
         return locations_service.list_districts(conn)
 

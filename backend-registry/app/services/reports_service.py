@@ -5,22 +5,29 @@ def get_summary(conn):
     """Summarize camera health and alert status. Queries both backend-registry
     and backend-watchlist tables from the same physical Postgres instance.
     """
+    # is_virtual_capture excludes the Manual Plate Lookup feature's per-district
+    # placeholder camera rows (see schema.sql) -- they exist only so an
+    # uploaded/ad-hoc detection has a real camera_id to attach to, and would
+    # otherwise inflate every count here with rows that aren't real installed
+    # cameras.
     with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM cameras")
+        cur.execute("SELECT COUNT(*) FROM cameras WHERE is_virtual_capture = false")
         total = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT dept, COUNT(*) FROM cameras GROUP BY dept ORDER BY dept"
+            "SELECT dept, COUNT(*) FROM cameras WHERE is_virtual_capture = false GROUP BY dept ORDER BY dept"
         )
         by_dept = {row[0]: row[1] for row in cur.fetchall()}
 
         cur.execute(
-            "SELECT connectivity_status, COUNT(*) FROM cameras GROUP BY connectivity_status ORDER BY connectivity_status"
+            "SELECT connectivity_status, COUNT(*) FROM cameras WHERE is_virtual_capture = false "
+            "GROUP BY connectivity_status ORDER BY connectivity_status"
         )
         by_connectivity = {row[0]: row[1] for row in cur.fetchall()}
 
         cur.execute(
-            "SELECT health_status, COUNT(*) FROM cameras GROUP BY health_status ORDER BY health_status"
+            "SELECT health_status, COUNT(*) FROM cameras WHERE is_virtual_capture = false "
+            "GROUP BY health_status ORDER BY health_status"
         )
         by_health = {row[0]: row[1] for row in cur.fetchall()}
 

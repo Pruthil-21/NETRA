@@ -1,9 +1,13 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, UserPlus, Mail } from 'lucide-react';
 import { registerOfficer, verifyRegistrationOtp } from '@/lib/session';
+import { locationsService, District } from '@/services/locationsService';
+import { PasswordStrengthMeter } from '@/components/common/PasswordStrengthMeter';
+import { analyzePassword } from '@/lib/passwordStrength';
+import { SearchSelect } from '@/components/common/SearchSelect';
 
 /** Public self-registration. Submitting creates the officer immediately
  * with zero postings, status='pending' -- but there's no admin approval
@@ -15,7 +19,7 @@ export default function RegisterPage() {
   const [badgeNumber, setBadgeNumber] = useState('');
   const [name, setName] = useState('');
   const [rank, setRank] = useState('');
-  const [department, setDepartment] = useState('');
+  const [selectedDistrict, setSelectedDistrict] = useState<District | null>(null);
   const [email, setEmail] = useState('');
   const [contactInfo, setContactInfo] = useState('');
   const [password, setPassword] = useState('');
@@ -29,11 +33,30 @@ export default function RegisterPage() {
   const [pendingToken, setPendingToken] = useState<string | null>(null);
   const [code, setCode] = useState('');
 
+  // Canonical district list -- Department/District used to be free text,
+  // which meant a typo here became this officer's actual posting scope
+  // (there's no admin approval step left to catch it, see the file-level
+  // comment above). A dropdown from the same reference list every other
+  // district picker in the app uses makes that structurally impossible.
+  const [districts, setDistricts] = useState<District[]>([]);
+  useEffect(() => {
+    locationsService.listDistricts().then(setDistricts).catch(() => setDistricts([]));
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
+    if (!selectedDistrict) {
+      setError('Select a Department/District.');
+      return;
+    }
+    if (!contactInfo.trim()) {
+      setError('Phone number is required.');
+      return;
+    }
+    const strength = analyzePassword(password, [badgeNumber, name, email]);
+    if (!strength.meetsRequirements) {
+      setError(`Password is too weak (${strength.strength}). ${strength.weaknesses[0] ?? 'Choose a stronger password.'}`);
       return;
     }
     if (password !== confirmPassword) {
@@ -43,8 +66,8 @@ export default function RegisterPage() {
     setSubmitting(true);
     try {
       const result = await registerOfficer({
-        badgeNumber, name, rank: rank || undefined, department, email,
-        contactInfo: contactInfo || undefined, password,
+        badgeNumber, name, rank: rank || undefined, department: selectedDistrict.name, email,
+        contactInfo, password,
       });
       setPendingToken(result.pendingToken);
     } catch (err) {
@@ -195,22 +218,22 @@ export default function RegisterPage() {
               />
             </div>
             <div>
-              <label htmlFor="department" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
-                Department / District
-              </label>
-              <input
+              <SearchSelect<District>
                 id="department"
-                value={department}
-                onChange={(e) => setDepartment(e.target.value)}
-                placeholder="Ahmedabad"
-                className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
-                required
+                label="Department / District"
+                items={districts}
+                getKey={(d) => d.id}
+                getLabel={(d) => d.name}
+                value={selectedDistrict}
+                onChange={setSelectedDistrict}
+                placeholder="Select a district…"
+                emptyMessage="No matching district."
               />
             </div>
           </div>
           <div>
             <label htmlFor="contact-info" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">
-              Phone (optional)
+              Phone
             </label>
             <input
               id="contact-info"
@@ -218,6 +241,7 @@ export default function RegisterPage() {
               onChange={(e) => setContactInfo(e.target.value)}
               placeholder="Phone number"
               className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
+              required
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -233,6 +257,7 @@ export default function RegisterPage() {
                 className="w-full bg-ink border border-line rounded-md px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command focus:border-command transition"
                 required
               />
+              <PasswordStrengthMeter password={password} userInputs={[badgeNumber, name, email]} />
             </div>
             <div>
               <label htmlFor="confirm-password" className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1">

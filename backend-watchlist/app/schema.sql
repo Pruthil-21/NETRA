@@ -210,3 +210,72 @@ CREATE TABLE IF NOT EXISTS flow_route_cache (
     computed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (from_camera_id, to_camera_id)
 );
+
+-- Manual Plate Lookup feature: tracks a submitted job's lifecycle only
+-- (pending/processing/completed/failed) -- deliberately decoupled from
+-- detections' NOT NULL camera_id requirement, since a job can fail before
+-- any plate/camera is ever known. Every job (upload_video/upload_image/
+-- archive_clip) dispatches against a per-district virtual camera row
+-- (backend-registry's cameras.is_virtual_capture) so a successful job's
+-- resulting plate still flows through the ordinary detections/alerts
+-- pipeline unchanged -- detection_id below just links back to that row.
+-- file_sha256 is a chain-of-custody fingerprint, computed server-side while
+-- streaming the upload to disk, never trusted from the client.
+CREATE TABLE IF NOT EXISTS anpr_jobs (
+    id                SERIAL PRIMARY KEY,
+    input_type        TEXT NOT NULL CHECK (input_type IN ('upload_video', 'upload_image', 'archive_clip')),
+    status            TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    submitted_by      TEXT NOT NULL,
+    district          TEXT NOT NULL,
+    stored_file_path  TEXT,
+    original_filename TEXT,
+    file_size_bytes   BIGINT,
+    file_sha256       TEXT,
+    source_camera_id  INTEGER,
+    clip_start        TIMESTAMPTZ,
+    clip_end          TIMESTAMPTZ,
+    -- Officer-supplied, upload_video only ("approximately when was this
+    -- recorded?") -- an uploaded file has no other real-world time anchor.
+    -- archive_clip needs no equivalent column: clip_start already IS that
+    -- anchor. Null means "unknown provenance" -- ml-anpr then has no basis
+    -- to compute a real detected_at for this job's plates, same as a photo.
+    recorded_at       TIMESTAMPTZ,
+    detection_id      INTEGER,
+    -- The PRIMARY result only (nearest plate for a photo, earliest-timestamp
+    -- plate for a clip) -- denormalized from anpr_job_results below so the
+    -- job list view and push-notification text don't need the full result
+    -- set just to show a headline. The authoritative, complete set of every
+    -- plate found (a photo/clip can have several) lives in anpr_job_results.
+    plate_number      TEXT,
+    error_message     TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_anpr_jobs_submitted_by ON anpr_jobs (submitted_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_anpr_jobs_district ON anpr_jobs (district);
+CREATE INDEX IF NOT EXISTS idx_anpr_jobs_status ON anpr_jobs (status);
+
+-- Every plate ml-anpr reported for one job -- a single photo or clip can
+-- show several vehicles. detected_at is the real in-footage moment for a
+-- video/clip job (ml-anpr computes it from clip_start + the frame offset,
+-- never "now()" -- the plate may have been seen minutes into a clip
+-- processed well after the fact); for a photo there's no such timeline, so
+-- it's left null. box_area is a normalized 0-1 fraction of frame area (the
+-- plate or vehicle bounding box) -- the only ordering signal we have for
+-- "nearest to farthest" on a photo with several plates, since there's no
+-- depth/distance sensor; null when ml-anpr doesn't report one, and results
+-- then just keep insertion order.
+CREATE TABLE IF NOT EXISTS anpr_job_results (
+    id             SERIAL PRIMARY KEY,
+    job_id         INTEGER NOT NULL REFERENCES anpr_jobs(id) ON DELETE CASCADE,
+    detection_id   INTEGER,
+    plate_number   TEXT NOT NULL,
+    confidence     REAL,
+    detected_at    TIMESTAMPTZ,
+    box_area       REAL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_anpr_job_results_job_id ON anpr_job_results (job_id);

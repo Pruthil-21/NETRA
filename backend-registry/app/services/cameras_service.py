@@ -27,7 +27,7 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url, area_id
                 FROM cameras
-                WHERE is_synthetic = false
+                WHERE is_synthetic = false AND is_virtual_capture = false
                 ORDER BY id
             """)
         else:
@@ -37,7 +37,7 @@ def list_cameras(conn, dept: str | None = None):
                        connectivity_status, storage_type, retention_days,
                        health_status, rtsp_url, stream_id, hls_url, area_id
                 FROM cameras
-                WHERE dept = %s AND is_synthetic = false
+                WHERE dept = %s AND is_synthetic = false AND is_virtual_capture = false
                 ORDER BY id
             """, (dept,))
         cols = [c.name for c in cur.description]
@@ -73,6 +73,7 @@ def list_cameras_page(
         clauses.append("is_synthetic = true")
     else:
         clauses.append("is_synthetic = false")
+        clauses.append("is_virtual_capture = false")
     if cursor is not None:
         clauses.append("id > %(cursor)s")
         params["cursor"] = cursor

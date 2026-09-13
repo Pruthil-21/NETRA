@@ -130,7 +130,9 @@ export interface RegisterInput {
    * waiting on admin approval, and it doubles as this officer's 2FA email
    * with no separate setup step needed. */
   email: string;
-  contactInfo?: string;
+  /** Compulsory: the only channel to reach this officer outside the app
+   * itself, and shown on their own profile once registered. */
+  contactInfo: string;
   password: string;
 }
 
@@ -147,7 +149,7 @@ export async function registerOfficer(input: RegisterInput): Promise<{ pendingTo
       rank: input.rank || null,
       department: input.department,
       email: input.email,
-      contact_info: input.contactInfo || null,
+      contact_info: input.contactInfo,
       password: input.password,
     }),
   });

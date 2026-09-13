@@ -3,7 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, Film, LogOut, UserCircle2 } from 'lucide-react';
+import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, Film, LogOut, UserCircle2, ScanSearch } from 'lucide-react';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { NotificationCenter } from '@/components/shell/NotificationCenter';
 import { ThemeToggle } from '@/components/common/ThemeToggle';
@@ -108,6 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     has('reset_officer_passwords');
   const navItems = [
     ...BASE_NAV_ITEMS,
+    ...(has('run_anpr_lookup') ? [{ href: '/plate-lookup', label: 'Plate Lookup', icon: ScanSearch }] : []),
     ...(canSeeAdmin ? [{ href: '/admin', label: 'Admin', icon: Shield }] : []),
   ];
 

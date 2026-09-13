@@ -388,6 +388,15 @@ CREATE TABLE IF NOT EXISTS role_drafts (
 -- self-service reset depends on it.
 ALTER TABLE officers ADD COLUMN IF NOT EXISTS email TEXT;
 
+-- Mandatory from registration onward (see RegisterRequest.contact_info) --
+-- previously only ever landed in registration_requests.contact_info (a
+-- workflow table for the admin-approval fast track), never copied onto
+-- the officer's own permanent record, so it was never actually retrievable
+-- once registration finished -- not stored, and so never displayable on
+-- the profile page either. An officer seeded before this existed can still
+-- have NULL here.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS contact_info TEXT;
+
 -- One row per OTP ever issued (never updated in place except to mark it
 -- consumed) -- purpose distinguishes a login code from a password-reset
 -- code so one can never be replayed as the other. code_hash, never the raw
@@ -589,33 +598,49 @@ CREATE INDEX IF NOT EXISTS idx_areas_village ON areas (village_id);
 -- district, Viramgam a town in Ahmedabad district) -- exactly the
 -- free-text-district problem this migration exists to fix. No-ops until
 -- scripts/seed_locations.py has actually populated the villages table.
+--
+-- The backfill loop below only runs (and can only succeed) once villages
+-- has real data -- but the "retire the column" step further down must NOT
+-- share that same guard: a brand-new database's `areas` table is empty at
+-- the point schema.sql applies (nothing has inserted into it yet -- seed
+-- data/scripts run after this file), so there is nothing to backfill and
+-- no reason to wait for villages before retiring a column with zero rows
+-- depending on it. Gating retirement on "villages has data" meant a fresh
+-- database could never satisfy it in a single schema.sql apply (villages
+-- is seeded by a separate script that necessarily runs afterward),
+-- permanently leaving `district NOT NULL` in place and breaking every
+-- INSERT INTO areas (name, village_id) call, which never sets it.
 DO $$
 DECLARE
     mapping RECORD;
     v_id INTEGER;
 BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'areas' AND column_name = 'district')
-       AND EXISTS (SELECT 1 FROM villages LIMIT 1) THEN
-        FOR mapping IN
-            SELECT * FROM (VALUES
-                ('Ahmedabad', 'Ahmedabad'),
-                ('Anand', 'Anand'),
-                ('Junagadh', 'Junagadh'),
-                ('Petlad, Gujarat', 'Petlad'),
-                ('Vadodara', 'Vadodara'),
-                ('Viramgam, Ahmedabad', 'Viramgam (Rural)')
-            ) AS m(old_district, village_name)
-        LOOP
-            SELECT v.id INTO v_id FROM villages v WHERE v.name = mapping.village_name LIMIT 1;
-            IF v_id IS NOT NULL THEN
-                UPDATE areas SET village_id = v_id WHERE district = mapping.old_district AND village_id IS NULL;
-            END IF;
-        END LOOP;
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'areas' AND column_name = 'district') THEN
+        IF EXISTS (SELECT 1 FROM villages LIMIT 1) THEN
+            FOR mapping IN
+                SELECT * FROM (VALUES
+                    ('Ahmedabad', 'Ahmedabad'),
+                    ('Anand', 'Anand'),
+                    ('Junagadh', 'Junagadh'),
+                    ('Petlad, Gujarat', 'Petlad'),
+                    ('Vadodara', 'Vadodara'),
+                    ('Viramgam, Ahmedabad', 'Viramgam (Rural)')
+                ) AS m(old_district, village_name)
+            LOOP
+                SELECT v.id INTO v_id FROM villages v WHERE v.name = mapping.village_name LIMIT 1;
+                IF v_id IS NOT NULL THEN
+                    UPDATE areas SET village_id = v_id WHERE district = mapping.old_district AND village_id IS NULL;
+                END IF;
+            END LOOP;
+        END IF;
 
         -- Only retire the free-text column once every existing row was
-        -- successfully mapped -- if some area's district string didn't
-        -- match anything above, district stays in place (and village_id
-        -- stays nullable) rather than silently dropping unmapped data.
+        -- successfully mapped -- vacuously true for a fresh/empty areas
+        -- table (nothing to map, nothing to lose), so retirement no longer
+        -- waits on villages being populated first. An existing database
+        -- with real, not-yet-mapped area rows still correctly waits: those
+        -- rows keep village_id NULL until the backfill loop above (which
+        -- does need villages) actually maps them on some later apply.
         IF NOT EXISTS (SELECT 1 FROM areas WHERE village_id IS NULL) THEN
             ALTER TABLE areas ALTER COLUMN village_id SET NOT NULL;
             ALTER TABLE areas DROP COLUMN IF EXISTS district;
@@ -628,3 +653,16 @@ BEGIN
         END IF;
     END IF;
 END $$;
+
+-- Manual Plate Lookup feature: an officer-uploaded clip/image or a marked
+-- Archive clip has no real registered camera, but detections/alerts both
+-- require a real camera_id (NOT NULL). Rather than build a parallel result
+-- path, seed_virtual_cameras.py creates one of these per district and every
+-- such job dispatches against it, so the entire existing detections/alerts/
+-- map-trace/push pipeline needs zero new code. Same convention as
+-- is_synthetic above: excluded from real camera counts/lists/analytics by
+-- default everywhere that already filters on is_synthetic, plus a few
+-- aggregate sites that had no filter at all (see reports_service.get_summary,
+-- detections_service's camera density/flow queries).
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_virtual_capture BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_cameras_virtual_capture ON cameras (is_virtual_capture) WHERE is_virtual_capture;

@@ -8,14 +8,13 @@ Run locally: uvicorn app.main:app --reload --port 8000
 """
 import asyncio
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import get_current_user, has_permission
 from .db import get_conn
 from .federation_proxy import build_router as build_federation_router
 from .logging_config import configure_logging
-from .services import recording_health_stream
 from .routers import (
     admin_ops,
     areas,
@@ -34,6 +33,7 @@ from .routers import (
     reports,
     roles,
 )
+from .services import recording_health_stream
 
 configure_logging()
 
@@ -84,5 +84,17 @@ async def _capture_recording_health_stream_loop():
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(response: Response):
+    # A process that's up but can't reach the database is not healthy --
+    # every real request here goes through get_conn(), so a load
+    # balancer/orchestrator trusting a static {"status": "ok"} would keep
+    # routing traffic to a replica that 500s on literally every endpoint.
+    # A quick SELECT 1 (not a real query) is enough to prove the pool can
+    # actually check out and use a live connection.
+    try:
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT 1")
+    except Exception:  # noqa: BLE001 -- any DB failure means "unhealthy", not a 500
+        response.status_code = 503
+        return {"status": "degraded", "database": "unreachable"}
+    return {"status": "ok", "database": "reachable"}

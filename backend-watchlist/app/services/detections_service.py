@@ -222,11 +222,14 @@ def camera_density_counts(
     Cameras with zero detections in the window are simply absent from the
     result -- the frontend only paints where there's actual activity, so an
     idle camera contributing nothing here isn't a special case."""
-    joins = ""
+    # Always joined (not just when dept-filtering) so a Manual Plate Lookup
+    # job's virtual-capture camera never shows up as a phantom density
+    # hotspot -- see cameras.is_virtual_capture.
+    joins = "JOIN cameras c ON c.id = detections.camera_id"
     clauses, params = _time_window_clauses(window_minutes, hour, on_date)
+    clauses.append("c.is_virtual_capture = false")
 
     if dept is not None:
-        joins = "JOIN cameras c ON c.id = detections.camera_id"
         clauses.append("c.dept = %s")
         params.append(dept)
 
@@ -346,11 +349,14 @@ def camera_flow_pairs(
     the window count as one transition from the first camera to the
     second; grouped by (from, to) pair, this is a network-wide flow matrix,
     not any one vehicle's route."""
-    joins = ""
+    # Always joined (not just when dept-filtering) so a Manual Plate Lookup
+    # job's virtual-capture camera is never paired into a flow/corridor
+    # transition -- see cameras.is_virtual_capture.
+    joins = "JOIN cameras c ON c.id = detections.camera_id"
     clauses, params = _time_window_clauses(window_minutes, hour, on_date)
+    clauses.append("c.is_virtual_capture = false")
 
     if dept is not None:
-        joins = "JOIN cameras c ON c.id = detections.camera_id"
         clauses.append("c.dept = %s")
         params.append(dept)
 
@@ -394,11 +400,11 @@ def camera_density_trend(
     if bucket not in _TREND_BUCKETS:
         raise ValueError(f"bucket must be one of {_TREND_BUCKETS}")
 
-    joins = ""
-    clauses = ["detected_at >= %s", "detected_at <= %s"]
+    # Always joined (not just when dept-filtering) -- see camera_density_counts.
+    joins = "JOIN cameras c ON c.id = detections.camera_id"
+    clauses = ["detected_at >= %s", "detected_at <= %s", "c.is_virtual_capture = false"]
     params: list = [date_from, date_to]
     if dept is not None:
-        joins = "JOIN cameras c ON c.id = detections.camera_id"
         clauses.append("c.dept = %s")
         params.append(dept)
     where = f"WHERE {' AND '.join(clauses)}"
@@ -447,11 +453,11 @@ def camera_flow_trend(
     if bucket not in _TREND_BUCKETS:
         raise ValueError(f"bucket must be one of {_TREND_BUCKETS}")
 
-    joins = ""
-    clauses = ["detected_at >= %s", "detected_at <= %s"]
+    # Always joined (not just when dept-filtering) -- see camera_flow_pairs.
+    joins = "JOIN cameras c ON c.id = detections.camera_id"
+    clauses = ["detected_at >= %s", "detected_at <= %s", "c.is_virtual_capture = false"]
     params: list = [date_from, date_to]
     if dept is not None:
-        joins = "JOIN cameras c ON c.id = detections.camera_id"
         clauses.append("c.dept = %s")
         params.append(dept)
     where = f"WHERE {' AND '.join(clauses)}"
@@ -532,6 +538,13 @@ def get_vehicle_trace(
         if i == 0:
             continue
         prev = sightings[i - 1]
+        # A Manual Plate Lookup sighting (cameras.is_virtual_capture) isn't a
+        # real point-to-point vehicle movement -- it's a one-off upload/clip
+        # with no meaningful "distance travelled" to the previous or next
+        # real sighting. Still show it in the trace, just don't score a leg
+        # touching it as a bearing/speed/teleport anomaly.
+        if prev.get("is_virtual_capture") or sighting.get("is_virtual_capture"):
+            continue
         sighting["bearing_deg"], sighting["speed_kmh"] = geo.leg_bearing_and_speed(prev, sighting)
         gap_hours = (sighting["detected_at"] - prev["detected_at"]).total_seconds() / 3600
         sighting["anomaly"] = geo.classify_leg_anomaly(sighting["speed_kmh"], gap_hours)
