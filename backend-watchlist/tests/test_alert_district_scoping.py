@@ -52,9 +52,14 @@ def _seed_watchlist_and_detection(client, internal_headers, camera_id: int, dept
 
 
 def _scoped_headers(district: str, badge="ALERT-SCOPE-TEST"):
+    # acknowledge_alerts is granted by default -- these tests are about
+    # DISTRICT scoping (dual detecting/flagging rule), not permission
+    # gating, so every actor here needs to actually be authorized to PATCH;
+    # a 403 in this file should mean "wrong district," never "missing
+    # permission" (see test_alerts.py for permission-gating coverage itself).
     token = jwt.encode(
         {"sub": "1", "badge_number": badge, "role": "station_officer", "scope_type": "district",
-         "scope_value": district, "permissions": []},
+         "scope_value": district, "permissions": ["acknowledge_alerts"]},
         settings.jwt_secret, algorithm="HS256",
     )
     return {"Authorization": f"Bearer {token}"}

@@ -1,4 +1,3 @@
-import contextlib
 import uuid
 
 import psycopg2
@@ -55,11 +54,49 @@ def test_recipients_for_scope_includes_platform_and_matching_district(push_test_
     push_test_officers.append(other_id)
 
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        recipients = push_service.recipients_for_scope(cur, "Push Test District A")
+        recipients = push_service.recipients_for_scope(cur, ["Push Test District A"])
 
     assert platform_badge in recipients
     assert district_badge in recipients
     assert other_badge not in recipients
+
+
+def test_recipients_for_scope_matches_any_of_multiple_districts(push_test_officers):
+    """Dual detecting/flagging rule -- a district that only flagged a plate
+    (never detected it) must still be paged, mirroring GET /alerts' same
+    camera_district OR flagged_district logic."""
+    platform_id, platform_badge = _insert_officer_with_posting("platform", None)
+    push_test_officers.append(platform_id)
+    detecting_id, detecting_badge = _insert_officer_with_posting("district", "Push Test District C")
+    push_test_officers.append(detecting_id)
+    flagging_id, flagging_badge = _insert_officer_with_posting("district", "Push Test District D")
+    push_test_officers.append(flagging_id)
+    uninvolved_id, uninvolved_badge = _insert_officer_with_posting("district", "Push Test District E")
+    push_test_officers.append(uninvolved_id)
+
+    with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        recipients = push_service.recipients_for_scope(cur, ["Push Test District C", "Push Test District D"])
+
+    assert platform_badge in recipients
+    assert detecting_badge in recipients
+    assert flagging_badge in recipients
+    assert uninvolved_badge not in recipients
+
+
+def test_recipients_for_scope_still_matches_platform_when_every_district_is_none(push_test_officers):
+    """A camera/watchlist row that failed to resolve any district at all
+    (both entries None) must not silently skip platform-wide officers --
+    only the district-matching side is affected by having nothing to match."""
+    platform_id, platform_badge = _insert_officer_with_posting("platform", None)
+    push_test_officers.append(platform_id)
+    district_id, district_badge = _insert_officer_with_posting("district", "Push Test District F")
+    push_test_officers.append(district_id)
+
+    with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        recipients = push_service.recipients_for_scope(cur, [None, None])
+
+    assert platform_badge in recipients
+    assert district_badge not in recipients
 
 
 def test_send_to_badges_noops_when_vapid_not_configured(monkeypatch, push_test_officers):

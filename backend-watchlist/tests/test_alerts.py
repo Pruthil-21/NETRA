@@ -132,6 +132,47 @@ def test_require_role_accepts_rbac_role_names(client):
         assert resp.status_code == 200, f"role {rbac_role} was rejected"
 
 
+def test_patch_requires_acknowledge_alerts_not_just_a_staff_role(client, internal_headers):
+    """An RBAC role can read alerts (require_role -- any of the 5 roles
+    passes) without being allowed to change one's status -- auditor in
+    particular has read-only oversight by design (see project_team_roles/
+    RBAC seed: auditor is never granted acknowledge_alerts) and must not
+    slip through update_alert_status just because it satisfies the older,
+    coarser "is this a staff member" check."""
+    import jwt
+    from app.config import settings
+
+    alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+
+    token = jwt.encode(
+        {"sub": "auditor-test", "role": "auditor", "scope_type": "platform", "permissions": ["view_analytics"]},
+        settings.jwt_secret, algorithm="HS256",
+    )
+    resp = client.patch(
+        f"/alerts/{alert['id']}", json={"status": "ACKNOWLEDGED"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 403
+
+
+def test_patch_succeeds_for_an_rbac_role_that_actually_holds_acknowledge_alerts(client, internal_headers):
+    import jwt
+    from app.config import settings
+
+    alert, _ = _seed_watchlist_and_detection(client, internal_headers)
+
+    token = jwt.encode(
+        {
+            "sub": "control-room-test", "role": "control_room_operator", "scope_type": "platform",
+            "permissions": ["view_live_feeds", "acknowledge_alerts"],
+        },
+        settings.jwt_secret, algorithm="HS256",
+    )
+    resp = client.patch(
+        f"/alerts/{alert['id']}", json={"status": "ACKNOWLEDGED"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+
+
 def test_alert_includes_nearest_station(client, internal_headers, scoping_test_cameras):
     # Camera id=1 isn't guaranteed to exist (e.g. a fresh CI database has
     # the schema but no seed data) -- create our own camera at a known

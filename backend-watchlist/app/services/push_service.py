@@ -20,19 +20,27 @@ from ..config import settings
 from ..logging_config import logger
 
 
-def recipients_for_scope(db: RealDictCursor, district: str | None) -> list[str]:
+def recipients_for_scope(db: RealDictCursor, districts: list[str | None]) -> list[str]:
     """badge_numbers of officers with an active posting that would see an
-    alert in `district` -- platform-scoped postings always match; a
-    district-scoped posting matches only that exact district."""
+    alert relevant to any of `districts` -- e.g. [camera_district,
+    flagged_district] for a watchlist alert, mirroring the same dual
+    detecting/flagging rule GET /alerts applies over REST, so a district
+    that only flagged a plate (never detected it) still gets paged.
+    Platform-scoped postings always match regardless -- even when every
+    entry in `districts` is None (e.g. neither the camera nor the watchlist
+    row resolved to a district), so platform-wide officers still don't miss
+    it. None entries are filtered out of the district-matching side only,
+    never used to short-circuit the whole query."""
+    relevant = [d for d in districts if d]
     db.execute(
         """
         SELECT DISTINCT o.badge_number
         FROM officers o
         JOIN postings p ON p.officer_id = o.id
         WHERE p.is_active
-          AND (p.scope_type = 'platform' OR (p.scope_type = 'district' AND p.scope_value = %s))
+          AND (p.scope_type = 'platform' OR (p.scope_type = 'district' AND p.scope_value = ANY(%s)))
         """,
-        (district,),
+        (relevant,),
     )
     return [row["badge_number"] for row in db.fetchall()]
 

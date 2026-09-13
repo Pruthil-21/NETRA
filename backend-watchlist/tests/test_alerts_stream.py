@@ -194,6 +194,74 @@ def test_non_matching_district_connection_does_not_receive_alert(
             ws_other.portal.call(ws_other._send_rx.receive_nowait)
 
 
+def test_district_scoped_connection_receives_alert_flagged_by_its_district_even_from_another_camera(
+    client, officer_headers, internal_headers, scoping_test_cameras
+):
+    """The dual rule: a connection scoped to the district that FLAGGED a
+    plate must receive the live broadcast even though the camera that
+    actually detected it is in a different district -- mirrors GET /alerts'
+    camera_district OR flagged_district filter, previously only checked on
+    the camera side for the WS broadcast."""
+    camera_id = _insert_test_camera("WS Scoping Test District Detecting")
+    scoping_test_cameras.append(camera_id)
+
+    token = _rbac_token("district_command", "district", "WS Scoping Test District Flagging")
+    with client.websocket_connect(f"/alerts/stream?token={token}") as ws:
+        plate = _random_plate_for_stream_test()
+        watchlist_resp = client.post(
+            "/watchlist",
+            json={"plate_number": plate, "reason": "stream test", "dept_flagged": "WS Scoping Test District Flagging"},
+            headers=officer_headers,
+        )
+        assert watchlist_resp.status_code == 201
+        detect_resp = client.post(
+            "/detections", json={"camera_id": camera_id, "plate_number": plate}, headers=internal_headers
+        )
+        assert detect_resp.status_code == 201
+
+        message = _receive_json_with_timeout(ws)
+        assert message["plate_number"] == plate
+
+
+def test_multi_posting_connection_receives_alerts_from_any_of_its_posted_districts(
+    client, officer_headers, internal_headers, scoping_test_cameras
+):
+    """A real multi-posting token (a `scopes` claim, not the single legacy
+    scope_type/scope_value pair) must match on ANY of its posted districts
+    -- previously the WS route ignored `scopes` entirely and only ever read
+    the (here absent) top-level scope_type/scope_value, so a multi-posting
+    officer's connection wouldn't match any district at all."""
+    camera_id = _insert_test_camera("WS Scoping Test District Multi B")
+    scoping_test_cameras.append(camera_id)
+
+    token = jwt.encode(
+        {
+            "sub": "1", "badge_number": "WS-MULTI-TEST", "role": "district_command",
+            "scopes": [
+                {"scope_type": "district", "scope_value": "WS Scoping Test District Multi A"},
+                {"scope_type": "district", "scope_value": "WS Scoping Test District Multi B"},
+            ],
+            "permissions": [],
+        },
+        settings.jwt_secret, algorithm="HS256",
+    )
+    with client.websocket_connect(f"/alerts/stream?token={token}") as ws:
+        plate = _random_plate_for_stream_test()
+        watchlist_resp = client.post(
+            "/watchlist",
+            json={"plate_number": plate, "reason": "stream test", "dept_flagged": "WS Scoping Test District Multi B"},
+            headers=officer_headers,
+        )
+        assert watchlist_resp.status_code == 201
+        detect_resp = client.post(
+            "/detections", json={"camera_id": camera_id, "plate_number": plate}, headers=internal_headers
+        )
+        assert detect_resp.status_code == 201
+
+        message = _receive_json_with_timeout(ws)
+        assert message["plate_number"] == plate
+
+
 def test_platform_scoped_connection_receives_any_district_alert(
     client, officer_headers, internal_headers, scoping_test_cameras
 ):
