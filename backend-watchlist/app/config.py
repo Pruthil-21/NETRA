@@ -54,6 +54,13 @@ class Settings:
     anpr_upload_dir: str = os.environ.get("ANPR_UPLOAD_DIR", "uploads/anpr_jobs")
     anpr_max_video_bytes: int = int(os.environ.get("ANPR_MAX_VIDEO_BYTES", str(200 * 1024 * 1024)))
     anpr_max_image_bytes: int = int(os.environ.get("ANPR_MAX_IMAGE_BYTES", str(15 * 1024 * 1024)))
+    # How long an uploaded clip/image's actual bytes stay on disk -- the
+    # anpr_jobs row itself (metadata, hash, linked detection/search results)
+    # is never deleted, only the raw file once it's this old. Checked on a
+    # periodic sweep (see anpr_jobs_service.run_periodic_upload_cleanup),
+    # same interval-loop shape as traffic_alert_eval_interval_seconds below.
+    anpr_upload_retention_days: int = int(os.environ.get("ANPR_UPLOAD_RETENTION_DAYS", "5"))
+    anpr_cleanup_interval_seconds: int = int(os.environ.get("ANPR_CLEANUP_INTERVAL_SECONDS", str(6 * 60 * 60)))
     # Where Avi's ml-anpr on-demand endpoint lives, and the base URL this
     # service's own callback (PATCH /anpr-jobs/{id}) is reachable at from
     # ml-anpr's side. Both unset just means dispatch fails fast with a clear

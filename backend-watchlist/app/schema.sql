@@ -279,3 +279,13 @@ CREATE TABLE IF NOT EXISTS anpr_job_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_anpr_job_results_job_id ON anpr_job_results (job_id);
+
+-- Lets an officer cancel their own pending/processing lookup instead of it
+-- sitting unresolved forever if ml-anpr never calls back (e.g. it's down
+-- and the initial dispatch already succeeded, so there's no dispatch-time
+-- failure to catch this). Drop-then-add rather than an ALTER ... ADD VALUE
+-- equivalent: plain CHECK constraints have no such statement, and this stays
+-- idempotent (re-running replaces the same constraint with itself).
+ALTER TABLE anpr_jobs DROP CONSTRAINT IF EXISTS anpr_jobs_status_check;
+ALTER TABLE anpr_jobs ADD CONSTRAINT anpr_jobs_status_check
+    CHECK (status IN ('pending', 'processing', 'completed', 'failed', 'cancelled'));

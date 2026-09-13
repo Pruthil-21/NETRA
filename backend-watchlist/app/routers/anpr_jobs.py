@@ -152,6 +152,31 @@ def get_job(
     return job
 
 
+@router.post("/{job_id}/cancel", response_model=AnprJobOut)
+def cancel_job(
+    job_id: int,
+    db: RealDictCursor = Depends(get_db),
+    user=Depends(require_permission("run_anpr_lookup")),
+):
+    """Only the officer who submitted a job can cancel it -- not extended to
+    view_analytics holders the way GET's visibility is, since cancelling is
+    a mutation on someone else's own in-flight request, not a read. Meant
+    for exactly the "ml-anpr is down/stuck and this would otherwise sit in
+    pending/processing forever" case -- there's no way to signal ml-anpr
+    itself to stop (no cancel contract on its side), this just stops us
+    from waiting on it; a late callback for an already-cancelled job is
+    ignored, see complete_job below."""
+    job = anpr_jobs_service.get_job(db, job_id)
+    if job is None or job["submitted_by"] != _actor(user):
+        raise HTTPException(status_code=404, detail="Job not found")
+    updated = anpr_jobs_service.cancel_job(db, job_id)
+    if updated is None:
+        raise HTTPException(status_code=409, detail=f"Job is already {job['status']} and can't be cancelled")
+    audit_service.log(db, _actor(user), "cancel", "anpr_job", job_id)
+    updated["results"] = anpr_jobs_service.list_job_results(db, job_id, updated["input_type"])
+    return updated
+
+
 @router.get("/{job_id}/file")
 def download_job_file(
     job_id: int,
@@ -192,6 +217,14 @@ def complete_job(
     existing = anpr_jobs_service.get_job(db, job_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="Job not found")
+    if existing["status"] == "cancelled":
+        # The officer already cancelled this on our side -- ml-anpr has no
+        # way to know that (no cancel contract on its side), so a late
+        # completion/failure callback is expected, not an error. Don't let
+        # it resurrect a cancelled job back to completed/failed; 200 so
+        # ml-anpr doesn't retry a callback that's never going anywhere.
+        existing["results"] = anpr_jobs_service.list_job_results(db, job_id, existing["input_type"])
+        return existing
 
     if body.results:
         anpr_jobs_service.add_job_results(db, job_id, [r.model_dump() for r in body.results])

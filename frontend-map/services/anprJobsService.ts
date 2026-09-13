@@ -3,7 +3,7 @@ import { authHeaders, unauthorizedError, isJwtConfigured } from '@/lib/apiAuth';
 import { getToken } from '@/lib/session';
 
 export type AnprInputType = 'upload_video' | 'upload_image' | 'archive_clip';
-export type AnprJobStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type AnprJobStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
 export interface AnprJobResult {
   id: number;
@@ -61,6 +61,17 @@ export const anprJobsService = {
   async get(id: number): Promise<AnprJob> {
     const response = await fetch(`${WATCHLIST_API_URL}/anpr-jobs/${id}`, { headers: authHeaders(), cache: 'no-store' });
     return handle(response, 'fetch plate lookup job');
+  },
+
+  /** Only valid while the job is still pending/processing -- the backend
+   * rejects (409) an already-completed/failed/cancelled job. Meant for the
+   * "ml-anpr is down and this would otherwise sit forever" case. */
+  async cancel(id: number): Promise<AnprJob> {
+    const response = await fetch(`${WATCHLIST_API_URL}/anpr-jobs/${id}/cancel`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return handle(response, 'cancel plate lookup job');
   },
 
   async submitArchiveClip(input: {

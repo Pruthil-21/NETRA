@@ -3,17 +3,20 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, CheckCircle2, Clock, Loader2, XCircle, Search as SearchIcon } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, Clock, Loader2, XCircle, Search as SearchIcon } from 'lucide-react';
 import { usePermissions } from '@/hooks/usePermissions';
 import { anprJobsService, AnprJob } from '@/services/anprJobsService';
 
 const POLL_INTERVAL_MS = 3000;
+const CANCELLABLE_STATUSES: AnprJob['status'][] = ['pending', 'processing'];
+const TERMINAL_STATUSES: AnprJob['status'][] = ['completed', 'failed', 'cancelled'];
 
 const STAGE_COPY: Record<AnprJob['status'], string> = {
   pending: 'Queued -- waiting to start.',
   processing: 'Extracting the plate from your submission…',
   completed: 'Done.',
   failed: 'This submission could not be processed.',
+  cancelled: 'Cancelled by you.',
 };
 
 /** Dedicated, deep-linkable status page for one job (the async-job UX
@@ -30,6 +33,8 @@ export default function PlateLookupJobPage() {
 
   const [job, setJob] = useState<AnprJob | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!Number.isFinite(jobId)) return;
@@ -49,7 +54,7 @@ export default function PlateLookupJobPage() {
 
     fetchJob();
     const interval = setInterval(() => {
-      if (job && (job.status === 'completed' || job.status === 'failed')) {
+      if (job && TERMINAL_STATUSES.includes(job.status)) {
         clearInterval(interval);
         return;
       }
@@ -64,6 +69,20 @@ export default function PlateLookupJobPage() {
     // every poll tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId]);
+
+  const handleCancel = async () => {
+    if (!job) return;
+    setCancelError(null);
+    setCancelling(true);
+    try {
+      const updated = await anprJobsService.cancel(job.id);
+      setJob(updated);
+    } catch (err) {
+      setCancelError(err instanceof Error ? err.message : 'Failed to cancel this job');
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   if (permissionsLoading) return null;
   if (!has('run_anpr_lookup')) {
@@ -87,11 +106,23 @@ export default function PlateLookupJobPage() {
           <section className="bg-panel border border-line rounded-lg p-5 flex flex-col gap-4">
             <div className="flex items-center gap-3">
               <StatusIcon status={job.status} />
-              <div>
+              <div className="flex-1 min-w-0">
                 <h1 className="text-base font-semibold text-white">Plate Lookup #{job.id}</h1>
                 <p className="text-xs text-slate-500">{STAGE_COPY[job.status]}</p>
               </div>
+              {CANCELLABLE_STATUSES.includes(job.status) && (
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={cancelling}
+                  className="shrink-0 text-xs text-slate-400 hover:text-signal-red border border-line hover:border-signal-red rounded px-3 py-1.5 transition disabled:opacity-50"
+                >
+                  {cancelling ? 'Cancelling…' : 'Cancel'}
+                </button>
+              )}
             </div>
+
+            {cancelError && <p className="text-xs text-signal-red">{cancelError}</p>}
 
             <dl className="grid grid-cols-2 gap-4 text-xs">
               <div>
@@ -186,6 +217,7 @@ export default function PlateLookupJobPage() {
 function StatusIcon({ status }: { status: AnprJob['status'] }) {
   if (status === 'completed') return <CheckCircle2 size={22} className="text-signal-green shrink-0" />;
   if (status === 'failed') return <XCircle size={22} className="text-signal-red shrink-0" />;
+  if (status === 'cancelled') return <Ban size={22} className="text-slate-500 shrink-0" />;
   if (status === 'processing') return <Loader2 size={22} className="text-command shrink-0 animate-spin" />;
   return <Clock size={22} className="text-slate-400 shrink-0" />;
 }
