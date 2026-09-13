@@ -1,3 +1,4 @@
+import ipaddress
 from datetime import datetime, timezone
 from typing import Literal
 from urllib.parse import urlsplit
@@ -7,6 +8,27 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 def utcnow():
     return datetime.now(timezone.utc).isoformat()
+
+
+# Hostnames/suffixes that never denote a real external camera-inventory
+# origin -- blocking these at config time keeps whoever holds
+# FEDERATION_SERVICE_KEY (a single secret shared with backend-registry's
+# proxy) from pointing a source at internal-only infrastructure (this
+# deployment's own services, cloud metadata, etc.) rather than being limited
+# to the legitimate external origins this feature is actually for.
+_BLOCKED_HOSTNAMES = {"localhost"}
+_BLOCKED_HOST_SUFFIXES = (".internal", ".local", ".localhost")
+
+
+def _is_blocked_host(hostname: str) -> bool:
+    hostname = hostname.lower()
+    if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(_BLOCKED_HOST_SUFFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False  # a real DNS name, not an IP literal
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified
 
 
 class Source(BaseModel):
@@ -43,6 +65,8 @@ class Source(BaseModel):
         parsed = urlsplit(value)
         if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
             raise ValueError("Use an HTTP(S) URL without credentials, query, or fragment")
+        if _is_blocked_host(parsed.hostname):
+            raise ValueError("URL host must be a real external origin, not a private/loopback/link-local/internal address")
         return value.rstrip("/")
 
 
