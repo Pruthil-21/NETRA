@@ -48,6 +48,8 @@ for d in docs:
             if d['kind'] == 'Deployment':
                 c['resources'] = {'requests':{'cpu':'100m','memory':'256Mi'}, 'limits':{'cpu':'2','memory':'2Gi'}}
         # Keep health detection active; deliver only the explicitly authorized test event.
+        if d['metadata']['name'] == 'recording-api':
+            d['spec']['template']['spec']['containers'][0]['image'] = 'digdhrishti-recording:overlap-fix'
         if d['metadata']['name'] == 'recording-monitor':
             d['spec']['replicas'] = 1
             c['env'] = [{'name':'NOTIFICATION_DELIVERY_ENABLED','value':'false'}]

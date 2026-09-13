@@ -5,6 +5,10 @@ set -Eeuo pipefail
 FOOTAGE_DIR="${FOOTAGE_DIR:-/demo-footage}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
+if [[ ! "${MEDIAMTX_PUBLISH_PASSWORD:-}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+  echo "MEDIAMTX_PUBLISH_PASSWORD must be 64 hexadecimal characters" >&2
+  exit 1
+fi
 RETRY_SECONDS="${RETRY_SECONDS:-5}"
 [[ "$RETRY_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid retry interval" >&2; exit 1; }
 
@@ -67,7 +71,7 @@ publish() (
   local stream_id="$1"
   local filename="$2"
   local input_file="${FOOTAGE_DIR}/prepared/${stream_id}.mp4"
-  local target="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${stream_id}"
+  local target="rtsp://publisher:${MEDIAMTX_PUBLISH_PASSWORD}@${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${stream_id}"
   publisher_pid=""
   stop_publisher() {
     if [[ -n "$publisher_pid" ]]; then

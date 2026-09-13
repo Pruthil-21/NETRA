@@ -4,6 +4,10 @@ set -Eeuo pipefail
 ARCHIVE_DIR="${ARCHIVE_DIR:-/recordings}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
+if [[ ! "${MEDIAMTX_PUBLISH_PASSWORD:-}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+  echo "MEDIAMTX_PUBLISH_PASSWORD must be 64 hexadecimal characters" >&2
+  exit 1
+fi
 EDGE_NODE_ID="${EDGE_NODE_ID:-edge-local-001}"
 STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
@@ -81,10 +85,10 @@ stream_file() (
   trap 'exit 143' TERM
 
   camera_id="$(basename "$input_file" .mp4)"
-  target_url="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
+  target_url="rtsp://publisher:${MEDIAMTX_PUBLISH_PASSWORD}@${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
 
   while true; do
-    echo "[$camera_id] publishing to $target_url"
+    echo "[$camera_id] publishing to ${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
 
     if [[ "$camera_id" =~ $TRANSCODE_CAMERAS ]]; then
       ffmpeg -nostdin -hide_banner -loglevel warning \

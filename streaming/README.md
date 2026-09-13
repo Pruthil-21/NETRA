@@ -21,6 +21,12 @@ Requirements: Docker Desktop running, organizer email/password files, the existi
 From this directory:
 
 ```sh
+# First setup only: copy .env.federation-api.example to .env.federation-api.local.
+# Set each password to a DIFFERENT value from: openssl rand -hex 32
+chmod 600 .env.federation-api.local
+set -a
+. ./.env.federation-api.local
+set +a
 test -s .organizer-email && test -s .organizer-password
 test -s "$HOME/.config/netra/cloudflare-tunnel-token"
 chmod 600 .organizer-email .organizer-password
@@ -30,6 +36,10 @@ docker compose -f compose.live.yaml ps
 ```
 
 Credentials are runtime secrets and must not be committed or included in a shared folder. `.dockerignore` excludes them, local videos and binaries from image build contexts. Do not print credential files into logs.
+
+Publishing requires the `publisher` account and `MEDIAMTX_PUBLISH_PASSWORD` (64 hexadecimal characters). Live, demo, recorded and hybrid Docker publishers receive it from Compose. The credential permits only `stream/demo-*` and `stream/direct-*` paths; anonymous clients cannot publish. Existing HLS/RTSP viewing remains unchanged. Native or external publishers must supply credentials and use an allowed path (or receive a separately scoped account). Keep publishing on a trusted local network or Tailscale because RTSP itself is unencrypted. The base `mediamtx.yml` grants no publishing permission; standalone deployments must explicitly configure a publisher account.
+
+For the private federation API, add `-f compose.federation-api.yaml` after `-f compose.live.yaml` to the startup command above. When upgrading publisher authentication, rebuild and recreate `mediamtx`, `demo-replay` and `live-relay` together so the relays pick up the credential. This briefly reconnects the streams. Use `--env-file .env.federation-api.local` on Compose commands in shells where the variables have not been exported.
 
 The default camera limit is 30; it is a resource budget, not proof of capacity. Set `CAMERA_LIMIT` explicitly for your machine. A nonempty valid manifest with fewer cameras is accepted. IDs must match the organizer's `cam<number>` convention and be unique in the selected set.
 

@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from common import audit, database, storage
-from core import coverage, digest, stream_path, utc
+from core import coverage, digest, stream_path, utc, playback_plan, has_overlap
 
 pool = None
 s3 = None
@@ -166,8 +166,6 @@ def playback(request: Request, path: str, start: str, duration: float, format: s
     validate(path, first.isoformat(), last.isoformat())
     actor = authorize(request, path, first, last)
     rows = query(path, first, last)
-    if any((a['end_at']-b['start_at']).total_seconds() > 0.15 for a, b in zip(rows, rows[1:])):
-        raise HTTPException(409, 'Overlapping recordings require a narrower range')
     if not rows or not coverage(rows, first, last):
         raise HTTPException(409, 'Requested range contains a recording gap; use /list for available spans')
     budget = int(os.environ.get('MAX_EXPORT_BYTES', str(2*1024**3)))
@@ -178,7 +176,7 @@ def playback(request: Request, path: str, start: str, duration: float, format: s
         raise HTTPException(429, 'Export capacity busy', headers={'Retry-After': '10'})
     folder = Path(tempfile.mkdtemp(prefix='recording-export-'))
     try:
-        if shutil.disk_usage(folder).free < size*3 + 128*1024**2:
+        if shutil.disk_usage(folder).free < size*4 + 128*1024**2:
             raise HTTPException(503, 'Export scratch space unavailable')
         with pool.connection() as conn:
             audit(conn, path, actor, 'export.requested', {'start': start, 'duration': duration})
@@ -187,20 +185,48 @@ def playback(request: Request, path: str, start: str, duration: float, format: s
             s3.download_file(os.environ['S3_BUCKET'], row['object_key'], str(target))
             if target.stat().st_size != row['bytes'] or digest(target) != row['sha256']:
                 raise HTTPException(502, 'Archive segment integrity verification failed')
-        (folder / 'concat.txt').write_text(''.join(f"file '{i}.mp4'\n" for i in range(len(rows))))
         output = folder / 'export.mp4'
+        overlap = has_overlap(rows)
+        deadline = time.monotonic() + 180
+        def run_media(cmd):
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise HTTPException(504, 'Clip assembly timed out; request a shorter range')
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=remaining)
+            except subprocess.TimeoutExpired:
+                raise HTTPException(504, 'Clip assembly timed out; request a shorter range')
+            if result.returncode:
+                raise HTTPException(502, 'Clip assembly failed')
+        if overlap:
+            # Decode the selected slices so a trim inside a GOP cannot duplicate
+            # frames or drop the next keyframe. Never concatenate raw overlaps.
+            parts = playback_plan(rows, first, last)
+            for number, part in enumerate(parts):
+                run_media(['ffmpeg', '-nostdin', '-v', 'error', '-threads', '2',
+                    '-ss', str(part['offset']), '-i', str(folder/f"{part['index']}.mp4"),
+                    '-t', str(part['duration']), '-map', '0:v:0', '-map', '0:a?',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-bf', '0', '-threads', '2',
+                    '-c:a', 'aac', '-avoid_negative_ts', 'make_zero',
+                    str(folder/f'part-{number}.mp4')])
+            entries = [f"file 'part-{i}.mp4'\n" for i in range(len(parts))]
+            seek = 0
+        else:
+            entries = [f"file '{i}.mp4'\n" for i in range(len(rows))]
+            seek = max(0, (first-rows[0]['start_at']).total_seconds())
+        (folder / 'concat.txt').write_text(''.join(entries))
         cmd = ['ffmpeg', '-nostdin', '-v', 'error', '-f', 'concat', '-safe', '1', '-i', str(folder/'concat.txt'),
-               '-ss', str(max(0, (first-rows[0]['start_at']).total_seconds())), '-t', str(duration), '-c', 'copy']
+               '-ss', str(seek), '-t', str(duration), '-c', 'copy']
         cmd += ['-movflags', '+faststart' if format == 'mp4' else '+frag_keyframe+empty_moov+default_base_moof', str(output)]
-        completed = subprocess.run(cmd, capture_output=True, timeout=180)
-        if completed.returncode or not output.exists() or not output.stat().st_size:
+        run_media(cmd)
+        if not output.exists() or not output.stat().st_size:
             raise HTTPException(502, 'Clip assembly failed')
         sha = digest(output)
         with pool.connection() as conn:
             audit(conn, path, actor, 'export.prepared', {'start': start, 'duration': duration,
                 'sha256': sha, 'bytes': output.stat().st_size,
                 'segments': [{'key': r['object_key'], 'sha256': r['sha256']} for r in rows],
-                'cut_mode': 'keyframe-aligned remux'})
+                'cut_mode': 'overlap-trimmed transcode' if overlap else 'keyframe-aligned remux'})
         # Keep concurrency permit until the response finishes, including slow clients.
         def cleanup():
             shutil.rmtree(folder)

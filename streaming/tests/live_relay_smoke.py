@@ -18,6 +18,7 @@ from benchmark_streaming import command, wait_playlist, ROOT
 
 def main():
     prefix='digdhrishti-smoke-'+uuid.uuid4().hex[:8]
+    password=uuid.uuid4().hex+uuid.uuid4().hex
     origin=prefix+'-media';relay=prefix+'-relay';network=prefix+'-network'
     containers=[];publisher=None;server=None
     command('docker','network','create',network)
@@ -27,6 +28,9 @@ def main():
             command('docker','run','-d','--name',origin,'--network',network,
                     '-p','127.0.0.1::8554','-p','127.0.0.1::8888',
                     '-v',str(ROOT/'mediamtx.yml')+':/mediamtx.yml:ro',
+                    '-e','MTX_AUTHINTERNALUSERS_2_USER=publisher',
+                    '-e','MTX_AUTHINTERNALUSERS_2_PASS='+password,
+                    '-e','MTX_AUTHINTERNALUSERS_2_PERMISSIONS_0_ACTION=publish',
                     '-e','MTX_HLSVARIANT=lowLatency','bluenviron/mediamtx:1.20.0')
             containers.append(origin)
             rtsp=command('docker','port',origin,'8554/tcp').split(':')[-1]
@@ -35,7 +39,7 @@ def main():
             publisher=subprocess.Popen(['ffmpeg','-nostdin','-hide_banner','-loglevel','error',
                 '-re','-f','lavfi','-i','testsrc2=size=640x360:rate=15','-c:v','libx264',
                 '-preset','ultrafast','-tune','zerolatency','-g','15','-bf','0','-threads','1',
-                '-f','rtsp','-rtsp_transport','tcp',f'rtsp://127.0.0.1:{rtsp}/upstream/cam01'],stdout=log,stderr=log)
+                '-f','rtsp','-rtsp_transport','tcp',f'rtsp://publisher:{password}@127.0.0.1:{rtsp}/upstream/cam01'],stdout=log,stderr=log)
             wait_playlist(f'http://127.0.0.1:{hls}/upstream/cam01/index.m3u8?cookieCheck=1')
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self,*args): pass
@@ -69,6 +73,7 @@ def main():
                     '-v',str(temp/'password')+':/run/secrets/organizer_password:ro',
                     '-e',f'PORTAL_URL=http://host.docker.internal:{server.server_port}',
                     '-e','MEDIAMTX_HOST='+origin,'-e','CAMERA_LIMIT=30',
+                    '-e','MEDIAMTX_PUBLISH_PASSWORD='+password,
                     '-e','RETRY_SECONDS=1','-e','TRANSCODE_CAMERAS=^cam01$',
                     'digdhrishti-stream-audit:local')
             containers.append(relay)
