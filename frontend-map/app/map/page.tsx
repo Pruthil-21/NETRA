@@ -10,7 +10,6 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { TreeSelection } from '@/components/tree/DistrictAreaTree';
 import { CameraInfoOverlay } from '@/components/overlay/CameraInfoOverlay';
 import { MapFilterControl } from '@/components/map/MapFilterControl';
-import { TrafficAlertsPanel } from '@/components/map/TrafficAlertsPanel';
 import { DensityLoadStatus } from '@/components/map/DensityCanvasLayer';
 import { FlowLoadStatus } from '@/components/map/FlowCanvasLayer';
 import { areasService, Area } from '@/services/areasService';
@@ -184,7 +183,6 @@ export default function MapPage() {
               densityStatus={filters.mapLayer === 'density' ? densityStatus : null}
               flowStatus={filters.mapLayer === 'flow' ? flowStatus : null}
             />
-            <TrafficAlertsPanel />
           </div>
         </div>
         <CameraDetailDrawer camera={selectedCamera} />

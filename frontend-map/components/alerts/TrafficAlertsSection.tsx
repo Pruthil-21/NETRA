@@ -63,12 +63,10 @@ function AlertTypeIcon({ type, size, className }: { type: TrafficAlert['alert_ty
   return <Icon size={size} className={className} />;
 }
 
-/** The full congestion-alert history + acknowledge/dismiss workflow -- the
- * Map page's TrafficAlertsPanel is a quick-glance subset of exactly this
- * same NEW-status data, same relationship the Data Console's "Just Ran"
- * list has to Audit Log. Master-detail split (list grouped by district,
- * detail + actions on the right) mirrors the plate-alerts tab next door,
- * rather than the flat capped-width list this used to be. */
+/** The full congestion-alert history + acknowledge/dismiss workflow.
+ * Master-detail split (list grouped by district, detail + actions on the
+ * right) mirrors the plate-alerts tab next door, rather than the flat
+ * capped-width list this used to be. */
 export function TrafficAlertsSection({ cameraId }: { cameraId?: number | null } = {}) {
   const { permissions } = usePermissions();
   const canAcknowledge = permissions.includes('acknowledge_alerts');
