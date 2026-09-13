@@ -18,18 +18,30 @@ def client():
         yield c
 
 
-def make_token(role: str, sub: str = "test-officer"):
-    return jwt.encode({"sub": sub, "role": role}, settings.jwt_secret, algorithm="HS256")
+# Every permission string this service's own routers ever gate on -- kept
+# as an explicit list (not imported from backend-registry, which owns the
+# real RBAC catalog) since this service duplicates auth.py by design and
+# only needs enough to keep these fixtures granting "an officer who can do
+# anything this service supports," the same as before auth.py stopped
+# trusting a bare {"role": "officer"} token with no permissions claim at all.
+_ALL_WATCHLIST_PERMISSIONS = ["acknowledge_alerts", "run_anpr_lookup", "search_vehicles", "view_analytics"]
+
+
+def make_token(role: str, sub: str = "test-officer", permissions=None):
+    payload = {"sub": sub, "role": role}
+    if permissions is not None:
+        payload["permissions"] = permissions
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
 @pytest.fixture
 def officer_headers():
-    return {"Authorization": f"Bearer {make_token('officer')}"}
+    return {"Authorization": f"Bearer {make_token('officer', permissions=_ALL_WATCHLIST_PERMISSIONS)}"}
 
 
 @pytest.fixture
 def second_officer_headers():
-    return {"Authorization": f"Bearer {make_token('officer', sub='second-test-officer')}"}
+    return {"Authorization": f"Bearer {make_token('officer', sub='second-test-officer', permissions=_ALL_WATCHLIST_PERMISSIONS)}"}
 
 
 @pytest.fixture

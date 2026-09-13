@@ -41,14 +41,14 @@ def trace_test_cameras():
             cur.execute("DELETE FROM cameras WHERE id = ANY(%s)", (created_ids,))
 
 
-def _make_token(role="officer", permissions=None, sub="test-officer", badge_number=None):
+def _make_token(role="officer", permissions=("search_vehicles",), sub="test-officer", badge_number=None):
     import jwt
 
     payload = {"sub": sub, "role": role}
     if badge_number is not None:
         payload["badge_number"] = badge_number
     if permissions is not None:
-        payload["permissions"] = permissions
+        payload["permissions"] = list(permissions)
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -60,13 +60,15 @@ def test_requires_search_vehicles_permission_for_rbac_tokens(client):
     assert resp.status_code == 403
 
 
-def test_pre_rbac_officer_token_without_permissions_claim_still_works(client):
-    # Backward compatibility: the demo JWT / every pre-RBAC test fixture uses
-    # role="officer" with no permissions claim at all -- require_permission
-    # treats that as fully trusted, same as require_role("officer") did.
-    token = _make_token(role="officer")
+def test_officer_token_without_permissions_claim_is_rejected(client):
+    # A bare {"role": "officer"} token with no permissions claim at all used
+    # to be treated as fully trusted (a live, unconditional auth bypass --
+    # anyone who could craft any token in this shape got full access, no
+    # real permissions required). require_permission no longer special-cases
+    # this shape: no permissions claim means no permissions.
+    token = _make_token(role="officer", permissions=None)
     resp = client.get("/vehicle-traces/GJ01AB1234", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 200
+    assert resp.status_code == 403
 
 
 def test_trace_uses_real_registered_camera_coordinates(client, internal_headers, trace_test_cameras):
