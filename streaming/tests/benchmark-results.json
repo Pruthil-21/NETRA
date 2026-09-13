@@ -1,0 +1,41 @@
+{
+  "scope": "Synthetic local 4-camera test; no WAN, browser render or glass-to-glass latency measurement.",
+  "results": [
+    {
+      "mode": "fmp4",
+      "gop_frames": 30,
+      "fps": 15,
+      "cameras": 4,
+      "all_playlists_startup_seconds": 3.667,
+      "warm_hls_decode_one_frame_seconds": 0.071,
+      "http_read_requests": 80,
+      "http_concurrency": 8,
+      "http_failures": 0,
+      "playlist_read_p95_ms": 17.141,
+      "partial_segments_present": false,
+      "all_playlists_advanced": true,
+      "disconnect_detected": true,
+      "publisher_restart_to_playlist_seconds": 3.558,
+      "mediamtx_resources": "4.86% CPU; 86.74MiB / 3.825GiB memory",
+      "startup_through_first_decoded_frame_seconds": 3.738
+    },
+    {
+      "mode": "lowLatency",
+      "gop_frames": 15,
+      "fps": 15,
+      "cameras": 4,
+      "all_playlists_startup_seconds": 0.588,
+      "warm_hls_decode_one_frame_seconds": 1.161,
+      "http_read_requests": 80,
+      "http_concurrency": 8,
+      "http_failures": 0,
+      "playlist_read_p95_ms": 9.477,
+      "partial_segments_present": true,
+      "all_playlists_advanced": true,
+      "disconnect_detected": true,
+      "publisher_restart_to_playlist_seconds": 0.557,
+      "mediamtx_resources": "3.79% CPU; 35.97MiB / 3.825GiB memory",
+      "startup_through_first_decoded_frame_seconds": 1.749
+    }
+  ]
+}

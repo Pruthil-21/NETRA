@@ -16,6 +16,7 @@ xiaomi_enabled="no"
 phone_relay_pid=""
 phone_relay_enabled="no"
 cleanup() {
+  local status=$?
   trap - EXIT INT TERM
 
   echo
@@ -25,16 +26,17 @@ cleanup() {
   [ -n "$go2rtc_pid" ] && kill "$go2rtc_pid" 2>/dev/null
   [ -n "$cloudflare_pid" ] && kill "$cloudflare_pid" 2>/dev/null
   [ -n "$proxies_pid" ] && kill "$proxies_pid" 2>/dev/null
-    pkill -TERM -f 'ffmpeg.*live.corp8.cloud/live/stream/' 2>/dev/null || true
   [ -n "$mediamtx_pid" ] && kill "$mediamtx_pid" 2>/dev/null
 
   wait 2>/dev/null
 
   echo "All streaming services stopped."
-  exit 0
+  exit "$status"
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ ! -x "$stream_dir/mediamtx" ]; then
   echo "Error: mediamtx executable is missing."
@@ -59,7 +61,11 @@ mediamtx_pid=$!
 
 mediamtx_ready="no"
 
-for attempt in $(seq 1 30); do
+for _attempt in $(seq 1 30); do
+  if ! kill -0 "$mediamtx_pid" 2>/dev/null; then
+    echo "Error: this MediaMTX process exited; check for a port conflict."
+    exit 1
+  fi
   if curl -s --max-time 1 "http://localhost:8888" >/dev/null 2>&1; then
     mediamtx_ready="yes"
     break
@@ -82,14 +88,14 @@ if [ -x "$stream_dir/go2rtc" ] &&
   echo "Starting go2rtc..."
 
   (
-    cd "$stream_dir"
+    cd "$stream_dir" || exit 1
     exec ./go2rtc
   ) >"$log_dir/go2rtc.log" 2>&1 &
 
   go2rtc_pid=$!
   go2rtc_ready="no"
 
-  for attempt in $(seq 1 20); do
+  for _attempt in $(seq 1 20); do
     if curl -s --max-time 1 http://127.0.0.1:1984 >/dev/null 2>&1; then
       go2rtc_ready="yes"
       break
@@ -133,7 +139,7 @@ fi
 echo "Starting camera proxies..."
 
 (
-  cd "$stream_dir"
+  cd "$stream_dir" || exit 1
   exec ./start_live_proxies.sh
 ) >"$log_dir/proxies.log" 2>&1 &
 proxies_pid=$!
@@ -148,7 +154,7 @@ cloudflare_pid=$!
 
 tunnel_url=""
 
-for attempt in $(seq 1 30); do
+for _attempt in $(seq 1 30); do
   tunnel_url=$(
     grep -Eo 'https://[a-z0-9-]+\.trycloudflare\.com' \
       "$log_dir/cloudflare.log" 2>/dev/null |

@@ -11,6 +11,93 @@ from .enhancement import is_low_light, enhance_low_light, is_blurry, enhance_mot
 from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code
 
 
+# Real, evidence-driven addition: a real 269-frame CCTV eval (Session
+# 32/33) found most vehicle boxes never produce a usable plate read at
+# all, and the 3-pass OCR pipeline below runs its full cost on every one
+# of them regardless. A small binary classifier -- MobileNetV3-Small,
+# fine-tuned on this project's own real labeled crops (labels.csv: 2,035
+# "has a plate" vs 1,360 "no plate at all", the exact same labels
+# collected for OCR fine-tuning) -- can answer "is there even a plate
+# here" far cheaper than running OCR to find out the hard way.
+#
+# False negatives (says "no plate" when there is one) are the dangerous
+# error here -- they'd silently cost a real detection, the opposite of
+# this project's actual goal. False positives (says "plate" when there
+# isn't) only cost a wasted OCR pass, not accuracy. A real threshold
+# sweep on held-out validation data found P(has_plate) < 0.01 catches
+# 83.3% of true no-plate crops at only 1 false negative out of 220 real
+# plates (0.45%) -- a real full-pipeline A/B test at 0.01 lost one real
+# confirmed plate out of 42 (GJ23CH5944, Townhall window) for a 30.6%
+# speedup. Tried 10x stricter (0.001): identical confirmed set, same
+# exact plate still missing, just less speedup (24.6%) -- since a
+# stricter gate didn't recover it, the miss isn't gate-caused at all
+# (matches other run-to-run OCR/tracker noise seen elsewhere, e.g. minor
+# spelling variance on hard-to-read plates between otherwise-identical
+# runs), so 0.01 is strictly better and kept -- picked deliberately
+# conservative over the classifier's own default 0.5 cutoff (which had a
+# real 2.6% false-negative rate) specifically to keep this asymmetry safe.
+_PLATE_PRESENCE_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "plate_presence_classifier.pt")
+_PLATE_PRESENCE_SKIP_THRESHOLD = 0.01
+_PLATE_PRESENCE_IMG_SIZE = 128
+
+_plate_presence_model = None
+_plate_presence_unavailable = False
+
+
+def _get_plate_presence_model():
+    global _plate_presence_model, _plate_presence_unavailable
+    if _plate_presence_model is not None:
+        return _plate_presence_model
+    if _plate_presence_unavailable:
+        return None
+    try:
+        import torch
+        import torch.nn as nn
+        from torchvision import models
+
+        model = models.mobilenet_v3_small()
+        model.classifier[3] = nn.Linear(model.classifier[3].in_features, 1)
+        model.load_state_dict(torch.load(_PLATE_PRESENCE_MODEL_PATH, map_location=device))
+        model.to(device)
+        model.eval()
+        _plate_presence_model = model
+        return model
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] Plate-presence classifier unavailable ({e}), skipping this speed optimization")
+        _plate_presence_unavailable = True
+        return None
+
+
+def _probably_has_no_plate(vehicle_img):
+    """True only when the classifier is very confident (see threshold
+    above) this crop has no plate at all -- callers use this to skip the
+    expensive OCR passes entirely. Fails open (returns False, i.e. "don't
+    skip, run OCR as normal") if the model can't be loaded, so a machine
+    without this file just doesn't get the speed optimization rather than
+    losing real detections."""
+    model = _get_plate_presence_model()
+    if model is None:
+        return False
+    try:
+        import torch
+        from torchvision import transforms
+        from PIL import Image
+
+        transform = transforms.Compose([
+            transforms.Resize((_PLATE_PRESENCE_IMG_SIZE, _PLATE_PRESENCE_IMG_SIZE)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        img = Image.fromarray(cv2.cvtColor(vehicle_img, cv2.COLOR_BGR2RGB))
+        tensor = transform(img).unsqueeze(0).to(device)
+        with torch.no_grad():
+            prob_has_plate = torch.sigmoid(model(tensor).squeeze(1)).item()
+        return prob_has_plate < _PLATE_PRESENCE_SKIP_THRESHOLD
+    except Exception as e:  # noqa: BLE001
+        print(f"[WARN] Plate-presence check failed ({e}), running OCR as normal")
+        return False
+
+
 # Real, evidence-driven addition (269-frame Anand CCTV eval, Session 32/33):
 # 81% of vehicle boxes produced no usable plate read, and inspecting the
 # actual failing crops showed why -- plate_region_crop() below is a
@@ -203,6 +290,27 @@ MIN_VEHICLE_BOX_AREA_FRACTION = 0.03
 LOW_CONFIDENCE_BOX_THRESHOLD = 0.4
 LOW_CONFIDENCE_BOX_EXPAND_FRACTION = 0.4
 
+# Session 41: measured directly (not guessed) whether the area floor above
+# disproportionately rejects real motorcycle boxes on Townhall footage, since
+# motorcycles are physically much smaller than cars/buses/trucks at the same
+# distance. Real numbers over a 3-minute sequential window (4500 frames):
+# cars are actually rejected at a *higher* rate by area alone (325/1004,
+# 32%) than motorcycles (187/727, 25.7%) -- the uniform floor isn't uniquely
+# punishing motorcycles. Still, motorcycle area fractions cluster much
+# tighter and lower than cars' (median 0.038 vs 0.076, p75 0.049 vs 0.157),
+# so a motorcycle box sitting just under 0.03 is a much more typical,
+# central case for that class than a car box the same size is for cars --
+# worth a lower floor specifically for motorcycles as a real, targeted test
+# for the two-wheeler plate-recall problem, rather than moving the shared
+# floor and changing car/bus/truck behavior along with it. 0.015 (half of
+# the shared floor) sits between motorcycles' real min (0.0044) and p25
+# (0.0264) -- real A/B result: 41->42 confirmed plates on the real 3-minute
+# Townhall test, the new plate (GJ23CH5944) verified against the manual
+# ground truth, no regression on car/bus/truck. See ALPR_IMPROVEMENT_LOG.md
+# Session 41.
+MOTORCYCLE_CLASS_ID = 3
+MOTORCYCLE_MIN_VEHICLE_BOX_AREA_FRACTION = 0.015
+
 # Session (dashcam pipeline-stage audit): the area floor above doesn't
 # catch the single most common dashcam false positive -- the recording
 # car's OWN bonnet/dashboard, which YOLO frequently misclassifies as a
@@ -272,6 +380,29 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     if is_blurry(vehicle_img):
         vehicle_img = enhance_motion_blur(vehicle_img)
 
+    # The third pass's crop (see below), computed early -- out of its
+    # original order -- because the fast-skip gate right after needs a
+    # tightly-localized plate-region crop as input, not the whole
+    # vehicle: the plate-presence classifier was trained on exactly this
+    # kind of crop (see _get_plate_presence_model()'s docstring), not on
+    # whole-vehicle images, so feeding it anything else is real
+    # train/inference mismatch, not a fair test of what it actually
+    # learned. Cheap relative to OCR (a single detector forward pass, not
+    # three OCR calls), so computing it before deciding whether to run
+    # OCR at all doesn't give up much even when the gate decides to skip.
+    region = plate_region_crop(vehicle_img)
+    lp_region = detect_plate_box_crop(vehicle_img)
+    presence_check_crop = lp_region if lp_region is not None and lp_region.size > 0 else region
+
+    # Fast skip: only when the plate-presence classifier is very
+    # confident (see its docstring for the real, measured
+    # false-negative rate at this threshold) there's no plate at all in
+    # this box, skip the three expensive OCR passes below entirely.
+    # Fails open (never skips) if no localized crop exists at all --
+    # that shape wasn't in the classifier's training data either.
+    if presence_check_crop is not None and _probably_has_no_plate(presence_check_crop):
+        return {"plate_number": None, "confidence": 0, "note": "No plate (fast skip)", "box": box}
+
     # Deferred, dynamic import (not `from .ocr import _ocr_readtext` at
     # module level): vehicle_trace_demo.py monkeypatches
     # detect_plate._ocr_readtext at runtime to capture raw OCR output for
@@ -287,7 +418,6 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     # catches plates the whole-crop pass is too low-signal to read. Kept
     # additive (not a replacement) so a mislocalized crop can't cost us
     # a detection the whole-crop pass would still have found.
-    region = plate_region_crop(vehicle_img)
     if region is not None and region.size > 0:
         ocr_results += detect_plate._ocr_readtext(region)
 
@@ -295,7 +425,6 @@ def _read_plate_from_box(box, raw_frame, raw_h, frame_is_dark):
     # crop (see detect_plate_box_crop() above) -- additive alongside the
     # percentage-band pass for the same reason that pass is additive
     # alongside the whole-crop pass, not a replacement for it.
-    lp_region = detect_plate_box_crop(vehicle_img)
     if lp_region is not None and lp_region.size > 0:
         ocr_results += detect_plate._ocr_readtext(lp_region)
 
@@ -462,6 +591,7 @@ def detect_plate_from_frame(infer_frame, raw_frame, tracker=None):
     scale_x = raw_w / infer_w
     scale_y = raw_h / infer_h
     min_area = MIN_VEHICLE_BOX_AREA_FRACTION * raw_h * raw_w
+    min_area_motorcycle = MOTORCYCLE_MIN_VEHICLE_BOX_AREA_FRACTION * raw_h * raw_w
 
     boxes = []
     for r in results:
@@ -498,7 +628,8 @@ def detect_plate_from_frame(infer_frame, raw_frame, tracker=None):
                 box_h = raw_box[3] - raw_box[1]
                 area = box_w * box_h
                 aspect_ratio = box_w / max(1, box_h)
-                if area >= min_area and MIN_VEHICLE_BOX_ASPECT_RATIO <= aspect_ratio <= MAX_VEHICLE_BOX_ASPECT_RATIO:
+                area_floor = min_area_motorcycle if cls_id == MOTORCYCLE_CLASS_ID else min_area
+                if area >= area_floor and MIN_VEHICLE_BOX_ASPECT_RATIO <= aspect_ratio <= MAX_VEHICLE_BOX_ASPECT_RATIO:
                     boxes.append(raw_box)
 
     if not boxes:

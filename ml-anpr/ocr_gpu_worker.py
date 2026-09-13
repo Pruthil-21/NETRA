@@ -28,8 +28,10 @@ Protocol (parent <-> child, both directions length-prefixed):
 Chosen over multiprocessing.Queue/pickle specifically to avoid any
 dependency on the multiprocessing spawn machinery above.
 """
+import atexit
 import json
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -41,6 +43,28 @@ _NVIDIA_DLL_SUBDIRS = [
 
 STARTUP_TIMEOUT_S = 120
 CALL_TIMEOUT_S = 30
+
+# A killed/crashed caller otherwise leaves the OCR worker subprocess
+# orphaned mid-inference (plain subprocess.Popen, no process-group linkage) --
+# observed directly this session: several backgrounded test runs got SIGKILLed
+# for unrelated reasons, and a `Python` segfault inside libpaddle.so's PIR
+# executor turned up independently afterward. SIGTERM has no default Python
+# handler (the OS just kills the process, skipping atexit), so a plain
+# atexit.register alone doesn't cover it -- this also traps SIGTERM to run the
+# same cleanup before exiting. Can't do anything about SIGKILL, which no
+# process can intercept.
+_all_clients = []
+
+
+def _shutdown_all(signum=None, frame=None):  # noqa: ARG001
+    for client in _all_clients:
+        client.shutdown()
+    if signum is not None:
+        sys.exit(128 + signum)
+
+
+atexit.register(_shutdown_all)
+signal.signal(signal.SIGTERM, _shutdown_all)
 
 
 def _register_nvidia_dll_dirs():
@@ -85,6 +109,20 @@ def _serve():
 
     stdin = sys.stdin.buffer
     stdout = sys.stdout.buffer
+
+    # Real crashes, not guessed: two independent macOS SIGSEGVs this session,
+    # both inside libpaddle.so's PIR (new-IR) executor running a CPU kernel
+    # (phi::funcs::ElementwiseCompute once, phi::funcs::im2col once) --
+    # different kernels, one during a sleep/wake cycle and one 40 minutes
+    # into a long-running process with no sleep involved, so this isn't one
+    # specific trigger, it's PIR-executor-on-CPU instability under sustained
+    # load. Both `FLAGS_` env vars must be set before paddle is imported
+    # anywhere in this process (paddle reads them once at native-library
+    # init). Re-verified tests/test_pipeline_smoke.py still gets all 3/3
+    # exact matches with both flags set -- this doesn't change OCR output,
+    # only which internal executor path runs it.
+    os.environ.setdefault("FLAGS_enable_pir_in_executor", "0")
+    os.environ.setdefault("FLAGS_new_executor_serial_run", "1")
 
     try:
         import cv2
@@ -142,6 +180,7 @@ class GpuOcrClient:
         self._device = device
         self._proc = None
         self._unavailable = False
+        _all_clients.append(self)
 
     def _worker_python(self):
         """A separate venv (.venv-ocr, sibling to this file) with its own

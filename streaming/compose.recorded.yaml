@@ -1,7 +1,13 @@
 name: netra-recorded
+x-logging: &stream-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
 
 services:
   mediamtx:
+    logging: *stream-logging
     image: bluenviron/mediamtx:1.20.0
     container_name: netra-mediamtx
     restart: unless-stopped
@@ -19,6 +25,7 @@ services:
       - ./mediamtx.yml:/mediamtx.yml:ro
 
   replay:
+    logging: *stream-logging
     build:
       context: .
       dockerfile: docker/Dockerfile.replay
@@ -47,6 +54,7 @@ services:
       start_period: 30s
 
   cloudflared:
+    logging: *stream-logging
     image: cloudflare/cloudflared:latest
     container_name: netra-cloudflared
     restart: unless-stopped

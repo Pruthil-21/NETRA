@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -u
+umask 077
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 PORTAL_URL="${PORTAL_URL:-https://cctv.corp8.cloud}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-127.0.0.1}"
@@ -19,11 +21,12 @@ PIDS=()
 mkdir -p "$RUNTIME_DIR" "$ARCHIVE_DIR" "$LOG_DIR"
 
 cleanup() {
+  trap - EXIT INT TERM
   echo
   echo "Stopping direct organizer feed processes..."
-  pkill -TERM -f "ffmpeg.*rtsp://127.0.0.1:8554/stream/${STREAM_PREFIX}-cam" 2>/dev/null || true
 
   for pid in "${PIDS[@]}"; do
+    pkill -TERM -P "$pid" 2>/dev/null || true
     kill "$pid" 2>/dev/null || true
   done
 
@@ -31,7 +34,9 @@ cleanup() {
   rm -rf "$RUNTIME_DIR"
 }
 
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -43,28 +48,41 @@ require_command() {
 authenticate() {
   echo "Authenticating with the organizer portal..."
 
-  curl -LsS \
+  curl -4 -fsS --connect-timeout 10 --max-time 30 \
     -c "$COOKIE_JAR" \
     -o /dev/null \
-    "$PORTAL_URL/"
+    "$PORTAL_URL/" || return 1
+
+  portal_email="${ORGANIZER_EMAIL:-}"
+  if [[ -z "$portal_email" && -s "$SCRIPT_DIR/.organizer-email" ]]; then
+    portal_email="$(cat "$SCRIPT_DIR/.organizer-email")"
+  fi
+  if [[ -z "$portal_email" ]]; then
+    read -r -p "Organizer email: " portal_email || return 1
+  fi
 
   if [ -z "${ORGANIZER_PASSWORD:-}" ]; then
-    read -r -s -p "Organizer password: " portal_password
+    if [[ -s "$SCRIPT_DIR/.organizer-password" ]]; then
+      portal_password="$(cat "$SCRIPT_DIR/.organizer-password")"
+    else
+      read -r -s -p "Organizer password: " portal_password || return 1
+    fi
     echo
   else
     portal_password="$ORGANIZER_PASSWORD"
   fi
 
-  curl -LsS \
+  curl -4 -fsS --connect-timeout 10 --max-time 30 \
     -b "$COOKIE_JAR" \
     -c "$COOKIE_JAR" \
     --data-urlencode "password=$portal_password" \
+    --data-urlencode "email=$portal_email" \
     -o /dev/null \
-    "$PORTAL_URL/auth/login"
+    "$PORTAL_URL/auth/login" || return 1
 
-  unset portal_password
+  unset portal_password portal_email
 
-  if ! curl -LfsS \
+  if ! curl -4 -fsS --connect-timeout 10 --max-time 30 \
     -b "$COOKIE_JAR" \
     -c "$COOKIE_JAR" \
     -o "$CAMERA_MANIFEST" \
@@ -73,7 +91,7 @@ authenticate() {
     exit 1
   fi
 
-  if ! jq -e 'type == "array" and length > 0' \
+  if ! jq -e 'type == "array" and length > 0 and all(.[]; (.id | type == "string") and (.id | test("^cam[0-9]+$"))) and (map(.id) | length == (unique | length))' \
     "$CAMERA_MANIFEST" >/dev/null; then
     echo "The returned camera manifest is invalid."
     exit 1
@@ -253,11 +271,11 @@ require_command ffprobe
 
 case "${1:-}" in
   stream)
-    authenticate
+    authenticate || exit 1
     stream_remote
     ;;
   download)
-    authenticate
+    authenticate || exit 1
     download_archives
     ;;
   *)

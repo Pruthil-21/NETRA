@@ -1,0 +1,9 @@
+.env*
+!.env.example
+inventory.local.json
+fleet.local.yaml
+.venv/
+__pycache__/
+
+*.local.yaml
+*.local.log

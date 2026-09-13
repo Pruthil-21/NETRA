@@ -1,0 +1,49 @@
+x-runtime: &runtime
+  build:
+    context: .
+    dockerfile: Dockerfile.federation
+  env_file: .env.federation
+  restart: unless-stopped
+  depends_on:
+    database:
+      condition: service_healthy
+    broker:
+      condition: service_healthy
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: federation
+      POSTGRES_DB: federation
+      POSTGRES_PASSWORD: ${FEDERATION_DB_PASSWORD:?set database password}
+    volumes: [inventory-pg:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U federation]
+      interval: 5s
+      retries: 10
+  broker:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes']
+    volumes: [inventory-queue:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      retries: 10
+  api:
+    <<: *runtime
+    ports: ['127.0.0.1:8096:8090']
+  worker:
+    <<: *runtime
+    command: [celery, -A, federation.worker, worker, --loglevel=INFO, --concurrency=4, -Q, 'celery,inventory.0,inventory.1,inventory.2,inventory.3,inventory.4,inventory.5,inventory.6,inventory.7']
+  scheduler:
+    <<: *runtime
+    command: [celery, -A, federation.worker, beat, --loglevel=INFO, --schedule=/tmp/federation-beat]
+  configure:
+    <<: *runtime
+    restart: 'no'
+    profiles: [setup]
+    command: [python, -m, federation.configure, /service/sources.json]
+    volumes: ['./sources.local.json:/service/sources.json:ro']
+volumes:
+  inventory-pg:
+  inventory-queue:

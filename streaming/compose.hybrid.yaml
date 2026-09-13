@@ -4,6 +4,7 @@ services:
     environment:
       PORTAL_URL: "${PORTAL_URL:-https://cctv.corp8.cloud}"
       ORGANIZER_PASSWORD_FILE: /run/secrets/organizer_password
+      ORGANIZER_EMAIL_FILE: /run/secrets/organizer_email
       LIVE_CHECK_INTERVAL: "${LIVE_CHECK_INTERVAL:-20}"
       LIVE_REQUIRED_SUCCESSES: "${LIVE_REQUIRED_SUCCESSES:-3}"
       LIVE_PROBE_TIMEOUT: "${LIVE_PROBE_TIMEOUT:-12}"
@@ -11,7 +12,10 @@ services:
       AUTH_RETRY_SECONDS: "${AUTH_RETRY_SECONDS:-30}"
     secrets:
       - organizer_password
+      - organizer_email
 
 secrets:
+  organizer_email:
+    file: ./.organizer-email
   organizer_password:
     file: ./.organizer-password

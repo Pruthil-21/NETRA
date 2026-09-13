@@ -37,7 +37,14 @@ def _print_summary(tracker, label="Total confirmed plates"):
     print(f"{label}: {tracker.confirmed_plates}")
 
 
-def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_threshold=2, window_size=10):
+# process_every_n_frames defaults below dropped to 5 (Session 39) --
+# real A/B evidence, not a guess: on the same real video, denser
+# sampling alone raised confirmed plates 29 -> 41 (+41%), no pixel
+# enhancement. See ScalablePipeline's docstring (orchestrator.py) for
+# the full reasoning and the real cost (~2x compute) this trades for it.
+
+
+def process_stream(rtsp_url, camera_id, process_every_n_frames=5, confirm_threshold=2, window_size=10):
     stream = RTSPStreamReader(rtsp_url=rtsp_url, inference_dim=(640, 360)).start()
 
     print(f"Connected to stream: {rtsp_url}")
@@ -88,7 +95,7 @@ def process_stream(rtsp_url, camera_id, process_every_n_frames=30, confirm_thres
         stream.stop()
 
 
-def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm_threshold=2, window_size=10):
+def process_video_file(video_path, camera_id, process_every_n_frames=5, confirm_threshold=2, window_size=10):
     """
     Same detection/confirmation logic as process_stream(), but reads from
     a local video file instead of a live RTSP source. Useful for repeatable
@@ -156,7 +163,7 @@ def process_video_file(video_path, camera_id, process_every_n_frames=15, confirm
     _print_summary(tracker)
 
 
-def process_hls_stream(hls_url, camera_id, process_every_n_frames=15, confirm_threshold=2, window_size=10,
+def process_hls_stream(hls_url, camera_id, process_every_n_frames=5, confirm_threshold=2, window_size=10,
                         reconnect_interval_sec=2.0, max_open_attempts=10):
     """
     Same detection/confirmation logic as process_stream(), but for HLS

@@ -29,12 +29,15 @@ command -v ffmpeg >/dev/null 2>&1 || {
   echo "Error: ffmpeg is not installed." >&2
   exit 1
 }
+[[ "$RETRY_SECONDS" =~ ^[1-9][0-9]*$ ]] || { echo "Invalid retry interval" >&2; exit 1; }
+[[ "$INPUT_URL" != "$OUTPUT_URL" ]] || { echo "Input and output must differ" >&2; exit 1; }
 
 while true; do
-  echo "Relaying Xiaomi camera: $INPUT_URL -> $OUTPUT_URL"
+  echo "Starting Xiaomi camera relay from $DIR."
 
   ffmpeg -hide_banner -loglevel warning -nostdin \
     -rtsp_transport tcp \
+    -timeout 15000000 \
     -fflags nobuffer -flags low_delay \
     -i "$INPUT_URL" \
     -map 0:v:0 -an \

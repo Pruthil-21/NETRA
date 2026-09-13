@@ -7,7 +7,9 @@ RUN apk add --no-cache \
     jq
 
 COPY docker/live-entrypoint.sh /usr/local/bin/live-entrypoint
+COPY docker/live-healthcheck.sh /usr/local/bin/live-healthcheck
+COPY docker/hls-probe.sh /usr/local/bin/hls-probe
 
-RUN chmod +x /usr/local/bin/live-entrypoint
+RUN chmod +x /usr/local/bin/live-entrypoint /usr/local/bin/live-healthcheck /usr/local/bin/hls-probe
 
 ENTRYPOINT ["/usr/local/bin/live-entrypoint"]
