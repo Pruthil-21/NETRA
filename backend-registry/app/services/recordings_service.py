@@ -59,10 +59,18 @@ def _headers(service_key: str, actor_id: str) -> dict:
 
 
 def list_recordings(stream_id: str, actor_id: str, start: str | None = None, end: str | None = None) -> dict:
+    # `available` alone can't tell an officer why the timeline came back
+    # empty -- "the recording service is down/unconfigured right now" and
+    # "this camera genuinely has no footage in this range" look identical
+    # to a caller checking only `available`/`len(segments)`. `service_reachable`
+    # disambiguates: False whenever we couldn't get a real answer out of the
+    # service at all (unconfigured, or the request itself failed), True for
+    # any actual response -- including one with zero segments, which is a
+    # legitimate "no footage" rather than an outage.
     base_url = _base_url()
     service_key = _service_key()
     if not base_url or not service_key:
-        return {"available": False, "segments": []}
+        return {"available": False, "segments": [], "service_reachable": False}
 
     now = datetime.now(timezone.utc)
     params = {
@@ -79,7 +87,7 @@ def list_recordings(stream_id: str, actor_id: str, start: str | None = None, end
         )
         response.raise_for_status()
     except httpx.HTTPError:
-        return {"available": False, "segments": []}
+        return {"available": False, "segments": [], "service_reachable": False}
 
     # The recording service returns [{"start", "duration", "url"}, ...] --
     # `url` is a camera/range-scoped playback link (15-minute token baked
@@ -87,7 +95,7 @@ def list_recordings(stream_id: str, actor_id: str, start: str | None = None, end
     # Never build our own /get URL from these fields -- only the recording
     # service can mint a valid token for a given range.
     segments = response.json()
-    return {"available": len(segments) > 0, "segments": segments}
+    return {"available": len(segments) > 0, "segments": segments, "service_reachable": True}
 
 
 def recording_health(stream_id: str, actor_id: str) -> dict | None:

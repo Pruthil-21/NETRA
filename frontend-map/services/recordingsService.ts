@@ -15,6 +15,13 @@ export interface RecordingSegment {
 export interface RecordingsAvailability {
   available: boolean;
   segments: RecordingSegment[];
+  /** False whenever the recording service itself couldn't be reached (not
+   * configured, connection failed, or this camera has no stream_id at
+   * all) -- distinct from `available: false` with `service_reachable: true`,
+   * which means the service answered fine but this camera genuinely has no
+   * footage in the requested range. Callers should show a different message
+   * for each rather than one generic "no recordings" state. */
+  service_reachable: boolean;
 }
 
 export interface RecordingTimeRange {
@@ -24,9 +31,9 @@ export interface RecordingTimeRange {
 
 /** GET /cameras/{id}/recordings -- proxied through to the DIGDHRISHTI
  * continuous-recording service (streaming/recording). `available: false`
- * covers both "recording service isn't configured/reachable" and "this
- * camera has no recordings in the requested range" -- the timeline shows
- * the same quiet empty state either way.
+ * means either "the service isn't configured/reachable" or "this camera has
+ * no recordings in the requested range" -- check `service_reachable` to
+ * tell those two apart and show the officer the right message.
  *
  * `range` is optional: omitted, the backend defaults to its own lookback
  * window (today, the last 30 days) -- good enough for "does this camera

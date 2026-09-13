@@ -33,6 +33,7 @@ describe('ArchiveGridTile', () => {
     vi.mocked(fetchRecordingSegments).mockResolvedValue({
       available: true,
       segments: [{ start: '2026-09-05T08:00:00.000Z', duration: 600, url: 'https://playback.example/get?token=x' }],
+      service_reachable: true,
     });
 
     render(<ArchiveGridTile camera={CAMERA} onRemove={vi.fn()} />);
@@ -43,7 +44,7 @@ describe('ArchiveGridTile', () => {
   });
 
   it('calls onRemove with the camera id when the remove button is clicked', () => {
-    vi.mocked(fetchRecordingSegments).mockResolvedValue({ available: false, segments: [] });
+    vi.mocked(fetchRecordingSegments).mockResolvedValue({ available: false, segments: [], service_reachable: true });
     const onRemove = vi.fn();
     render(<ArchiveGridTile camera={CAMERA} onRemove={onRemove} />);
 
@@ -52,7 +53,7 @@ describe('ArchiveGridTile', () => {
   });
 
   it('refetches when the day picker changes', async () => {
-    vi.mocked(fetchRecordingSegments).mockResolvedValue({ available: false, segments: [] });
+    vi.mocked(fetchRecordingSegments).mockResolvedValue({ available: false, segments: [], service_reachable: true });
     render(<ArchiveGridTile camera={CAMERA} onRemove={vi.fn()} />);
 
     await waitFor(() => expect(fetchRecordingSegments).toHaveBeenCalledTimes(1));

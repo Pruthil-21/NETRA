@@ -63,7 +63,7 @@ vi.mock('@/services/recordingsService', async () => {
 });
 
 function segmentsFor(camId: number, dateIso: string, duration = 3600) {
-  return { available: true, segments: [{ start: dateIso, duration, url: `https://playback.example/cam${camId}` }] };
+  return { available: true, segments: [{ start: dateIso, duration, url: `https://playback.example/cam${camId}` }], service_reachable: true };
 }
 
 describe('Archive "View Footage" deep link (?camera=&at=)', () => {
@@ -92,12 +92,12 @@ describe('Archive "View Footage" deep link (?camera=&at=)', () => {
 
     const { rerender } = render(<ArchivePage />);
     await screen.findByText('Archive — Camera One');
-    await waitFor(() => expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveValue('110'));
+    await waitFor(() => expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveAttribute('aria-valuenow', '110'));
 
     // Same camera, a different alert an hour later in the same day's footage.
     setSearchParams(new URLSearchParams({ camera: '1', at: '2026-09-05T09:02:00.000Z' }));
     rerender(<ArchivePage />);
 
-    await waitFor(() => expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveValue('3710'));
+    await waitFor(() => expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveAttribute('aria-valuenow', '3710'));
   });
 });
