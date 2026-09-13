@@ -2,8 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useRouter } from 'next/navigation';
 import RegisterPage from '@/app/register/page';
+import { locationsService } from '@/services/locationsService';
 
 vi.mock('next/navigation', () => ({ useRouter: vi.fn() }));
+vi.mock('@/services/locationsService', () => ({
+  locationsService: { listDistricts: vi.fn() },
+}));
 
 describe('RegisterPage', () => {
   const push = vi.fn();
@@ -12,16 +16,27 @@ describe('RegisterPage', () => {
     vi.restoreAllMocks();
     push.mockClear();
     (useRouter as any).mockReturnValue({ push });
+    (locationsService.listDistricts as any).mockResolvedValue([
+      { id: 1, name: 'Ahmedabad', lgd_code: null },
+      { id: 2, name: 'Anand', lgd_code: null },
+    ]);
     sessionStorage.clear();
   });
 
-  const fillRequiredFields = () => {
+  // A password strong enough to clear the client-side zxcvbn floor (see
+  // lib/passwordStrength.ts) -- these tests are about the registration
+  // flow, not the strength meter itself (covered separately).
+  const STRONG_PASSWORD = 'Correct-Horse-Battery-Staple-9!';
+
+  const fillRequiredFields = async () => {
     fireEvent.change(screen.getByLabelText('Badge Number'), { target: { value: 'GJ-REG-001' } });
     fireEvent.change(screen.getByLabelText('Full Name'), { target: { value: 'New Recruit' } });
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'recruit@example.com' } });
-    fireEvent.change(screen.getByLabelText('Department / District'), { target: { value: 'Ahmedabad' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'recruit-pass-123' } });
-    fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: 'recruit-pass-123' } });
+    fireEvent.focus(screen.getByLabelText('Department / District'));
+    fireEvent.click(await screen.findByText('Ahmedabad'));
+    fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '9876543210' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: STRONG_PASSWORD } });
+    fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: STRONG_PASSWORD } });
   };
 
   it('registering shows the OTP verification step instead of a pending-approval message', async () => {
@@ -31,7 +46,7 @@ describe('RegisterPage', () => {
     );
     render(<RegisterPage />);
 
-    fillRequiredFields();
+    await fillRequiredFields();
     fireEvent.click(screen.getByRole('button', { name: /^register$/i }));
 
     expect(await screen.findByText('Verify Your Email')).toBeInTheDocument();
@@ -50,7 +65,7 @@ describe('RegisterPage', () => {
     );
     render(<RegisterPage />);
 
-    fillRequiredFields();
+    await fillRequiredFields();
     fireEvent.click(screen.getByRole('button', { name: /^register$/i }));
     await screen.findByText('Verify Your Email');
 
@@ -68,10 +83,36 @@ describe('RegisterPage', () => {
     );
     render(<RegisterPage />);
 
-    fillRequiredFields();
+    await fillRequiredFields();
     fireEvent.click(screen.getByRole('button', { name: /^register$/i }));
 
     expect(await screen.findByText('Badge number already registered')).toBeInTheDocument();
     expect(screen.queryByText('Verify Your Email')).not.toBeInTheDocument();
+  });
+
+  it('offers Department/District as a searchable dropdown of real districts, not free text', async () => {
+    render(<RegisterPage />);
+    fireEvent.focus(screen.getByLabelText('Department / District'));
+    expect(await screen.findByText('Ahmedabad')).toBeInTheDocument();
+    expect(screen.getByText('Anand')).toBeInTheDocument();
+  });
+
+  it('rejects submission client-side when the password is too weak, without calling the API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ pending_token: 'pending-abc' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<RegisterPage />);
+
+    fireEvent.change(screen.getByLabelText('Badge Number'), { target: { value: 'GJ-REG-002' } });
+    fireEvent.change(screen.getByLabelText('Full Name'), { target: { value: 'New Recruit' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'recruit@example.com' } });
+    fireEvent.focus(screen.getByLabelText('Department / District'));
+    fireEvent.click(await screen.findByText('Ahmedabad'));
+    fireEvent.change(screen.getByLabelText('Phone'), { target: { value: '9876543210' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'password' } });
+    fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: 'password' } });
+    fireEvent.click(screen.getByRole('button', { name: /^register$/i }));
+
+    expect(await screen.findByText(/password is too weak/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/auth/register'), expect.anything());
   });
 });

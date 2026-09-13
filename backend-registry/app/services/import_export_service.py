@@ -30,6 +30,8 @@ from . import (
     auth_service,
     cameras_service,
     coverage_targets_service,
+    locations_service,
+    password_policy_service,
     police_stations_service,
     registration_service,
 )
@@ -52,7 +54,7 @@ def _export_cameras(conn, filters: dict) -> list[dict]:
     return cameras_service.list_cameras(conn, filters.get("district"))
 
 
-_REQUIRED_OFFICER_FIELDS = {"badge_number", "name", "password"}
+_REQUIRED_OFFICER_FIELDS = {"badge_number", "name", "password", "contact_info"}
 
 
 def _validate_officer_row(conn, row: dict):
@@ -61,6 +63,18 @@ def _validate_officer_row(conn, row: dict):
         return None, f"missing required field(s): {', '.join(sorted(missing))}"
     if auth_service.get_officer_by_badge(conn, row["badge_number"]) is not None:
         return None, f"badge number '{row['badge_number']}' is already registered"
+    # Same two checks self-registration and admin-reset already enforce --
+    # a bulk import shouldn't be a way to slip in a district that doesn't
+    # exist or a password that would be rejected everywhere else.
+    department = row.get("department")
+    if department and not locations_service.district_exists(conn, department):
+        return None, f"department/district '{department}' is not a valid Gujarat district"
+    try:
+        password_policy_service.validate_password_or_raise(
+            row["password"], user_inputs=[row["badge_number"], row["name"]]
+        )
+    except ValueError as exc:
+        return None, str(exc)
     return row, None
 
 
@@ -71,9 +85,15 @@ def _commit_officer_row(conn, data: dict) -> dict:
     never a backdoor around it."""
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO officers (badge_number, name, rank, password_hash, status) "
-            "VALUES (%s, %s, %s, %s, 'pending') RETURNING id",
-            (data["badge_number"], data["name"], data.get("rank"), auth_service.hash_password(data["password"])),
+            "INSERT INTO officers (badge_number, name, rank, password_hash, contact_info, status) "
+            "VALUES (%s, %s, %s, %s, %s, 'pending') RETURNING id",
+            (
+                data["badge_number"],
+                data["name"],
+                data.get("rank"),
+                auth_service.hash_password(data["password"]),
+                data["contact_info"],
+            ),
         )
         officer_id = cur.fetchone()[0]
     conn.commit()

@@ -185,6 +185,7 @@ class MeResponse(BaseModel):
     # and self-service password reset are on for this officer" means (see
     # schema.sql's comment above officers.email).
     email: Optional[str] = None
+    contact_info: Optional[str] = None
     last_login: Optional[datetime] = None
     status: str = "active"
     scope_type: Optional[str] = None
@@ -349,7 +350,11 @@ class RegisterRequest(BaseModel):
     # activation gate, and it doubles as this officer's 2FA email with no
     # separate setup step needed.
     email: str
-    contact_info: Optional[str] = None
+    # Required now (was optional): stored permanently on the officer's own
+    # record from registration onward (see schema.sql's officers.contact_info)
+    # and displayed on their profile -- an officer with no phone on file has
+    # no channel to reach them outside the app itself.
+    contact_info: str = Field(min_length=1)
     password: str
 
     @field_validator("email")

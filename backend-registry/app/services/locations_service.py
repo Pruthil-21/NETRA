@@ -12,6 +12,17 @@ def list_districts(conn) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def district_exists(conn, name: str) -> bool:
+    """Exact, case-sensitive match against the canonical district list --
+    used to validate a district name typed or picked elsewhere (e.g.
+    self-registration's Department/District field) against the same
+    reference set the app's own dropdowns are populated from, rather than
+    accepting any non-empty string."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM districts WHERE name = %s", (name,))
+        return cur.fetchone() is not None
+
+
 def list_talukas(conn, district_id: int) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(

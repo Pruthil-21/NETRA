@@ -388,6 +388,15 @@ CREATE TABLE IF NOT EXISTS role_drafts (
 -- self-service reset depends on it.
 ALTER TABLE officers ADD COLUMN IF NOT EXISTS email TEXT;
 
+-- Mandatory from registration onward (see RegisterRequest.contact_info) --
+-- previously only ever landed in registration_requests.contact_info (a
+-- workflow table for the admin-approval fast track), never copied onto
+-- the officer's own permanent record, so it was never actually retrievable
+-- once registration finished -- not stored, and so never displayable on
+-- the profile page either. An officer seeded before this existed can still
+-- have NULL here.
+ALTER TABLE officers ADD COLUMN IF NOT EXISTS contact_info TEXT;
+
 -- One row per OTP ever issued (never updated in place except to mark it
 -- consumed) -- purpose distinguishes a login code from a password-reset
 -- code so one can never be replayed as the other. code_hash, never the raw

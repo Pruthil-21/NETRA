@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { adminService, OfficerOut, OfficerProfileOut } from '@/services/adminService';
 import { roleBadgeClass } from './roleBadge';
+import { PasswordStrengthMeter } from '@/components/common/PasswordStrengthMeter';
+import { analyzePassword } from '@/lib/passwordStrength';
 
 // super_admin is deliberately last, not filtered out -- the backend
 // (main.py's posting-authorization check) already rejects anyone whose own
@@ -173,8 +175,9 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
 
   const handleConfirmResetPassword = async () => {
     if (selectedId == null) return;
-    if (newPassword.length < 8) {
-      setResetError('New password must be at least 8 characters.');
+    const strength = analyzePassword(newPassword, [selectedOfficer?.badge_number ?? '', selectedOfficer?.name ?? '']);
+    if (!strength.meetsRequirements) {
+      setResetError(`Password is too weak (${strength.strength}). ${strength.weaknesses[0] ?? 'Choose a stronger password.'}`);
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -568,6 +571,10 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
                   onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="At least 8 characters"
                   className="w-full bg-ink border border-line rounded-md px-2.5 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-command"
+                />
+                <PasswordStrengthMeter
+                  password={newPassword}
+                  userInputs={[selectedOfficer.badge_number, selectedOfficer.name]}
                 />
               </div>
               <div>

@@ -8,3 +8,4 @@ bcrypt
 httpx
 openpyxl
 pywebpush
+zxcvbn

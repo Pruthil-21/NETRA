@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield, UserCheck, Mail, KeyRound } from 'lucide-react';
 import { requestPasswordResetOtp, resetPasswordWithOtp } from '@/lib/session';
+import { PasswordStrengthMeter } from '@/components/common/PasswordStrengthMeter';
+import { analyzePassword } from '@/lib/passwordStrength';
 
 /** Self-service reset: request a code, then set a new password with it.
  * Only works for an officer who has set an email (PUT /auth/me/email) --
@@ -37,6 +39,11 @@ export default function ForgotPasswordPage() {
   const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    const strength = analyzePassword(newPassword, [badgeNumber]);
+    if (!strength.meetsRequirements) {
+      setError(`Password is too weak (${strength.strength}). ${strength.weaknesses[0] ?? 'Choose a stronger password.'}`);
+      return;
+    }
     setSubmitting(true);
     try {
       await resetPasswordWithOtp(badgeNumber, code, newPassword);
@@ -126,6 +133,7 @@ export default function ForgotPasswordPage() {
                   required
                 />
               </div>
+              <PasswordStrengthMeter password={newPassword} userInputs={[badgeNumber]} />
             </div>
             {error && <p className="text-signal-red text-xs">{error}</p>}
             <button

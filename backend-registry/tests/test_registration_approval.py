@@ -116,7 +116,7 @@ def test_registering_an_already_used_badge_number_is_rejected(client, captured_o
         "/auth/register",
         json={
             "badge_number": "GJ-SA-001", "name": "Impersonator", "department": "Ahmedabad",
-            "email": "impersonator@example.com", "password": "whatever-1234",
+            "email": "impersonator@example.com", "contact_info": "9876543210", "password": "whatever-1234",
         },
     )
     assert resp.status_code == 409
@@ -144,6 +144,34 @@ def test_registering_with_an_invalid_email_is_rejected(client, captured_otps):
         },
     )
     assert resp.status_code == 422
+
+
+def test_registering_with_a_district_that_does_not_exist_is_rejected(client, captured_otps):
+    _seed()
+    resp = client.post(
+        "/auth/register",
+        json={
+            "badge_number": f"GJ-REG-{uuid.uuid4().hex[:8]}", "name": "Nowhere District",
+            "department": "Not A Real District", "email": "nowhere@example.com",
+            "contact_info": "9876543210", "password": "whatever-1234",
+        },
+    )
+    assert resp.status_code == 400
+    assert "valid Gujarat district" in resp.json()["detail"]
+
+
+def test_registering_with_a_weak_password_is_rejected(client, captured_otps):
+    _seed()
+    resp = client.post(
+        "/auth/register",
+        json={
+            "badge_number": f"GJ-REG-{uuid.uuid4().hex[:8]}", "name": "Weak Password",
+            "department": "Ahmedabad", "email": "weakpass@example.com",
+            "contact_info": "9876543210", "password": "password",
+        },
+    )
+    assert resp.status_code == 400
+    assert "too weak" in resp.json()["detail"].lower()
 
 
 def test_admin_can_still_approve_a_registration_before_it_is_email_verified(client, captured_otps):
