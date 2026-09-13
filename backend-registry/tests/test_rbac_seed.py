@@ -56,7 +56,7 @@ def test_control_room_operator_cannot_edit_watchlist_or_export():
                 "JOIN roles r ON r.id = rp.role_id WHERE r.name = 'control_room_operator'"
             )
             perms = {row[0] for row in cur.fetchall()}
-    assert perms == {"view_live_feeds", "acknowledge_alerts"}
+    assert perms == {"view_live_feeds", "acknowledge_alerts", "run_anpr_lookup"}
     assert "edit_watchlist" not in perms
     assert "export_data" not in perms
 

@@ -65,3 +65,18 @@ def scoping_test_cameras():
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM cameras WHERE id = ANY(%s)", (created_ids,))
             conn.commit()
+
+
+@pytest.fixture
+def anpr_test_jobs():
+    """Guaranteed cleanup for anpr_jobs rows a test creates, same pattern as
+    scoping_test_cameras above. Doesn't remove any uploaded file bytes on
+    disk -- tests that actually upload a file clean those up themselves
+    (see test_anpr_jobs.py), since this fixture only knows row ids."""
+    created_ids: list[int] = []
+    yield created_ids
+    if created_ids:
+        with contextlib.closing(psycopg2.connect(settings.database_url)) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM anpr_jobs WHERE id = ANY(%s)", (created_ids,))
+            conn.commit()

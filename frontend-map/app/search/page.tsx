@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { VehicleSearchPanel } from '@/components/search/VehicleSearchPanel';
 import { SightingAlertToasts } from '@/components/search/SightingAlertToasts';
@@ -32,6 +33,8 @@ const CameraMap = dynamic(
  * monitoring. Nav/auth/header live in the shared AppShell. */
 export default function VehicleSearchPage() {
   const { cameras, isLoading, error } = useCameraRegistry();
+  const searchParams = useSearchParams();
+  const initialPlate = searchParams.get('plate') ?? undefined;
   const [sightings, setSightings] = useState<Detection[]>([]);
   const [selectedCamera, setSelectedCamera] = useState<Camera | null>(null);
 
@@ -100,6 +103,7 @@ export default function VehicleSearchPage() {
               cameras={cameras}
               onResultsChange={setSightings}
               onSelectSighting={setSelectedCamera}
+              initialPlate={initialPlate}
             />
           </>
         )}

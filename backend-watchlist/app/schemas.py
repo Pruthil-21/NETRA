@@ -190,6 +190,87 @@ class AlertHistoryEntry(BaseModel):
     reason_code: Optional[str] = None
 
 
+class ArchiveClipJobIn(BaseModel):
+    """POST /anpr-jobs/archive-clip body -- district is derived server-side
+    from source_camera_id's own dept, not accepted from the client (see
+    routers/anpr_jobs.py)."""
+    source_camera_id: int
+    clip_start: datetime
+    clip_end: datetime
+
+    @model_validator(mode="after")
+    def _clip_end_after_start(self):
+        if self.clip_end <= self.clip_start:
+            raise ValueError("clip_end must be after clip_start")
+        return self
+
+
+class AnprJobResultOut(BaseModel):
+    id: int
+    detection_id: Optional[int] = None
+    plate_number: str
+    confidence: Optional[float] = None
+    # The real in-footage moment for a video/clip job (null for a photo --
+    # there's no timeline to place it on). See anpr_job_results' own
+    # schema.sql comment.
+    detected_at: Optional[datetime] = None
+    box_area: Optional[float] = None
+
+
+class AnprJobOut(BaseModel):
+    id: int
+    input_type: Literal["upload_video", "upload_image", "archive_clip"]
+    status: Literal["pending", "processing", "completed", "failed"]
+    submitted_by: str
+    district: str
+    original_filename: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    file_sha256: Optional[str] = None
+    source_camera_id: Optional[int] = None
+    clip_start: Optional[datetime] = None
+    clip_end: Optional[datetime] = None
+    # upload_video only, officer-supplied and optional -- see anpr_jobs
+    # schema.sql. Doubles as the "recording_start_time" anchor dispatch
+    # sends ml-anpr for computing each result's real detected_at.
+    recorded_at: Optional[datetime] = None
+    detection_id: Optional[int] = None
+    plate_number: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    # Every plate found, ordered nearest-to-farthest for a photo (by
+    # box_area) or chronologically for a video/clip (by detected_at) -- see
+    # anpr_jobs_service.list_job_results. Empty for a job still pending/
+    # processing, or one that completed with no plate found at all.
+    results: list[AnprJobResultOut] = []
+
+
+class AnprJobResultIn(BaseModel):
+    """One plate within ml-anpr's completion callback -- see AnprJobCallback.
+    detected_at is REQUIRED for a video/clip job (ml-anpr must compute the
+    real in-footage instant from clip_start + the frame offset, never
+    "now()" -- the plate may have been seen minutes into a clip processed
+    well after the fact) and should be omitted for a photo job, which has
+    no timeline to place it on."""
+    detection_id: int
+    plate_number: str
+    confidence: Optional[float] = None
+    detected_at: Optional[datetime] = None
+    box_area: Optional[float] = None
+
+
+class AnprJobCallback(BaseModel):
+    """PATCH /anpr-jobs/{id} body -- ml-anpr's completion callback, internal-
+    key gated same as POST /detections. Each result's plate_number/
+    detection_id comes straight from ml-anpr (it already knows what it
+    read and what POST /detections handed back) rather than being looked up
+    server-side. `results` may be an empty list on a genuine "completed, no
+    plate found" outcome -- that's a valid terminal state, not an error."""
+    status: Literal["completed", "failed"]
+    results: list[AnprJobResultIn] = []
+    error_message: Optional[str] = None
+
+
 class VehicleTraceSighting(BaseModel):
     """One entry in VehicleTraceResponse.sightings — a detection enriched
     with the camera metadata frontend-map needs to place it on the route

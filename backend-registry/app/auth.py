@@ -6,7 +6,7 @@ keeps each service independently owned with zero cross-folder edits.
 import os
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
@@ -77,6 +77,14 @@ def has_permission(user: dict, permission: str) -> bool:
     if user.get("role") in ("officer", "admin") and "permissions" not in user:
         return True
     return permission in user.get("permissions", [])
+
+
+def require_internal_key(x_internal_key: str = Header(...)):
+    """Same shared-secret gate backend-watchlist's POST /detections already
+    uses for ml-anpr -- service-to-service traffic, never a user JWT."""
+    if x_internal_key != settings.internal_service_key:
+        raise HTTPException(status_code=401, detail="Invalid internal service key")
+    return True
 
 
 def require_scale_demo_enabled():

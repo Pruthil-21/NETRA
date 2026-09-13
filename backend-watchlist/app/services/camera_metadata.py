@@ -16,18 +16,21 @@ DEMO_CAMERAS: dict[int, dict] = {
         "latitude": 22.4729,
         "longitude": 72.7938,
         "stream_id": 101,
+        "is_virtual_capture": False,
     },
     102: {
         "camera_name": "Petlad Town Centre",
         "latitude": 22.4766,
         "longitude": 72.7994,
         "stream_id": 102,
+        "is_virtual_capture": False,
     },
     103: {
         "camera_name": "Petlad Exit Checkpoint",
         "latitude": 22.4804,
         "longitude": 72.8051,
         "stream_id": 103,
+        "is_virtual_capture": False,
     },
 }
 
@@ -40,7 +43,7 @@ def lookup(db: RealDictCursor, camera_id: int) -> dict:
     trace)."""
     db.execute(
         "SELECT name, ST_Y(location::geometry) AS latitude, ST_X(location::geometry) AS longitude, "
-        "stream_id FROM cameras WHERE id = %s",
+        "stream_id, is_virtual_capture FROM cameras WHERE id = %s",
         (camera_id,),
     )
     row = db.fetchone()
@@ -50,8 +53,9 @@ def lookup(db: RealDictCursor, camera_id: int) -> dict:
             "latitude": row["latitude"],
             "longitude": row["longitude"],
             "stream_id": row["stream_id"],
+            "is_virtual_capture": row["is_virtual_capture"],
         }
     return DEMO_CAMERAS.get(
         camera_id,
-        {"camera_name": None, "latitude": None, "longitude": None, "stream_id": None},
+        {"camera_name": None, "latitude": None, "longitude": None, "stream_id": None, "is_virtual_capture": False},
     )

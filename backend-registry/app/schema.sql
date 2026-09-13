@@ -637,3 +637,16 @@ BEGIN
         END IF;
     END IF;
 END $$;
+
+-- Manual Plate Lookup feature: an officer-uploaded clip/image or a marked
+-- Archive clip has no real registered camera, but detections/alerts both
+-- require a real camera_id (NOT NULL). Rather than build a parallel result
+-- path, seed_virtual_cameras.py creates one of these per district and every
+-- such job dispatches against it, so the entire existing detections/alerts/
+-- map-trace/push pipeline needs zero new code. Same convention as
+-- is_synthetic above: excluded from real camera counts/lists/analytics by
+-- default everywhere that already filters on is_synthetic, plus a few
+-- aggregate sites that had no filter at all (see reports_service.get_summary,
+-- detections_service's camera density/flow queries).
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_virtual_capture BOOLEAN NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS idx_cameras_virtual_capture ON cameras (is_virtual_capture) WHERE is_virtual_capture;

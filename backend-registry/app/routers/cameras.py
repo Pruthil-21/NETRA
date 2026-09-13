@@ -8,13 +8,18 @@ from pydantic import ValidationError
 from ..auth import (
     get_current_user,
     has_permission,
+    require_internal_key,
     require_permission,
     require_scale_demo_enabled,
 )
 from ..config import settings
 from ..db import get_conn
 from ..logging_config import logger
-from ..rbac_scope import effective_district_scopes, guard_dept_in_scope, resolve_district_scoped
+from ..rbac_scope import (
+    effective_district_scopes,
+    guard_dept_in_scope,
+    resolve_district_scoped,
+)
 from ..schemas import (
     CameraBulkResult,
     CameraCreate,
@@ -341,8 +346,39 @@ def camera_recordings(
     with get_conn() as conn:
         camera = _require_camera_in_scope(conn, camera_id, user)
         if not camera["stream_id"]:
-            return {"available": False, "segments": []}
+            # No stream_id is a configuration gap on our own camera row, not
+            # the recording service itself being down -- still surfaced as
+            # service_reachable: False since there's nothing to check "no
+            # footage" against either way, and the officer-facing distinction
+            # that matters is the same either way: "not our fault, don't
+            # bother retrying," not "recheck this camera's history."
+            return {"available": False, "segments": [], "service_reachable": False}
         return recordings_service.list_recordings(camera["stream_id"], _actor_id(user), start, end)
+
+
+@router.get("/internal/cameras/{camera_id}/recording-clip-url")
+def internal_recording_clip_url(
+    camera_id: int,
+    start: str,
+    end: str,
+    _=Depends(require_internal_key),
+):
+    """Service-to-service only (Manual Plate Lookup's archive-clip dispatch,
+    see backend-watchlist's anpr_jobs_service.dispatch_to_ml_anpr) -- mints a
+    FRESH clip URL right before handing it to ml-anpr, since the recording
+    service's own URLs carry a ~15-minute token. No officer/RBAC scope check
+    here: the internal key is the trust boundary, exactly like POST
+    /detections; the officer-facing scope check already happened once, at
+    job submission time (see routers/anpr_jobs.py)."""
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT stream_id FROM cameras WHERE id = %s", (camera_id,))
+        row = cur.fetchone()
+    if row is None or not row[0]:
+        return {"url": None}
+    result = recordings_service.list_recordings(row[0], "anpr-job-dispatch", start, end)
+    segments = result.get("segments") or []
+    return {"url": segments[0]["url"] if segments else None}
 
 
 @router.get("/cameras/{camera_id}/recordings/health")

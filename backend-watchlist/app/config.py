@@ -44,5 +44,37 @@ class Settings:
     vapid_private_key: str = os.environ.get("VAPID_PRIVATE_KEY", "")
     vapid_subject: str = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
 
+    # Manual Plate Lookup (see services/anpr_jobs_service.py) -- local-disk
+    # storage for officer-uploaded clips/images, no object storage anywhere
+    # in this stack yet. Caps are deliberately generous-but-bounded, not
+    # unlimited: a phone video clip easily runs to tens of MB, a photo rarely
+    # needs more than a few.
+    anpr_upload_dir: str = os.environ.get("ANPR_UPLOAD_DIR", "uploads/anpr_jobs")
+    anpr_max_video_bytes: int = int(os.environ.get("ANPR_MAX_VIDEO_BYTES", str(200 * 1024 * 1024)))
+    anpr_max_image_bytes: int = int(os.environ.get("ANPR_MAX_IMAGE_BYTES", str(15 * 1024 * 1024)))
+    # Where Avi's ml-anpr on-demand endpoint lives, and the base URL this
+    # service's own callback (PATCH /anpr-jobs/{id}) is reachable at from
+    # ml-anpr's side. Both unset just means dispatch fails fast with a clear
+    # per-job error -- the job is still created and visible, matching the
+    # "unreachable/unconfigured service is a normal state, never a 500"
+    # convention recordings_service.py already follows.
+    #
+    # Avi runs ml-anpr from two places behind two separate tunnels -- his
+    # GPU server (faster, but only up when he's got it running) and his
+    # laptop (slower, but the one that's been reliably reachable). Dispatch
+    # tries anpr_pipeline_url first and only falls through to
+    # anpr_pipeline_fallback_url when the primary is actually unreachable
+    # (connection refused/timed out), not merely erroring -- see
+    # anpr_jobs_service._post_to_first_reachable_pipeline.
+    anpr_pipeline_url: str = os.environ.get("ANPR_PIPELINE_URL", "")
+    anpr_pipeline_fallback_url: str = os.environ.get("ANPR_PIPELINE_FALLBACK_URL", "")
+    anpr_callback_base_url: str = os.environ.get("ANPR_CALLBACK_BASE_URL", "https://api.digdhrishti.me")
+    # backend-registry's own base URL, called once per archive_clip job
+    # (GET /internal/cameras/{id}/recording-clip-url) to mint a fresh clip
+    # URL right before dispatch -- see anpr_jobs_service.dispatch_to_ml_anpr.
+    # Local dev default matches this session's established bare-uvicorn port
+    # (8010); docker-compose overrides this to the in-network service name.
+    registry_internal_url: str = os.environ.get("REGISTRY_INTERNAL_URL", "http://localhost:8010")
+
 
 settings = Settings()

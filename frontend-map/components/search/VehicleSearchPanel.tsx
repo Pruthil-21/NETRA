@@ -21,14 +21,20 @@ interface VehicleSearchPanelProps {
   cameras: Camera[];
   onResultsChange: (detections: Detection[]) => void;
   onSelectSighting: (camera: Camera) => void;
+  /** Pre-fills and auto-runs the search once on mount -- used by the Plate
+   * Lookup result view's "view full history" deep link (?plate=...), so an
+   * officer lands straight on results instead of having to retype the
+   * plate ANPR just extracted. */
+  initialPlate?: string;
 }
 
 export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
   cameras,
   onResultsChange,
   onSelectSighting,
+  initialPlate,
 }) => {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialPlate ?? '');
   const [scenarioRunId, setScenarioRunId] = useState('');
   const [showScenarioInput, setShowScenarioInput] = useState(false);
   const [fromDate, setFromDate] = useState('');
@@ -114,6 +120,15 @@ export const VehicleSearchPanel: React.FC<VehicleSearchPanelProps> = ({
       setIsLoadingOwner(false);
     }
   };
+
+  // Auto-runs exactly once, only when arriving with a plate already in hand
+  // (the Plate Lookup deep link) -- never re-fires on a later prop change,
+  // same one-shot-effect convention as the other mount-only effects in this
+  // file, so it doesn't fight an officer who's since typed a different plate.
+  useEffect(() => {
+    if (initialPlate) runSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Poll for new sightings of the currently-searched plate during the demo.
   // A transient poll failure is swallowed rather than surfaced as `error` —

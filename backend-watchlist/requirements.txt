@@ -6,3 +6,5 @@ pyjwt
 python-dotenv
 tzdata
 pywebpush
+httpx
+python-multipart
