@@ -2,9 +2,12 @@
 permission gating, the internal-key-gated completion callback, and upload
 validation (size/type/magic-byte). District-scoped visibility is covered
 separately in test_anpr_jobs_scoping.py."""
+import contextlib
 import io
 
 import jwt
+import psycopg2
+import psycopg2.extras
 import pytest
 from app.config import settings
 
@@ -36,60 +39,122 @@ def _officer_headers(permissions=("run_anpr_lookup",), badge="ANPR-TEST", scope_
     return {"Authorization": f"Bearer {token}"}
 
 
+def _insert_test_camera(dept: str) -> int:
+    """Creates a real, isolated camera row in a controlled department --
+    same pattern as test_detections.py's helper of the same name. Archive-
+    clip jobs dispatch against this rather than a hardcoded camera id, since
+    assuming some fixed id (e.g. 1) is a real camera in a specific district
+    only held in the shared dev database's own accumulated state, not a
+    fresh/CI one."""
+    with contextlib.closing(psycopg2.connect(settings.database_url)) as conn, \
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type, retention_days)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'fixed', 'govt', 'cloud', 30)
+            RETURNING id
+            """,
+            ("ANPR Jobs Test Source Camera", dept),
+        )
+        camera_id = cur.fetchone()["id"]
+        conn.commit()
+        return camera_id
+
+
+def _insert_virtual_capture_camera(dept: str) -> int:
+    """Same pattern as test_detections.py's helper of the same name -- a
+    Manual Plate Lookup dispatch target, never a valid archive-clip source
+    since it has no real footage."""
+    with contextlib.closing(psycopg2.connect(settings.database_url)) as conn, \
+            conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            INSERT INTO cameras (name, dept, location, camera_type, ownership, storage_type,
+                                  retention_days, is_virtual_capture)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(72.5, 23.0), 4326), 'mobile_handheld', 'department', 'none', 0, true)
+            RETURNING id
+            """,
+            ("ANPR Jobs Virtual Capture Test Camera", dept),
+        )
+        camera_id = cur.fetchone()["id"]
+        conn.commit()
+        return camera_id
+
+
+@pytest.fixture
+def source_camera_id(scoping_test_cameras):
+    """A real, non-virtual camera in its own throwaway test district for
+    archive-clip jobs to dispatch against -- paired with a virtual-capture
+    camera in that same district (mirroring what seed_virtual_cameras.py
+    does for real districts), since dispatch_to_ml_anpr resolves the job's
+    virtual dispatch target purely from the submitting camera's own dept
+    and would otherwise fail this test district for having none. Never
+    reuses a seeded real district (e.g. "Anand") -- self-contained
+    regardless of which seed scripts happened to run in this environment.
+    `scoping_test_cameras` (see conftest.py) already guarantees cleanup for
+    both rows."""
+    dept = "ANPR Jobs Test District"
+    camera_id = _insert_test_camera(dept)
+    scoping_test_cameras.append(camera_id)
+    virtual_camera_id = _insert_virtual_capture_camera(dept)
+    scoping_test_cameras.append(virtual_camera_id)
+    return camera_id
+
+
 _JPEG_BYTES = bytes.fromhex(
     "ffd8ffe000104a46494600010100000100010000" + "00" * 20 + "ffd9"
 )
 
 
-def test_submitting_an_archive_clip_job_resolves_district_from_the_camera(client, internal_headers, anpr_test_jobs):
+def test_submitting_an_archive_clip_job_resolves_district_from_the_camera(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     assert resp.status_code == 201
     body = resp.json()
     anpr_test_jobs.append(body["id"])
-    assert body["district"] == "Anand"
+    assert body["district"] == "ANPR Jobs Test District"
     assert body["status"] == "pending"
     assert body["input_type"] == "archive_clip"
 
 
-def test_submitting_without_run_anpr_lookup_permission_is_rejected(client, anpr_test_jobs):
+def test_submitting_without_run_anpr_lookup_permission_is_rejected(client, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(permissions=()),
     )
     assert resp.status_code == 403
 
 
-def test_submitting_an_archive_clip_for_a_district_outside_scope_is_rejected(client, anpr_test_jobs):
+def test_submitting_an_archive_clip_for_a_district_outside_scope_is_rejected(client, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(scope_type="district", scope_value="Vadodara"),
     )
     assert resp.status_code == 403
 
 
-def test_archive_clip_with_end_before_start_is_rejected(client, anpr_test_jobs):
+def test_archive_clip_with_end_before_start_is_rejected(client, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:05:00Z", "clip_end": "2026-09-12T10:00:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:05:00Z", "clip_end": "2026-09-12T10:00:00Z"},
         headers=_officer_headers(),
     )
     assert resp.status_code == 422
 
 
-def test_archive_clip_against_a_virtual_capture_camera_is_rejected(client, anpr_test_jobs):
+def test_archive_clip_against_a_virtual_capture_camera_is_rejected(client, anpr_test_jobs, scoping_test_cameras):
     # The virtual capture camera itself has no real footage -- it must not
     # be a valid "source" for an archive-clip job, only a dispatch target.
-    import psycopg2.extras
-    from app.database import get_connection
-    with get_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute("SELECT id FROM cameras WHERE dept = 'Anand' AND is_virtual_capture = true LIMIT 1")
-        virtual_camera_id = cur.fetchone()["id"]
+    # Created directly rather than assumed to already exist for some
+    # district (e.g. one seed_virtual_cameras.py happened to have run for)
+    # -- a fresh/CI environment may not have run that script at all.
+    virtual_camera_id = _insert_virtual_capture_camera("ANPR Jobs Virtual Capture Rejection Test District")
+    scoping_test_cameras.append(virtual_camera_id)
 
     resp = client.post(
         "/anpr-jobs/archive-clip",
@@ -102,10 +167,10 @@ def test_archive_clip_against_a_virtual_capture_camera_is_rejected(client, anpr_
     assert resp.status_code == 404
 
 
-def test_pending_job_is_visible_immediately_before_dispatch_resolves(client, anpr_test_jobs):
+def test_pending_job_is_visible_immediately_before_dispatch_resolves(client, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -115,13 +180,13 @@ def test_pending_job_is_visible_immediately_before_dispatch_resolves(client, anp
     assert get_resp.json()["status"] in ("pending", "processing", "failed")
 
 
-def test_unconfigured_pipeline_fails_the_job_with_a_clear_message(client, anpr_test_jobs):
+def test_unconfigured_pipeline_fails_the_job_with_a_clear_message(client, anpr_test_jobs, source_camera_id):
     # _no_real_dispatch (autouse above) already forces anpr_pipeline_url to
     # "" for this whole file -- this test just confirms that state produces
     # the documented, honest failure message rather than a silent hang.
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -132,10 +197,10 @@ def test_unconfigured_pipeline_fails_the_job_with_a_clear_message(client, anpr_t
     assert "not configured" in body["error_message"] or "ANPR_PIPELINE_URL" in body["error_message"]
 
 
-def test_completion_callback_requires_internal_key(client, anpr_test_jobs):
+def test_completion_callback_requires_internal_key(client, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -147,10 +212,10 @@ def test_completion_callback_requires_internal_key(client, anpr_test_jobs):
     assert patch_resp.status_code == 422 or patch_resp.status_code == 401
 
 
-def test_completion_callback_with_internal_key_marks_job_completed(client, internal_headers, anpr_test_jobs):
+def test_completion_callback_with_internal_key_marks_job_completed(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -166,10 +231,10 @@ def test_completion_callback_with_internal_key_marks_job_completed(client, inter
     assert patch_resp.json()["plate_number"] == "GJ01ZZ9999"
 
 
-def test_completed_with_no_results_is_a_valid_no_plate_found_outcome(client, internal_headers, anpr_test_jobs):
+def test_completed_with_no_results_is_a_valid_no_plate_found_outcome(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -185,10 +250,10 @@ def test_completed_with_no_results_is_a_valid_no_plate_found_outcome(client, int
     assert body["results"] == []
 
 
-def test_photo_with_multiple_plates_orders_results_nearest_to_farthest(client, internal_headers, anpr_test_jobs):
+def test_photo_with_multiple_plates_orders_results_nearest_to_farthest(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",  # reusing archive-clip creation for simplicity; ordering only depends on input_type
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -220,10 +285,10 @@ def test_photo_with_multiple_plates_orders_results_nearest_to_farthest(client, i
     assert patch_resp.json()["plate_number"] == "GJ01NEAR001"
 
 
-def test_clip_with_multiple_plates_orders_results_chronologically(client, internal_headers, anpr_test_jobs):
+def test_clip_with_multiple_plates_orders_results_chronologically(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
@@ -272,8 +337,7 @@ def test_uploading_with_an_invalid_recorded_at_is_rejected(client, anpr_test_job
 
 
 def test_dispatch_sends_recording_start_time_for_archive_clip_and_upload_video(
-    client, anpr_test_jobs, monkeypatch
-):
+    client, anpr_test_jobs, monkeypatch, source_camera_id):
     """Confirms ml-anpr actually receives an anchor it can compute
     detected_at from: clip_start for archive_clip (always known), and
     recorded_at for upload_video (only when the officer supplied one)."""
@@ -297,7 +361,7 @@ def test_dispatch_sends_recording_start_time_for_archive_clip_and_upload_video(
 
     clip_resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     anpr_test_jobs.append(clip_resp.json()["id"])
@@ -307,8 +371,7 @@ def test_dispatch_sends_recording_start_time_for_archive_clip_and_upload_video(
 
 
 def test_dispatch_falls_back_to_the_secondary_pipeline_url_when_the_primary_is_unreachable(
-    client, anpr_test_jobs, monkeypatch
-):
+    client, anpr_test_jobs, monkeypatch, source_camera_id):
     """Avi runs ml-anpr behind two tunnels (GPU server, laptop) -- dispatch
     should try the primary first and only move to the fallback when it's
     genuinely unreachable (connection refused/timed out), landing the job on
@@ -337,7 +400,7 @@ def test_dispatch_falls_back_to_the_secondary_pipeline_url_when_the_primary_is_u
 
     clip_resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = clip_resp.json()["id"]
@@ -351,8 +414,7 @@ def test_dispatch_falls_back_to_the_secondary_pipeline_url_when_the_primary_is_u
 
 
 def test_dispatch_does_not_fall_back_when_the_primary_responds_with_an_error(
-    client, anpr_test_jobs, monkeypatch
-):
+    client, anpr_test_jobs, monkeypatch, source_camera_id):
     """A reachable server that errors is a real job failure to surface, not
     a reason to silently retry a different machine -- only a connection-level
     failure (unreachable) should trigger the fallback."""
@@ -376,7 +438,7 @@ def test_dispatch_does_not_fall_back_when_the_primary_responds_with_an_error(
 
     clip_resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = clip_resp.json()["id"]
@@ -435,10 +497,10 @@ def test_uploaded_file_is_servable_via_the_internal_file_endpoint(client, intern
     assert file_resp.headers["content-type"] == "image/jpeg"
 
 
-def test_file_endpoint_404s_for_an_archive_clip_job_with_no_stored_file(client, internal_headers, anpr_test_jobs):
+def test_file_endpoint_404s_for_an_archive_clip_job_with_no_stored_file(client, internal_headers, anpr_test_jobs, source_camera_id):
     resp = client.post(
         "/anpr-jobs/archive-clip",
-        json={"source_camera_id": 1, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
         headers=_officer_headers(),
     )
     job_id = resp.json()["id"]
