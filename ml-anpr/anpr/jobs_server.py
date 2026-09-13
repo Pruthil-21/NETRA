@@ -11,8 +11,10 @@ for one route.
 """
 import json
 import os
+import queue
 import tempfile
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime, timedelta
@@ -86,12 +88,85 @@ REQUEST_TIMEOUT_SEC = 10
 # through YOLO+OCR on this same process's GPU/CPU -- unbounded concurrent
 # jobs is the same real failure mode already measured on the live
 # multi-camera pipeline (queue saturation, throughput collapse) applied
-# to this endpoint instead. A semaphore acquired inside the worker
-# thread (not before it starts) queues excess jobs rather than dropping
-# them: do_POST still returns 202 immediately either way, a job just
-# waits its turn to actually start once past the limit.
-MAX_CONCURRENT_JOBS = 3
-_job_slots = threading.Semaphore(MAX_CONCURRENT_JOBS)
+# to this endpoint instead. Review finding (Pruthil): the earlier
+# semaphore-inside-a-fresh-thread approach bounded active PROCESSING but
+# still spawned one full OS thread per request, unbounded -- a burst of
+# requests still created unlimited waiting threads, just parked on the
+# semaphore instead of doing work. Fixed worker pool + a bounded queue
+# instead: exactly NUM_WORKERS threads ever exist, and a request that
+# can't even get a queue slot is rejected outright (503) rather than
+# accepted and left to wait indefinitely.
+NUM_WORKERS = 3
+JOB_QUEUE_MAXSIZE = 20  # backlog allowed to wait for a free worker before rejecting new jobs
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAXSIZE)
+
+# Bound #1b (review finding, Pruthil): accepted jobs only ever lived in
+# this in-memory queue -- a restart mid-job (or even mid-queue, before a
+# worker picked it up) silently lost it with no trace. Every job's
+# state is persisted to disk the moment it's accepted, updated as it
+# moves through processing, and re-enqueued on startup if it was never
+# finished. One small JSON file per job rather than sqlite/a real
+# database -- this endpoint's whole job list fits trivially on disk and
+# the access pattern (one writer at a time per job_id, one reader at
+# startup) doesn't need real concurrent-transaction support.
+# ponytail: unbounded directory growth over very long uptimes (state
+# files for completed/failed jobs are kept, not pruned) -- add a
+# time-based sweep if this ever runs for weeks unattended.
+JOBS_STATE_DIR = os.path.join(os.path.dirname(__file__), "_jobs_state")
+
+
+def _job_state_path(job_id):
+    # job_id is caller-supplied -- sanitize before using it as a
+    # filename component so a crafted job_id can't escape JOBS_STATE_DIR.
+    safe_id = "".join(c for c in str(job_id) if c.isalnum() or c in "-_")
+    return os.path.join(JOBS_STATE_DIR, f"{safe_id}.json")
+
+
+def _save_job_state(job_id, job, status, result=None):
+    os.makedirs(JOBS_STATE_DIR, exist_ok=True)
+    path = _job_state_path(job_id)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump({"job": job, "status": status, "result": result}, f)
+    os.replace(tmp_path, path)  # atomic on POSIX -- never leaves a half-written state file
+
+
+def _load_job_state(job_id):
+    path = _job_state_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _delete_job_state(job_id):
+    path = _job_state_path(job_id)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _recover_pending_jobs():
+    """Startup recovery: a job left in 'accepted' or 'processing' state
+    means the process died before finishing it (or before a worker even
+    picked it up) -- re-enqueue it here so a restart doesn't silently
+    lose an accepted job. Safe even if the original attempt actually
+    finished on backend-watchlist's side already: POST /detections is
+    idempotent on event_id (see _post_detection_with_retry) and the
+    callback is retried/no-op-safe too, so reprocessing just re-sends
+    the same real result."""
+    if not os.path.isdir(JOBS_STATE_DIR):
+        return
+    for name in os.listdir(JOBS_STATE_DIR):
+        if not name.endswith(".json"):
+            continue
+        job_id = name[:-len(".json")]
+        record = _load_job_state(job_id)
+        if record and record.get("status") in ("accepted", "processing"):
+            print(f"[RECOVERY] re-enqueuing job {job_id!r} left in {record['status']!r} state")
+            _job_queue.put(record["job"])
 
 # Bound #2: download size. Nothing capped how large a file_url/clip_url
 # response could be -- a wrong or malicious URL could exhaust this
@@ -285,29 +360,96 @@ def _download_to_temp(url, default_suffix, headers=None):
     return path
 
 
+CALLBACK_MAX_RETRIES = 3
+CALLBACK_BACKOFF_BASE_SEC = 1
+
+
 def _patch_callback(callback_url, payload):
-    try:
-        requests.patch(callback_url, json=payload, headers={"X-Internal-Key": INTERNAL_KEY},
-                        timeout=REQUEST_TIMEOUT_SEC)
-    except requests.exceptions.RequestException as e:
-        print(f"[WARN] Could not reach callback_url {callback_url}: {e}")
+    """Review finding (Pruthil): a single failed/timed-out PATCH here
+    used to just log a warning and give up -- the job had genuinely
+    completed (or failed) but the caller's UI would never find out.
+    Retries transient failures (no response / connection error / 5xx)
+    with exponential backoff; a 4xx is a definitive rejection (e.g. a
+    dead callback_url) that retrying identically won't fix, so that
+    stops immediately instead of wasting attempts."""
+    for attempt in range(CALLBACK_MAX_RETRIES + 1):
+        try:
+            response = requests.patch(callback_url, json=payload,
+                                       headers={"X-Internal-Key": INTERNAL_KEY},
+                                       timeout=REQUEST_TIMEOUT_SEC)
+        except requests.exceptions.RequestException as e:
+            print(f"[WARN] Could not reach callback_url {callback_url} "
+                  f"(attempt {attempt + 1}/{CALLBACK_MAX_RETRIES + 1}): {e}")
+        else:
+            if response.status_code < 400:
+                return
+            if response.status_code < 500:
+                print(f"[WARN] callback_url {callback_url} rejected PATCH "
+                      f"({response.status_code}): {response.text[:200]}")
+                return
+            print(f"[WARN] callback_url {callback_url} returned {response.status_code} "
+                  f"(attempt {attempt + 1}/{CALLBACK_MAX_RETRIES + 1}), retrying...")
+        if attempt < CALLBACK_MAX_RETRIES:
+            time.sleep(CALLBACK_BACKOFF_BASE_SEC * (2 ** attempt))
+    print(f"[WARN] Giving up on callback_url {callback_url} after "
+          f"{CALLBACK_MAX_RETRIES + 1} attempts")
 
 
-def _process_job(job):
-    """Runs off the request thread (do_POST already returned 202) --
-    a job can take real time (a full video, a download), and the
-    contract here is a later PATCH callback, not a synchronous response
-    body. Blocks on _job_slots first (see MAX_CONCURRENT_JOBS) -- a job
-    beyond the concurrency limit just waits its turn here rather than
-    running unbounded alongside everything else already in flight."""
-    with _job_slots:
-        _process_job_inner(job)
+DETECTION_POST_MAX_RETRIES = 3
+DETECTION_POST_BACKOFF_BASE_SEC = 1
+
+
+def _post_detection_with_retry(payload):
+    """POSTs one confirmed plate to backend-watchlist, retrying transient
+    failures (timeout / connection error / 5xx) with the SAME payload --
+    same event_id every attempt (see _job_event_id). Per the real,
+    documented contract (contract/API_CONTRACT.md): a repeat POST for an
+    event_id already on record is a no-op 201 that returns the ORIGINAL
+    detection, never a 409 and never a duplicate row. So every retry --
+    including one triggered because the first attempt's response never
+    arrived (timed out client-side, but may have actually landed) -- is
+    always safe to just resend as-is, and any 201 response (fresh or
+    idempotent-original) means success."""
+    last_exc = None
+    response = None
+    for attempt in range(DETECTION_POST_MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                DETECTION_API_URL, json=payload,
+                headers={"X-Internal-Key": INTERNAL_KEY}, timeout=REQUEST_TIMEOUT_SEC,
+            )
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            print(f"[WARN] POST /detections failed for plate {payload['plate_number']!r} "
+                  f"(attempt {attempt + 1}/{DETECTION_POST_MAX_RETRIES + 1}): {e}")
+        else:
+            last_exc = None
+            if response.status_code == 201 or response.status_code < 500:
+                # 201: success (fresh or idempotent-retry, contract makes
+                # no distinction). Any other <500: a definitive rejection
+                # retrying identically won't fix.
+                return response
+            print(f"[WARN] POST /detections returned {response.status_code} for plate "
+                  f"{payload['plate_number']!r} (attempt {attempt + 1}/{DETECTION_POST_MAX_RETRIES + 1}), retrying...")
+        if attempt < DETECTION_POST_MAX_RETRIES:
+            time.sleep(DETECTION_POST_BACKOFF_BASE_SEC * (2 ** attempt))
+    if last_exc is not None:
+        raise last_exc
+    return response
 
 
 def _process_job_inner(job):
+    """Runs the actual video/image/inference work for one job and
+    returns the callback payload -- never sends it itself and never
+    raises (every real failure path returns a {"status": "failed", ...}
+    dict instead). Kept as a pure function so the caller (the fixed
+    worker pool in _worker_loop) can persist the result before
+    delivering it, satisfying both restart-recovery (item 2) and
+    duplicate-dispatch (item 4: a retried dispatch of an already-done
+    job_id redelivers this same stored result instead of rerunning
+    inference)."""
     job_id = job.get("job_id")
     camera_id_int = job.get("camera_id")
-    callback_url = job.get("callback_url")
     input_type = job.get("input_type")
     # Recording start time now arrives in every dispatch (Pruthil,
     # 2026-09-12) -- present for a timestamped upload_video/archive_clip,
@@ -368,8 +510,7 @@ def _process_job_inner(job):
             raise ValueError(f"Unknown input_type: {input_type}")
 
         if not confirmed:
-            _patch_callback(callback_url, {"status": "failed", "error_message": "No plate found"})
-            return
+            return {"status": "failed", "error_message": "No plate found"}
 
         # Every confirmed plate gets its own POST /detections -- same as
         # the live video pipeline (streaming.py posts once per confirmed
@@ -412,24 +553,13 @@ def _process_job_inner(job):
                 event_id=_job_event_id(job_id, r["plate_number"]),
                 detected_at=detected_at,
             )
-            response = requests.post(
-                DETECTION_API_URL, json=event.to_backend_payload(camera_id_int),
-                headers={"X-Internal-Key": INTERNAL_KEY}, timeout=REQUEST_TIMEOUT_SEC,
-            )
-            if response.status_code not in (201, 409):
-                print(f"[WARN] POST /detections returned {response.status_code} for "
-                      f"plate {r['plate_number']!r}: {response.text[:200]}")
+            try:
+                response = _post_detection_with_retry(event.to_backend_payload(camera_id_int))
+            except requests.exceptions.RequestException as e:
+                print(f"[WARN] Giving up on plate {r['plate_number']!r} after retries: {e}")
                 continue
-            if response.status_code == 409:
-                # Real collision, not our own retry: this event_id is
-                # derived from (job_id, plate_number), so a 409 here
-                # means a DIFFERENT detection already legitimately owns
-                # it -- per the handoff's own guidance (see
-                # watchlist_client.py), retrying with the same id just
-                # repeats the same conflict, so this plate is skipped
-                # rather than silently misreported as our own.
-                print(f"[WARN] event_id collision (409) for plate {r['plate_number']!r} -- "
-                      f"not our own detection, skipping")
+            if response.status_code != 201:
+                # Already logged inside _post_detection_with_retry.
                 continue
             result = {
                 "detection_id": response.json()["detection"]["id"],
@@ -443,11 +573,10 @@ def _process_job_inner(job):
             posted.append(result)
 
         if not posted:
-            _patch_callback(callback_url, {
+            return {
                 "status": "failed",
                 "error_message": "Plate(s) read but backend-watchlist rejected every POST /detections call",
-            })
-            return
+            }
 
         # New multi-result contract (Pruthil, 2026-09-12): every plate
         # actually posted above goes in the results list -- the old
@@ -455,13 +584,10 @@ def _process_job_inner(job):
         # server-side anymore and was silently accepted as "completed, 0
         # plates found," which looked like a missed detection on the
         # frontend even though the model read it correctly.
-        _patch_callback(callback_url, {
-            "status": "completed",
-            "results": posted,
-        })
+        return {"status": "completed", "results": posted}
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
-        _patch_callback(callback_url, {"status": "failed", "error_message": str(e)})
+        return {"status": "failed", "error_message": str(e)}
     finally:
         if tmp_path is not None and os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -488,15 +614,73 @@ class JobsHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        self.send_response(202)
+        job_id = job.get("job_id")
+
+        # Duplicate dispatch of an already-finished job (their retry
+        # after a timeout, a re-sent webhook, whatever) -- POST
+        # /detections already happened and is itself idempotent (see
+        # _post_detection_with_retry), so redeliver the stored result
+        # instead of rerunning the whole video/OCR pipeline for nothing.
+        existing = _load_job_state(job_id) if job_id else None
+        if existing is not None and existing.get("status") in ("completed", "failed"):
+            self._respond(202, {"status": "accepted", "job_id": job_id})
+            threading.Thread(target=_patch_callback,
+                              args=(job.get("callback_url"), existing["result"]),
+                              daemon=True).start()
+            return
+
+        if job_id:
+            _save_job_state(job_id, job, "accepted")
+        try:
+            _job_queue.put_nowait(job)
+        except queue.Full:
+            if job_id:
+                _delete_job_state(job_id)
+            self._respond(503, {"status": "rejected", "error": "job queue full, retry later"},
+                          retry_after=5)
+            return
+
+        self._respond(202, {"status": "accepted", "job_id": job_id})
+
+    def _respond(self, code, body, retry_after=None):
+        self.send_response(code)
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(json.dumps({"status": "accepted", "job_id": job.get("job_id")}).encode())
+        self.wfile.write(json.dumps(body).encode())
 
-        threading.Thread(target=_process_job, args=(job,), daemon=True).start()
+
+def _worker_loop():
+    """Exactly NUM_WORKERS of these run for the process's whole
+    lifetime (see serve()) -- the fixed pool itself is the concurrency
+    bound now, replacing the old semaphore-plus-unbounded-threads
+    approach."""
+    while True:
+        job = _job_queue.get()
+        try:
+            job_id = job.get("job_id")
+            if job_id:
+                _save_job_state(job_id, job, "processing")
+            result = _process_job_inner(job)
+            if job_id:
+                _save_job_state(job_id, job, result.get("status", "failed"), result=result)
+            _patch_callback(job.get("callback_url"), result)
+        except Exception:  # noqa: BLE001
+            # NUM_WORKERS is fixed -- a worker thread that dies here
+            # permanently shrinks the pool until the next restart, so
+            # nothing outside _process_job_inner's own try/except (state
+            # persistence, the callback call itself) is allowed to kill
+            # this loop.
+            traceback.print_exc()
+        finally:
+            _job_queue.task_done()
 
 
 def serve(port=8002):
+    _recover_pending_jobs()
+    for _ in range(NUM_WORKERS):
+        threading.Thread(target=_worker_loop, daemon=True).start()
     print(f"Listening for jobs on http://localhost:{port}/jobs/run")
     ThreadingHTTPServer(("0.0.0.0", port), JobsHandler).serve_forever()
 
