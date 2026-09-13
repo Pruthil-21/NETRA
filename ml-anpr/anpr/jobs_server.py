@@ -226,16 +226,25 @@ def _run_video(path, process_every_n_frames=5, window_size=50):
         best_cluster = max(pct.clusters, key=lambda c: len(c["readings"]))
         representative = pct._reconstruct(best_cluster["readings"])
         best_conf = max(c for _, c, _ in best_cluster["readings"])
-        note = "ok - pattern match" if INDIAN_PLATE_PATTERN.match(representative) \
-            else "ok - fallback, unverified pattern"
-        min_conf = 0.25 if note == "ok - pattern match" else 0.4
-        if best_conf < min_conf or representative in seen_plates:
+        # Strict INDIAN_PLATE_PATTERN only -- the fallback tier (6-12
+        # chars, starts with 2 letters, has some digit and some letter)
+        # exists for the live pipeline's different tradeoff (catch a
+        # genuinely-real plate an OCR glitch broke out of strict shape,
+        # worth a human glancing at during continuous monitoring) but is
+        # real garbage often enough that it doesn't belong in a job
+        # result an officer is meant to trust directly: confirmed on a
+        # real 16-plate job result, 2 of 16 were fallback-tier noise
+        # ("JENR2SS" 45% conf, "RDAC2T2" 59% conf) sitting next to 14
+        # genuine plates with no visual distinction between them.
+        if not INDIAN_PLATE_PATTERN.match(representative):
+            continue
+        if best_conf < 0.25 or representative in seen_plates:
             continue
         seen_plates.add(representative)
         confirmed_results.append({
             "plate_number": representative,
             "confidence": float(round(best_conf, 2)),
-            "note": note,
+            "note": "ok - pattern match",
             "box_area": _box_area_fraction(t.get("box"), frame_shape),
             "elapsed_video_seconds": round(t.get("_last_seen_frame", frame_count) / fps, 2),
         })
@@ -341,7 +350,12 @@ def _process_job_inner(job):
             img = cv2.imread(tmp_path)
             if img is None:
                 raise ValueError(f"Could not read image at {tmp_path}")
-            confirmed = [r for r in detect_plate_from_frame(img, img) if r.get("plate_number")]
+            # Strict INDIAN_PLATE_PATTERN only -- see _run_video's own
+            # comment on why the fallback tier ("ok - fallback,
+            # unverified pattern") doesn't belong in a job result an
+            # officer is meant to trust directly.
+            confirmed = [r for r in detect_plate_from_frame(img, img)
+                         if r.get("plate_number") and INDIAN_PLATE_PATTERN.match(r["plate_number"])]
             for r in confirmed:
                 r["box_area"] = _box_area_fraction(r.get("box"), img.shape)
         elif input_type == "upload_video":
