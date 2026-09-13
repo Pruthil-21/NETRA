@@ -16,13 +16,13 @@ router = APIRouter(prefix="/areas", tags=["areas"])
 
 
 def _guard_area_district(user: dict, district: str):
-    """District-scoped users may only create/edit/delete areas in one of
-    their own effective jurisdictions -- the union of every active
+    """District-scoped users may only view/create/edit/delete areas in one
+    of their own effective jurisdictions -- the union of every active
     posting's district (spec Section 3.3) -- same guard
     routers/postings.py's create_posting already applies."""
     scopes = effective_district_scopes(user)
     if scopes is not None and district not in scopes:
-        raise HTTPException(status_code=403, detail="Cannot manage areas outside your own district")
+        raise HTTPException(status_code=403, detail="Cannot access areas outside your own district")
 
 
 @router.get("", response_model=list[AreaOut])
@@ -45,6 +45,7 @@ def get_area(area_id: int, user=Depends(get_current_user)):
         area = areas_service.get_area(conn, area_id)
         if area is None:
             raise HTTPException(status_code=404, detail="Area not found")
+        _guard_area_district(user, area["district"])
         return area
 
 
