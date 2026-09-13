@@ -157,6 +157,13 @@ CAMERA_ID_MAP = {
     "demo-cam161": 40169,         # APC Circle
     "demo-cam180": 40170,         # Samarkha Chokdi
     "demo-railway-exit": 40171,   # Railway Station
+    # Phone-camera rig (Larix, direct RTSP over Tailscale, MediaMTX host
+    # 100.105.88.26): real registry rows confirmed by Dhruv (2026-09-13).
+    "direct-phone-dhruv": 126218,
+    "direct-phone-2": 126219,
+    "direct-phone-3": 126220,
+    "direct-phone-4": 126221,
+    "direct-phone-5": 126222,
 }
 
 if torch.backends.mps.is_available():

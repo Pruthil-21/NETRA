@@ -224,16 +224,28 @@ class InferenceWorker:
 
 class InferenceWorkerPool:
     """Owns N InferenceWorkers and routes each camera_id to exactly one
-    of them (stable hash, not round-robin -- a camera must always land
-    on the same worker for its whole lifetime so its tracker state stays
-    coherent; round-robin per-frame would scatter one camera's frames
-    across trackers)."""
+    of them (stable per-camera assignment, not round-robin-per-frame --
+    a camera must always land on the same worker for its whole lifetime
+    so its tracker state stays coherent).
+
+    Assignment is first-seen-order, not hash(camera_id) -- Python
+    randomizes str hash seeds per process by default, so hash-based
+    assignment silently changes every run and can collide two cameras
+    onto one worker (leaving another idle) even when num_workers equals
+    the camera count. Confirmed directly: an identical 5-camera/5-worker
+    run that previously spread cleanly across all 5 workers later
+    collided, cratering throughput ~20fps -> ~3fps with one camera
+    missing from the run's tracker summary entirely. First-seen-order
+    assignment is deterministic and guarantees zero collisions whenever
+    num_workers >= the number of distinct cameras.
+    """
 
     def __init__(self, num_workers, event_queue, metrics, confirm_threshold=2, window_size=10):
         self.workers = [
             InferenceWorker(i, event_queue, metrics, confirm_threshold, window_size)
             for i in range(num_workers)
         ]
+        self._assignment = {}
 
     def start(self):
         for w in self.workers:
@@ -245,7 +257,9 @@ class InferenceWorkerPool:
             w.stop()
 
     def worker_for(self, camera_id):
-        return self.workers[hash(camera_id) % len(self.workers)]
+        if camera_id not in self._assignment:
+            self._assignment[camera_id] = self.workers[len(self._assignment) % len(self.workers)]
+        return self._assignment[camera_id]
 
     def submit(self, camera_id, frame, read_at):
         """Returns False (caller should count as dropped) if that
