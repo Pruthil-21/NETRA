@@ -14,6 +14,7 @@ import os
 import tempfile
 import threading
 import traceback
+import uuid
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -80,6 +81,38 @@ except Exception as e:  # noqa: BLE001
     print(f"[WARN] Could not load yolov8s.pt for job processing, falling back to the shared model ({e})")
 
 REQUEST_TIMEOUT_SEC = 10
+
+# Bound #1: concurrent manual-lookup jobs. Each one loads real frames
+# through YOLO+OCR on this same process's GPU/CPU -- unbounded concurrent
+# jobs is the same real failure mode already measured on the live
+# multi-camera pipeline (queue saturation, throughput collapse) applied
+# to this endpoint instead. A semaphore acquired inside the worker
+# thread (not before it starts) queues excess jobs rather than dropping
+# them: do_POST still returns 202 immediately either way, a job just
+# waits its turn to actually start once past the limit.
+MAX_CONCURRENT_JOBS = 3
+_job_slots = threading.Semaphore(MAX_CONCURRENT_JOBS)
+
+# Bound #2: download size. Nothing capped how large a file_url/clip_url
+# response could be -- a wrong or malicious URL could exhaust this
+# machine's disk one job at a time. Checked against both a declared
+# Content-Length (fails fast) and actual bytes received (a header can
+# lie or be absent), whichever trips first.
+MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
+# Idempotent event_id: derived from (job_id, plate_number) instead of a
+# fresh random UUID per POST, so re-processing the SAME job (a retry
+# after a timeout, a duplicate dispatch) reproduces the SAME event_id
+# for the SAME plate every time. backend-watchlist dedups on event_id
+# server-side (see events.py's own docstring) -- a stable id is what
+# actually makes that dedup protect us here; a random one per attempt
+# would create a genuine duplicate detection row on every retry instead
+# of a safe no-op resend.
+_JOB_EVENT_NAMESPACE = uuid.UUID("6f6b1f4a-3f0d-4b1a-9c1e-9a7b2f8e5c3d")
+
+
+def _job_event_id(job_id, plate_number):
+    return str(uuid.uuid5(_JOB_EVENT_NAMESPACE, f"{job_id}:{plate_number}"))
 
 
 def _box_area_fraction(box, frame_shape):
@@ -221,11 +254,25 @@ def _download_to_temp(url, default_suffix, headers=None):
     reliable) direct-HTTP-read support."""
     resp = requests.get(url, headers=headers, timeout=30, stream=True)
     resp.raise_for_status()
+    declared_length = resp.headers.get("Content-Length")
+    if declared_length is not None and int(declared_length) > MAX_DOWNLOAD_BYTES:
+        raise ValueError(f"Declared size {int(declared_length)} bytes exceeds "
+                          f"the {MAX_DOWNLOAD_BYTES} byte limit")
     suffix = os.path.splitext(url.split("?")[0])[1] or default_suffix
     fd, path = tempfile.mkstemp(suffix=suffix)
-    with os.fdopen(fd, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=1 << 20):
-            f.write(chunk)
+    written = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                written += len(chunk)
+                if written > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"Download exceeded the {MAX_DOWNLOAD_BYTES} byte "
+                                      f"limit (Content-Length was absent or wrong)")
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(path):
+            os.remove(path)
+        raise
     return path
 
 
@@ -241,7 +288,14 @@ def _process_job(job):
     """Runs off the request thread (do_POST already returned 202) --
     a job can take real time (a full video, a download), and the
     contract here is a later PATCH callback, not a synchronous response
-    body."""
+    body. Blocks on _job_slots first (see MAX_CONCURRENT_JOBS) -- a job
+    beyond the concurrency limit just waits its turn here rather than
+    running unbounded alongside everything else already in flight."""
+    with _job_slots:
+        _process_job_inner(job)
+
+
+def _process_job_inner(job):
     job_id = job.get("job_id")
     camera_id_int = job.get("camera_id")
     callback_url = job.get("callback_url")
@@ -313,19 +367,55 @@ def _process_job(job):
         # from the shared table, not just from this job's own summary.
         posted = []
         for r in confirmed:
+            # detected_at: required per-result for a timestamped
+            # video/clip (the real in-footage moment), omitted for an
+            # un-timestamped upload_video or any photo -- per Pruthil's
+            # contract (2026-09-12). Never time.time(): that's exactly
+            # the "now(), not the real capture moment" mistake the
+            # contract explicitly warns against, so this only gets
+            # computed when both a real anchor (recording_start_time)
+            # and a real offset (elapsed_video_seconds, from
+            # _run_video) actually exist -- otherwise left unset, not
+            # guessed. Computed BEFORE building the event (not just for
+            # the callback afterward) so it actually reaches the
+            # detection database via to_backend_payload(), not only the
+            # job's own summary -- a real gap found in review: this used
+            # to land in the callback only.
+            detected_at = None
+            if recording_start_dt is not None and r.get("elapsed_video_seconds") is not None:
+                detected_at_dt = recording_start_dt + timedelta(seconds=r["elapsed_video_seconds"])
+                detected_at = _format_iso8601(detected_at_dt)
+
             event = DetectionEvent(
                 camera_id=str(camera_id_int),
                 plate_number=r["plate_number"],
                 confidence=r.get("confidence"),
                 detection_type=r.get("note", ""),
+                # Deterministic, not a fresh random UUID -- see
+                # _job_event_id's own docstring. Makes a retried job
+                # (same job_id, same plates) a safe no-op resend on
+                # backend-watchlist's side instead of a duplicate row.
+                event_id=_job_event_id(job_id, r["plate_number"]),
+                detected_at=detected_at,
             )
             response = requests.post(
                 DETECTION_API_URL, json=event.to_backend_payload(camera_id_int),
                 headers={"X-Internal-Key": INTERNAL_KEY}, timeout=REQUEST_TIMEOUT_SEC,
             )
-            if response.status_code != 201:
+            if response.status_code not in (201, 409):
                 print(f"[WARN] POST /detections returned {response.status_code} for "
                       f"plate {r['plate_number']!r}: {response.text[:200]}")
+                continue
+            if response.status_code == 409:
+                # Real collision, not our own retry: this event_id is
+                # derived from (job_id, plate_number), so a 409 here
+                # means a DIFFERENT detection already legitimately owns
+                # it -- per the handoff's own guidance (see
+                # watchlist_client.py), retrying with the same id just
+                # repeats the same conflict, so this plate is skipped
+                # rather than silently misreported as our own.
+                print(f"[WARN] event_id collision (409) for plate {r['plate_number']!r} -- "
+                      f"not our own detection, skipping")
                 continue
             result = {
                 "detection_id": response.json()["detection"]["id"],
@@ -334,18 +424,8 @@ def _process_job(job):
             }
             if r.get("box_area") is not None:
                 result["box_area"] = r["box_area"]
-            # detected_at: required per-result for a timestamped
-            # video/clip (the real in-footage moment), omitted for an
-            # un-timestamped upload_video or any photo -- per Pruthil's
-            # contract (2026-09-12). Never time.time(): that's exactly
-            # the "now(), not the real capture moment" mistake the
-            # contract explicitly warns against, so this only gets set
-            # when both a real anchor (recording_start_time) and a real
-            # offset (elapsed_video_seconds, from _run_video) actually
-            # exist -- otherwise left unset, not guessed.
-            if recording_start_dt is not None and r.get("elapsed_video_seconds") is not None:
-                detected_at_dt = recording_start_dt + timedelta(seconds=r["elapsed_video_seconds"])
-                result["detected_at"] = _format_iso8601(detected_at_dt)
+            if detected_at is not None:
+                result["detected_at"] = detected_at
             posted.append(result)
 
         if not posted:

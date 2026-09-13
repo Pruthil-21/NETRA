@@ -37,6 +37,14 @@ class DetectionEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)  # unix epoch seconds
     model_version: str = MODEL_VERSION
+    # ISO 8601 string, or None. Live detections (streaming.py) never set
+    # this -- "now", timestamped server-side at receipt, is already
+    # correct for them. jobs_server.py sets it for a timestamped
+    # video/archive_clip job, where the real in-footage moment is known
+    # and IS a genuine backfill (the handoff's own stated use case for
+    # this field) -- see its own detected_at computation
+    # (recording_start_time + elapsed_video_seconds).
+    detected_at: str = None
 
     def to_backend_payload(self, numeric_camera_id):
         """The JSON body actually POSTed to backend-watchlist. Takes the
@@ -47,18 +55,17 @@ class DetectionEvent:
         throughout anpr/streaming.py and anpr/watchlist_client.py, not
         the backend's numeric id.
 
-        Deliberately does NOT send `detected_at`: the real handoff
-        (2026-09-07) documents it as ISO 8601, optional, "omit it and we
-        timestamp it server-side at receipt time -- only send this if
-        you need to backfill a specific capture time." This event's own
-        `timestamp` is a raw Unix-epoch float (see the field above), not
-        ISO 8601 -- sending it as `detected_at` would have been a real
-        format mismatch, not just an unnecessary field, for every live
-        detection this pipeline produces (none of them are backfills).
-        Kept on the Python object for our own logging/audit use; just
-        not put on the wire.
+        detected_at is only included when actually set (see the field's
+        own docstring) -- the real handoff (2026-09-07) documents it as
+        ISO 8601, optional, "omit it and we timestamp it server-side at
+        receipt time -- only send this if you need to backfill a
+        specific capture time." This event's own `timestamp` field is a
+        raw Unix-epoch float, not ISO 8601 -- sending IT as detected_at
+        would have been a real format mismatch, not just an unnecessary
+        field, which is why they're kept as two separate fields rather
+        than reusing one for both purposes.
         """
-        return {
+        payload = {
             "camera_id": numeric_camera_id,
             "plate_number": self.plate_number,
             "confidence": self.confidence,
@@ -76,3 +83,6 @@ class DetectionEvent:
             "model_version": self.model_version,
             "detection_type": self.detection_type,
         }
+        if self.detected_at is not None:
+            payload["detected_at"] = self.detected_at
+        return payload
