@@ -391,4 +391,18 @@ export const adminService = {
     });
     if (!res.ok) throw new Error(`Failed to mark notification read: HTTP ${res.status}`);
   },
+
+  async markAllNotificationsRead(): Promise<void> {
+    const res = await fetch(`${REGISTRY_API_URL}/notifications/read-all`, {
+      method: 'POST', headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to mark all notifications read: HTTP ${res.status}`);
+  },
+
+  async clearAllNotifications(): Promise<void> {
+    const res = await fetch(`${REGISTRY_API_URL}/notifications`, {
+      method: 'DELETE', headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`Failed to clear notifications: HTTP ${res.status}`);
+  },
 };
