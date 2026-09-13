@@ -70,11 +70,6 @@ authInternalUsers:
     # Permissions.
     permissions:
       # Available actions are: publish, read, playback, api, metrics, pprof.
-      - action: publish
-        # Paths can be set to further restrict access to a specific path.
-        # An empty path means any path.
-        # Regular expressions can be used by using a tilde as prefix.
-        path:
       - action: read
         path:
       - action: playback

@@ -5,6 +5,10 @@ umask 077
 ARCHIVE_DIR="${ARCHIVE_DIR:-/recordings}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
+if [[ ! "${MEDIAMTX_PUBLISH_PASSWORD:-}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+  echo "MEDIAMTX_PUBLISH_PASSWORD must be 64 hexadecimal characters" >&2
+  exit 1
+fi
 EDGE_NODE_ID="${EDGE_NODE_ID:-edge-local-001}"
 STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
@@ -207,7 +211,7 @@ camera_supervisor() (
   [[ "$camera_id" =~ ^cam[0-9]+$ ]] || { log "Invalid archive camera ID"; exit 1; }
   camera_number="${camera_id#cam}"
   initial_delay=$((10#$camera_number % CHECK_SECONDS))
-  target="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
+  target="rtsp://publisher:${MEDIAMTX_PUBLISH_PASSWORD}@${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
 
   stop_publisher() {
     trap - EXIT INT TERM

@@ -57,3 +57,30 @@ def coverage(rows, start, end, tolerance=0.15):
             return False
         cursor = max(cursor, row["end_at"])
     return (end - cursor).total_seconds() <= tolerance
+
+
+def playback_plan(rows, start, end):
+    """First segment wins overlapping time; return disjoint half-open media slices.
+
+    Original media and timestamps remain untouched. A later segment contributes
+    only time not already covered, including when it is completely nested.
+    """
+    cursor = start
+    parts = []
+    for index, row in enumerate(rows):
+        a, b = max(start, cursor, row['start_at']), min(end, row['end_at'])
+        if a < b:
+            parts.append({'index': index, 'start': a, 'end': b,
+                          'offset': (a-row['start_at']).total_seconds(),
+                          'duration': (b-a).total_seconds()})
+            cursor = b
+    return parts
+
+
+def has_overlap(rows):
+    cursor = None
+    for row in rows:
+        if cursor is not None and row['start_at'] < cursor:
+            return True
+        cursor = max(cursor, row['end_at']) if cursor else row['end_at']
+    return False

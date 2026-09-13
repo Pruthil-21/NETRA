@@ -9,6 +9,11 @@ services:
   mediamtx:
     logging: *stream-logging
     image: bluenviron/mediamtx:1.20.0
+    environment:
+      MTX_AUTHINTERNALUSERS_2_USER: publisher
+      MTX_AUTHINTERNALUSERS_2_PASS: '${MEDIAMTX_PUBLISH_PASSWORD:?set a separate hexadecimal publishing password}'
+      MTX_AUTHINTERNALUSERS_2_PERMISSIONS_0_ACTION: publish
+      MTX_AUTHINTERNALUSERS_2_PERMISSIONS_0_PATH: '~^stream/(demo-|direct-)[a-zA-Z0-9-]+$$'
     container_name: netra-mediamtx
     restart: unless-stopped
     cpus: "${MEDIAMTX_CPUS:-2.0}"
@@ -40,6 +45,7 @@ services:
       - mediamtx
     environment:
       ARCHIVE_DIR: /recordings
+      MEDIAMTX_PUBLISH_PASSWORD: '${MEDIAMTX_PUBLISH_PASSWORD:?set publishing password}'
       MEDIAMTX_HOST: mediamtx
       EDGE_NODE_ID: "${EDGE_NODE_ID:-edge-local-001}"
       STREAM_PREFIX: direct

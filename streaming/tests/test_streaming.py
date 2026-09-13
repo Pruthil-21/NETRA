@@ -88,6 +88,7 @@ class RelayTests(unittest.TestCase):
             harness = '''set -Eeuo pipefail
 MEDIAMTX_HOST=fixture
 MEDIAMTX_PORT=8554
+MEDIAMTX_PUBLISH_PASSWORD=fixture
 STREAM_PREFIX=direct
 TRANSCODE_CAMERAS='^never$'
 ffmpeg() { echo attempt >> "$TEST_MARKER"; return 1; }

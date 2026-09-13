@@ -41,6 +41,7 @@ def wait_playlist(url, timeout=20):
 
 def scenario(variant, gop):
     name = 'digdhrishti-audit-' + uuid.uuid4().hex[:10]
+    password = uuid.uuid4().hex + uuid.uuid4().hex
     publishers = []
     with tempfile.TemporaryDirectory(prefix='stream-audit-') as directory:
         logs = open(Path(directory) / 'ffmpeg.log', 'w')
@@ -49,6 +50,9 @@ def scenario(variant, gop):
             command('docker', 'run', '-d', '--name', name,
                     '-p', '127.0.0.1::8554', '-p', '127.0.0.1::8888',
                     '-v', str(ROOT / 'mediamtx.yml') + ':/mediamtx.yml:ro',
+                    '-e', 'MTX_AUTHINTERNALUSERS_2_USER=publisher',
+                    '-e', 'MTX_AUTHINTERNALUSERS_2_PASS=' + password,
+                    '-e', 'MTX_AUTHINTERNALUSERS_2_PERMISSIONS_0_ACTION=publish',
                     '-e', 'MTX_HLSVARIANT=' + variant,
                     '-e', 'MTX_RTSPTRANSPORTS=tcp', '-e', 'MTX_RTMP=no',
                     '-e', 'MTX_WEBRTC=no', '-e', 'MTX_SRT=no',
@@ -64,7 +68,7 @@ def scenario(variant, gop):
                     '-pix_fmt', 'yuv420p', '-g', str(gop), '-keyint_min', str(gop),
                     '-bf', '0', '-sc_threshold', '0', '-b:v', '900k', '-threads', '1',
                     '-f', 'rtsp', '-rtsp_transport', 'tcp',
-                    f'rtsp://127.0.0.1:{rtsp}/audit/cam{i}'], stdout=logs, stderr=logs)
+                    f'rtsp://publisher:{password}@127.0.0.1:{rtsp}/audit/cam{i}'], stdout=logs, stderr=logs)
             start = time.monotonic()
             for i in range(4): publishers.append(publish(i))
             urls = [f'http://127.0.0.1:{hls}/audit/cam{i}/index.m3u8?cookieCheck=1' for i in range(4)]

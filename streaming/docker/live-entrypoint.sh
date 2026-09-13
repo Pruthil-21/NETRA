@@ -5,6 +5,10 @@ umask 077
 PORTAL_URL="${PORTAL_URL:-https://cctv.corp8.cloud}"
 MEDIAMTX_HOST="${MEDIAMTX_HOST:-mediamtx}"
 MEDIAMTX_PORT="${MEDIAMTX_PORT:-8554}"
+if [[ ! "${MEDIAMTX_PUBLISH_PASSWORD:-}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+  echo "MEDIAMTX_PUBLISH_PASSWORD must be 64 hexadecimal characters" >&2
+  exit 1
+fi
 PASSWORD_FILE="${ORGANIZER_PASSWORD_FILE:-/run/secrets/organizer_password}"
 EMAIL_FILE="${ORGANIZER_EMAIL_FILE:-/run/secrets/organizer_email}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
@@ -197,7 +201,7 @@ publish_camera() {
   local target_url
 
   source_url="${PORTAL_URL%/}/$camera_id/index.m3u8"
-  target_url="rtsp://${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
+  target_url="rtsp://publisher:${MEDIAMTX_PUBLISH_PASSWORD}@${MEDIAMTX_HOST}:${MEDIAMTX_PORT}/stream/${STREAM_PREFIX}-${camera_id}"
 
   if [[ "$camera_id" =~ $TRANSCODE_CAMERAS ]]; then
     log "[$camera_id] relay mode=H.264 transcode"
