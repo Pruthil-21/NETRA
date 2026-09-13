@@ -36,8 +36,15 @@ def test_camera_recordings_404s_for_a_camera_that_does_not_exist(client, viewer_
 
 
 def test_camera_recordings_reports_unavailable_when_service_unset(
-    client, viewer_headers, officer_headers, gap_analysis_test_cameras
+    client, viewer_headers, officer_headers, monkeypatch, gap_analysis_test_cameras
 ):
+    # Force-cleared rather than assumed absent -- a real deployment's own
+    # .env legitimately configures these (see recordings_service.py), so
+    # relying on the ambient environment to simulate "unset" is exactly the
+    # kind of test that silently breaks once a real value is ever added.
+    monkeypatch.delenv("RECORDING_SERVICE_URL", raising=False)
+    monkeypatch.delenv("RECORDING_SERVICE_KEY", raising=False)
+
     created = client.post(
         "/cameras",
         json={
