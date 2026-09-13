@@ -4,6 +4,7 @@ from app.config import settings
 from app.db import get_conn
 from app.main import app
 from app.services import email_service
+from app.services.rbac_service import VALID_PERMISSIONS
 from fastapi.testclient import TestClient
 
 
@@ -49,13 +50,24 @@ def client():
         yield c
 
 
-def make_token(role: str, sub: str = "test-user"):
-    return jwt.encode({"sub": sub, "role": role}, settings.jwt_secret, algorithm="HS256")
+def make_token(role: str, sub: str = "test-user", permissions: list[str] | None = None):
+    payload = {"sub": sub, "role": role}
+    if permissions is not None:
+        payload["permissions"] = permissions
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
 @pytest.fixture
 def officer_headers():
-    return {"Authorization": f"Bearer {make_token('officer')}"}
+    # Explicit, full permission grant -- auth.py no longer trusts a bare
+    # {"role": "officer"} token with no permissions claim at all (that was
+    # a real, live-exploitable auth bypass; see require_permission/
+    # has_permission). Granting every VALID_PERMISSIONS entry here keeps
+    # this fixture meaning what it always meant ("an officer who can do
+    # anything the app supports") for the ~24 existing tests using it,
+    # without any of them needing to know or care about specific permission
+    # strings themselves.
+    return {"Authorization": f"Bearer {make_token('officer', permissions=sorted(VALID_PERMISSIONS))}"}
 
 
 @pytest.fixture

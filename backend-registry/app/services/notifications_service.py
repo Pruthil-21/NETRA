@@ -41,3 +41,15 @@ def mark_read(conn, officer_id: int, notification_id: int) -> bool:
             (notification_id, officer_id),
         )
         return cur.fetchone() is not None
+
+
+def mark_all_read(conn, officer_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute("UPDATE notifications SET read = true WHERE officer_id = %s AND NOT read", (officer_id,))
+    conn.commit()
+
+
+def clear_all(conn, officer_id: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM notifications WHERE officer_id = %s", (officer_id,))
+    conn.commit()

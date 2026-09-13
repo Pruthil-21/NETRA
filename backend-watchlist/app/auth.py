@@ -42,16 +42,17 @@ def require_internal_key(x_internal_key: str = Header(...)):
 
 
 def require_permission(permission: str):
-    """Additive alongside require_role, not a replacement for it. A
-    pre-RBAC hand-crafted token (role: "officer"/"admin", no permissions
-    claim -- what every existing test fixture and the demo JWT use) is
-    treated as fully trusted here, exactly matching what require_role("officer")
-    already does for it everywhere else in this codebase. A real RBAC-issued
-    token (see auth_service.issue_token) always carries an explicit
-    permissions list and is checked against it."""
+    """Additive alongside require_role, not a replacement for it. A real
+    RBAC-issued token (see auth_service.issue_token) always carries an
+    explicit permissions list and is checked against it -- a token with no
+    permissions claim at all has none, full stop. (A prior version of this
+    function treated a bare {"role": "officer"/"admin"} token with no
+    permissions claim as fully trusted, matching a legacy pre-RBAC
+    convention -- that was a live, unconditional auth bypass usable by
+    anyone who could craft any token in that shape, and has been removed.
+    Tests needing broad access grant an explicit permissions list instead;
+    see tests/conftest.py's officer_headers fixture.)"""
     def checker(user=Depends(get_current_user)):
-        if user.get("role") in ("officer", "admin") and "permissions" not in user:
-            return user
         if permission not in user.get("permissions", []):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         return user
@@ -62,6 +63,4 @@ def has_permission(user: dict, permission: str) -> bool:
     """Same logic as require_permission's checker, usable inline when the
     check is conditional rather than the route's own Depends (e.g. only
     required for one branch of an endpoint, not every request to it)."""
-    if user.get("role") in ("officer", "admin") and "permissions" not in user:
-        return True
     return permission in user.get("permissions", [])

@@ -28,3 +28,21 @@ def mark_notification_read(notification_id: int, user=Depends(get_current_user))
     with get_conn() as conn:
         if not notifications_service.mark_read(conn, int(officer_id), notification_id):
             raise HTTPException(status_code=404, detail="Notification not found")
+
+
+@router.post("/read-all", status_code=204)
+def mark_all_notifications_read(user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account")
+    with get_conn() as conn:
+        notifications_service.mark_all_read(conn, int(officer_id))
+
+
+@router.delete("", status_code=204)
+def clear_all_notifications(user=Depends(get_current_user)):
+    officer_id = user.get("sub")
+    if not officer_id or not str(officer_id).isdigit():
+        raise HTTPException(status_code=400, detail="This session has no officer account")
+    with get_conn() as conn:
+        notifications_service.clear_all(conn, int(officer_id))

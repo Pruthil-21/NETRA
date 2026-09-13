@@ -32,7 +32,12 @@ vi.mock('@/services/alertsService', () => ({
 }));
 
 vi.mock('@/services/adminService', () => ({
-  adminService: { listNotifications: vi.fn(), markNotificationRead: vi.fn().mockResolvedValue(undefined) },
+  adminService: {
+    listNotifications: vi.fn(),
+    markNotificationRead: vi.fn().mockResolvedValue(undefined),
+    markAllNotificationsRead: vi.fn().mockResolvedValue(undefined),
+    clearAllNotifications: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 import { alertsService } from '@/services/alertsService';
@@ -79,5 +84,36 @@ describe('NotificationCenter', () => {
 
     fireEvent.click(await screen.findByText(/granted the 'station_officer' role/i));
     await waitFor(() => expect(adminService.markNotificationRead).toHaveBeenCalledWith(1));
+  });
+
+  it('opening the panel marks unread notifications read and drops the badge count', async () => {
+    render(<NotificationCenter />);
+    const bell = await screen.findByRole('button', { name: /alerts and notifications/i });
+    await waitFor(() => expect(bell).toHaveTextContent('2'));
+
+    fireEvent.click(bell);
+    await waitFor(() => expect(adminService.markAllNotificationsRead).toHaveBeenCalled());
+    // 1 nearby alert remains; the 1 unread notification no longer counts.
+    await waitFor(() => expect(bell).toHaveTextContent('1'));
+  });
+
+  it('does not call mark-all-read when there is nothing unread to clear', async () => {
+    (adminService.listNotifications as any).mockResolvedValue([{ ...NOTIFICATION, read: true }]);
+    render(<NotificationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /alerts and notifications/i }));
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: /notifications/i })).toBeInTheDocument());
+    expect(adminService.markAllNotificationsRead).not.toHaveBeenCalled();
+  });
+
+  it('Clear all removes every notification and calls the clear-all endpoint', async () => {
+    render(<NotificationCenter />);
+    fireEvent.click(await screen.findByRole('button', { name: /alerts and notifications/i }));
+    fireEvent.click(screen.getByRole('tab', { name: /notifications/i }));
+
+    fireEvent.click(await screen.findByRole('button', { name: /clear all/i }));
+    await waitFor(() => expect(adminService.clearAllNotifications).toHaveBeenCalled());
+    expect(screen.queryByText(/granted the 'station_officer' role/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/nothing yet/i)).toBeInTheDocument();
   });
 });

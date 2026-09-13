@@ -112,12 +112,38 @@ export function NotificationCenter() {
     }
   };
 
+  const handleClearAll = async () => {
+    const prev = notifications;
+    setNotifications([]);
+    try {
+      await adminService.clearAllNotifications();
+    } catch {
+      setNotifications(prev);
+    }
+  };
+
+  // Opening the panel is "seeing" the notifications -- the header badge
+  // should not keep counting things the officer has already looked at, and
+  // requiring a click per-notification to clear it was the actual complaint.
+  // Done as a direct event-handler action (not an effect keyed on `open`)
+  // so it fires exactly once per open, not on every re-render.
+  const handleToggleOpen = () => {
+    const willOpen = !open;
+    setOpen(willOpen);
+    if (willOpen && unreadCount > 0) {
+      setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })));
+      adminService.markAllNotificationsRead().catch(() => {
+        // Non-fatal: the next poll will correct any drift.
+      });
+    }
+  };
+
   return (
     <div className="relative" ref={containerRef}>
       <button
         type="button"
         aria-label="Alerts and notifications"
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggleOpen}
         className="relative p-1.5 text-slate-400 hover:text-white bg-panel-raised rounded border border-line"
       >
         <Bell size={14} />
@@ -217,6 +243,15 @@ export function NotificationCenter() {
             ) : (
               <>
                 {notifications.length === 0 && <div className="px-3 py-3 text-slate-500">Nothing yet.</div>}
+                {notifications.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearAll}
+                    className="w-full text-center px-3 py-1.5 text-slate-400 hover:text-white hover:bg-panel-raised border-b border-line"
+                  >
+                    Clear all
+                  </button>
+                )}
                 {notifications.map((n) => (
                   <button
                     key={n.id}

@@ -237,7 +237,16 @@ export function RecordingPlayer({
     fetchRecordingSegments(cameraId, { start: windowStart, end: windowEnd })
       .then((result) => {
         if (cancelled) return;
-        const segment = result.segments[0];
+        // Must be the segment that actually covers playPointMs, not just
+        // whichever one the service listed first -- a narrow window
+        // straddling a gap can come back with a segment that starts after
+        // (or ends before) the requested moment, and blindly playing that
+        // one silently shows the wrong footage instead of "no footage here."
+        const segment = result.segments.find((s) => {
+          const segStartMs = new Date(s.start).getTime();
+          const segEndMs = segStartMs + s.duration * 1000;
+          return playPointMs >= segStartMs && playPointMs < segEndMs;
+        });
         if (!segment) {
           setActiveClip(null);
           return;

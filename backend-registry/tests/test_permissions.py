@@ -13,13 +13,28 @@ def _rbac_token(role: str, permissions: list[str], scope_type: str = "platform",
     )
 
 
-def test_legacy_officer_token_passes_any_permission_check(client):
-    # officer_headers fixture (conftest.py) issues a hand-crafted {"role": "officer"}
-    # token with no permissions claim -- must keep working unchanged everywhere.
+def test_officer_role_token_with_empty_permissions_can_still_hit_an_ungated_endpoint(client):
+    # /auth/me only requires an authenticated user (get_current_user), never
+    # a specific permission -- so a role="officer" token with an explicit,
+    # empty permissions list still reaches it. This is unrelated to
+    # require_permission/has_permission's own behavior (see
+    # test_rbac_token_without_permission_is_rejected_on_a_gated_endpoint for
+    # that): a token with NO permissions claim at all used to bypass every
+    # require_permission check unconditionally -- that bypass has been
+    # removed, and is covered directly below.
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {_rbac_token('officer', [])}"})
-    # legacy tokens have no badge_number/scope fields either -- /auth/me itself
-    # isn't meant for them, this just proves require_permission doesn't reject them
     assert resp.status_code in (200, 422)
+
+
+def test_officer_role_token_with_no_permissions_claim_at_all_is_rejected_on_a_gated_endpoint(client):
+    # The actual legacy shape that used to be trusted unconditionally:
+    # {"role": "officer"} with the permissions claim entirely absent (not
+    # merely empty). require_permission must reject it like any other
+    # token with no granted permissions -- this used to return 200/201
+    # regardless of the endpoint's required permission.
+    token = pyjwt.encode({"sub": "1", "role": "officer"}, settings.jwt_secret, algorithm="HS256")
+    resp = client.post("/areas", json={"name": "permcheck-probe", "village_id": 1}, headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 403
 
 
 def test_rbac_token_with_permission_is_allowed(client, officer_headers):

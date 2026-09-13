@@ -263,6 +263,63 @@ describe('RecordingPlayer', () => {
     expect(secondVideo.currentTime).toBe(150);
   });
 
+  it('plays the segment that actually contains the requested moment, not just whichever one is listed first', async () => {
+    // The narrow re-fetch around a play point can come back with more than
+    // one segment (e.g. a short leftover sliver from just before a gap,
+    // followed by the segment that actually covers the requested moment).
+    // Blindly taking segments[0] would silently play the wrong footage.
+    vi.mocked(fetchRecordingSegments).mockImplementation(async (_cameraId, range) => {
+      if (!range) return { available: true, segments: [], service_reachable: true };
+      return {
+        available: true,
+        segments: [
+          { start: '2026-09-05T07:58:00.000Z', duration: 60, url: 'https://playback.example/get?token=stale-sliver' },
+          { start: '2026-09-05T08:04:00.000Z', duration: 600, url: 'https://playback.example/get?token=covers-request' },
+        ],
+        service_reachable: true,
+      };
+    });
+
+    render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
+    const slider = screen.getByLabelText('Scrub recorded footage timeline');
+    seekTo(slider, 300, 600); // 08:05:00 -- inside the second segment (08:04:00-08:14:00), not the first
+    fireEvent.click(screen.getByText('Play from here'));
+
+    const video = await waitFor(() => {
+      const el = document.querySelector('video');
+      expect(el).toHaveAttribute('src', 'https://playback.example/get?token=covers-request');
+      return el as HTMLVideoElement;
+    });
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(60); // 08:05:00 is 60s into the 08:04:00 segment
+  });
+
+  it('shows "no footage" instead of playing an unrelated segment when the requested moment falls in a gap', async () => {
+    // Every segment the narrow re-fetch returns lies entirely outside the
+    // requested play point -- a real gap, not just a listing-order issue.
+    vi.mocked(fetchRecordingSegments).mockImplementation(async (_cameraId, range) => {
+      if (!range) return { available: true, segments: [], service_reachable: true };
+      return {
+        available: true,
+        segments: [
+          { start: '2026-09-05T07:58:00.000Z', duration: 60, url: 'https://playback.example/get?token=before-gap' },
+          { start: '2026-09-05T08:10:00.000Z', duration: 60, url: 'https://playback.example/get?token=after-gap' },
+        ],
+        service_reachable: true,
+      };
+    });
+
+    render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
+    const slider = screen.getByLabelText('Scrub recorded footage timeline');
+    seekTo(slider, 300, 600); // 08:05:00 -- falls in the gap between both returned segments
+    fireEvent.click(screen.getByText('Play from here'));
+
+    await waitFor(() => {
+      expect(screen.getByText('No recorded footage at this exact time.')).toBeInTheDocument();
+    });
+    expect(document.querySelector('video')).toBeNull();
+  });
+
   it('renders a marker for a confirmed detection and jumps playback there when clicked', async () => {
     vi.mocked(detectionService.search).mockResolvedValue([
       { id: 1, plate_number: 'GJ01AB1234', camera_id: 7, detected_at: '2026-09-05T08:05:00.000Z', confidence: 0.9 },
