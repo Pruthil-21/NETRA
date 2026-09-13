@@ -509,6 +509,103 @@ def test_file_endpoint_404s_for_an_archive_clip_job_with_no_stored_file(client, 
     assert file_resp.status_code == 404
 
 
+def _force_job_pending(job_id: int) -> None:
+    """_no_real_dispatch (autouse above) forces anpr_pipeline_url to "" for
+    this whole file, so dispatch_to_ml_anpr -- run synchronously by
+    TestClient's BackgroundTasks -- already fails the job by the time the
+    submit response comes back (see
+    test_unconfigured_pipeline_fails_the_job_with_a_clear_message). Tests
+    that need to exercise a genuinely still-pending/processing job reset it
+    back directly, same as test_photo_with_multiple_plates_orders_results_
+    nearest_to_farthest forces input_type above."""
+    from app.database import get_connection
+
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE anpr_jobs SET status = 'pending', error_message = NULL WHERE id = %s", (job_id,))
+        conn.commit()
+
+
+def test_cancelling_a_pending_job_succeeds(client, anpr_test_jobs, source_camera_id):
+    resp = client.post(
+        "/anpr-jobs/archive-clip",
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        headers=_officer_headers(),
+    )
+    job_id = resp.json()["id"]
+    anpr_test_jobs.append(job_id)
+    _force_job_pending(job_id)
+
+    cancel_resp = client.post(f"/anpr-jobs/{job_id}/cancel", headers=_officer_headers())
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["status"] == "cancelled"
+
+    get_resp = client.get(f"/anpr-jobs/{job_id}", headers=_officer_headers())
+    assert get_resp.json()["status"] == "cancelled"
+
+
+def test_cancelling_an_already_terminal_job_is_rejected(client, internal_headers, anpr_test_jobs, source_camera_id):
+    resp = client.post(
+        "/anpr-jobs/archive-clip",
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        headers=_officer_headers(),
+    )
+    job_id = resp.json()["id"]
+    anpr_test_jobs.append(job_id)
+    client.patch(
+        f"/anpr-jobs/{job_id}",
+        json={"status": "completed", "results": []},
+        headers=internal_headers,
+    )
+
+    cancel_resp = client.post(f"/anpr-jobs/{job_id}/cancel", headers=_officer_headers())
+    assert cancel_resp.status_code == 409
+
+
+def test_cancelling_someone_elses_job_is_rejected(client, anpr_test_jobs, source_camera_id):
+    resp = client.post(
+        "/anpr-jobs/archive-clip",
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        headers=_officer_headers(badge="ANPR-TEST-OWNER"),
+    )
+    job_id = resp.json()["id"]
+    anpr_test_jobs.append(job_id)
+
+    cancel_resp = client.post(f"/anpr-jobs/{job_id}/cancel", headers=_officer_headers(badge="ANPR-TEST-OTHER"))
+    assert cancel_resp.status_code == 404
+
+    # Confirm it's untouched, not silently cancelled.
+    get_resp = client.get(f"/anpr-jobs/{job_id}", headers=_officer_headers(badge="ANPR-TEST-OWNER"))
+    assert get_resp.json()["status"] != "cancelled"
+
+
+def test_late_completion_callback_on_a_cancelled_job_is_a_noop(client, internal_headers, anpr_test_jobs, source_camera_id):
+    resp = client.post(
+        "/anpr-jobs/archive-clip",
+        json={"source_camera_id": source_camera_id, "clip_start": "2026-09-12T10:00:00Z", "clip_end": "2026-09-12T10:05:00Z"},
+        headers=_officer_headers(),
+    )
+    job_id = resp.json()["id"]
+    anpr_test_jobs.append(job_id)
+    _force_job_pending(job_id)
+
+    cancel_resp = client.post(f"/anpr-jobs/{job_id}/cancel", headers=_officer_headers())
+    assert cancel_resp.status_code == 200
+
+    # ml-anpr has no idea it was cancelled on our side -- its callback must
+    # not resurrect the job back to completed.
+    patch_resp = client.patch(
+        f"/anpr-jobs/{job_id}",
+        json={"status": "completed", "results": [{"detection_id": 1, "plate_number": "GJ01ZZ0001"}]},
+        headers=internal_headers,
+    )
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["status"] == "cancelled"
+
+    get_resp = client.get(f"/anpr-jobs/{job_id}", headers=_officer_headers())
+    assert get_resp.json()["status"] == "cancelled"
+
+
 def test_uploading_with_an_invalid_district_is_rejected(client, anpr_test_jobs):
     resp = client.post(
         "/anpr-jobs/upload",

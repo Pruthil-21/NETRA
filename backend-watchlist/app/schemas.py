@@ -220,7 +220,7 @@ class AnprJobResultOut(BaseModel):
 class AnprJobOut(BaseModel):
     id: int
     input_type: Literal["upload_video", "upload_image", "archive_clip"]
-    status: Literal["pending", "processing", "completed", "failed"]
+    status: Literal["pending", "processing", "completed", "failed", "cancelled"]
     submitted_by: str
     district: str
     original_filename: Optional[str] = None

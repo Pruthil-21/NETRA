@@ -19,7 +19,7 @@ from .routers import (
     vehicle_lookup,
     watchlist,
 )
-from .services import alerts_stream, traffic_alerts_service
+from .services import alerts_stream, anpr_jobs_service, traffic_alerts_service
 
 configure_logging()
 
@@ -53,6 +53,25 @@ async def _start_traffic_alert_evaluation_loop():
 @app.on_event("shutdown")
 async def _stop_traffic_alert_evaluation_loop():
     task = getattr(app.state, "traffic_alert_task", None)
+    if task is not None:
+        task.cancel()
+
+
+@app.on_event("startup")
+async def _start_anpr_upload_cleanup_loop():
+    import asyncio
+
+    # Same reasoning as the traffic-alert loop's own guard just above: every
+    # test opens its own TestClient(app), so this would otherwise fire ~90
+    # times concurrently against the shared dev DB.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    app.state.anpr_cleanup_task = asyncio.create_task(anpr_jobs_service.run_periodic_upload_cleanup())
+
+
+@app.on_event("shutdown")
+async def _stop_anpr_upload_cleanup_loop():
+    task = getattr(app.state, "anpr_cleanup_task", None)
     if task is not None:
         task.cancel()
 

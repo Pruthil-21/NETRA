@@ -21,6 +21,8 @@ from psycopg2.extras import RealDictCursor
 from ..config import settings
 from ..logging_config import logger
 
+_CANCELLABLE_STATUSES = ("pending", "processing")
+
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 
 # Minimal magic-byte sniffing, no extra dependency -- this is a bounded,
@@ -216,6 +218,24 @@ def update_job_status(
 
 def mark_processing(db: RealDictCursor, job_id: int) -> None:
     db.execute("UPDATE anpr_jobs SET status = 'processing', updated_at = now() WHERE id = %s", (job_id,))
+
+
+def cancel_job(db: RealDictCursor, job_id: int) -> dict | None:
+    """Only from pending/processing -- a completed/failed/already-cancelled
+    job has nothing left to cancel. The WHERE clause enforces this
+    atomically (no separate check-then-update race): returns None either
+    because the job doesn't exist or because it's already terminal, and the
+    router can't tell those apart from this alone, so it re-fetches to
+    report the right error either way."""
+    db.execute(
+        """
+        UPDATE anpr_jobs SET status = 'cancelled', updated_at = now()
+        WHERE id = %s AND status = ANY(%s)
+        RETURNING *
+        """,
+        (job_id, list(_CANCELLABLE_STATUSES)),
+    )
+    return db.fetchone()
 
 
 def add_job_results(db: RealDictCursor, job_id: int, results: list[dict]) -> list[dict]:
@@ -439,3 +459,73 @@ def _fail_job(job_id: int, error_message: str) -> None:
                 update_job_status(db, job_id, status="failed", error_message=error_message)
     except Exception:  # noqa: BLE001
         logger.error(f"anpr_job {job_id}: failed to record dispatch failure", exc_info=True)
+
+
+def cleanup_expired_uploads(db: RealDictCursor, retention_days: int) -> int:
+    """Deletes the on-disk bytes for any upload older than retention_days --
+    never the anpr_jobs row itself (metadata, hash, linked detection/search
+    results are the evidentiary record and are kept indefinitely, same as
+    "detections are never deleted" elsewhere in this stack). Once a file is
+    gone, GET /anpr-jobs/{id}/file already reports "no stored file" on its
+    own (resolve_stored_file checks os.path.isfile) -- no other code needs to
+    change. Idempotent and safe to re-run: a job whose file was already
+    removed (or never had one) is simply skipped. Returns how many files
+    were actually deleted, for the caller to log."""
+    from ..services import audit_service
+
+    db.execute(
+        """
+        SELECT id, stored_file_path FROM anpr_jobs
+        WHERE stored_file_path IS NOT NULL AND created_at < now() - make_interval(days => %s)
+        """,
+        (retention_days,),
+    )
+    candidates = db.fetchall()
+
+    deleted = 0
+    for row in candidates:
+        path = Path(row["stored_file_path"])
+        if not path.is_file():
+            continue
+        try:
+            path.unlink()
+            try:
+                path.parent.rmdir()  # only succeeds if now empty -- fine either way
+            except OSError:
+                pass
+        except OSError:
+            logger.warning(f"anpr_job {row['id']}: failed to delete expired upload {path}", exc_info=True)
+            continue
+        audit_service.log(
+            db, "system", "delete_file", "anpr_job", row["id"],
+            reason_code=f"retention period expired ({retention_days} days)",
+        )
+        deleted += 1
+    return deleted
+
+
+def _run_cleanup_tick() -> None:
+    from ..database import get_connection
+
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as db:
+            deleted = cleanup_expired_uploads(db, settings.anpr_upload_retention_days)
+    if deleted:
+        logger.info(f"anpr upload cleanup: deleted {deleted} expired file(s)")
+
+
+async def run_periodic_upload_cleanup():
+    """Background task, one sweep every settings.anpr_cleanup_interval_seconds
+    -- started from main.py's startup event, cancelled on shutdown. Same
+    shape as traffic_alerts_service.run_periodic_evaluation: runs the sync DB
+    work in a thread so a sweep never blocks the event loop, and one failed
+    tick is logged and skipped rather than killing the loop (the next sweep
+    catches up on whatever this one missed)."""
+    import asyncio
+
+    while True:
+        try:
+            await asyncio.to_thread(_run_cleanup_tick)
+        except Exception:  # noqa: BLE001 -- one bad tick must not kill the loop; see docstring
+            logger.exception("anpr upload cleanup tick failed")
+        await asyncio.sleep(settings.anpr_cleanup_interval_seconds)
