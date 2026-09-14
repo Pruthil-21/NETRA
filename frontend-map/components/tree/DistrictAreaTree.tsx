@@ -263,6 +263,13 @@ export function DistrictAreaTree({
   // itself (the ⋮ trigger below, e.g.) has to be made.
   const renderCameraRow = (camera: Camera, isLast: boolean) => {
     const isCameraSelected = selected?.type === 'camera' && selected.value === camera.id;
+    // connectivity_status is decided server-side now (backend-registry's own
+    // periodic sweep), so this reflects the real, current state -- not a
+    // guess. Online is filled (fill=currentColor) as well as colored so it
+    // reads as "solid/confirmed" at a glance next to offline's plain outline.
+    const status = (camera.connectivity_status || '').toLowerCase();
+    const statusColorClass =
+      status === 'online' ? 'text-signal-green' : status === 'offline' ? 'text-signal-red' : '';
     return (
       <div key={camera.id} className="relative pl-4 group">
         <TreeLines isLast={isLast} />
@@ -285,7 +292,11 @@ export function DistrictAreaTree({
               enableDrag ? 'cursor-grab active:cursor-grabbing' : ''
             }`}
           >
-            <Video size={10} className="shrink-0" />
+            <Video
+              size={10}
+              className={`shrink-0 ${statusColorClass}`}
+              fill={status === 'online' ? 'currentColor' : 'none'}
+            />
             <span className="truncate">{camera.name}</span>
           </button>
           <button
