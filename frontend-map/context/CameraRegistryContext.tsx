@@ -1,16 +1,14 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
-import { Camera, ConnectivityStatus } from '@/types/camera';
+import { Camera } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { OrganizerCamera } from '@/types/organizerCamera';
 import { organizerCameraToCamera } from '@/lib/organizerCameras';
 import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
 import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
-import { getCameraStreamUrl } from '@/lib/stream';
-import { getWebRtcWhepUrl } from '@/lib/webrtc';
 import { authHeaders } from '@/lib/apiAuth';
 import { SESSION_CHANGED_EVENT } from '@/lib/session';
 
@@ -53,86 +51,14 @@ async function fetchRegistryCameras(): Promise<Camera[]> {
   return res.json();
 }
 
-// How often every camera (not just the one an officer has open) gets a real
-// reachability check, and how long each check can take before it's counted
-// as offline. A plain GET on the manifest/playlist URL — no video decode —
-// so checking dozens of cameras in parallel stays cheap.
+// How often the registry re-fetches GET /cameras so a connectivity_status
+// flip made by backend-registry's own periodic sweep (the single
+// server-owned health check -- see cameras_service.run_periodic_connectivity_sweep)
+// actually reaches this app. Cheap now: a plain DB-backed read, not a
+// per-camera reachability probe from every open browser tab (that used to
+// run here directly and is exactly what made badges disagree across pages
+// and couldn't scale -- see the camera-badge-accuracy fix).
 export const HEALTH_CHECK_INTERVAL_MS = 20000;
-const HEALTH_CHECK_TIMEOUT_MS = 5000;
-
-// Only ever reached as a fallback (see probeStreamReachable below) for a
-// camera id backend-registry has no row for at all -- the fixed test-rig
-// (lib/testCameras.ts), vehicle-trace demo, and manually-added cameras
-// (localStorage-only, see lib/manualCameras.ts) all exist purely in the
-// browser, so there's no DB-backed id the backend could ever check for
-// them. A same-origin-checked fetch here is correct (not no-cors) whenever
-// the host actually sends CORS headers; where it doesn't, this throws and
-// reports offline -- a real limitation for exactly this narrow fallback
-// case, not the false-positive bug the backend check below fixes.
-async function legacyProbeStreamReachable(url: string): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
-    return res.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// Real, server-side reachability for a registry camera's HLS stream --
-// backend-registry does the actual GET itself (see
-// stream_health_service.py), which isn't subject to the browser's
-// CORS/no-cors blind spot a client-side check has (see
-// legacyProbeStreamReachable's docstring, and useCameraFeeds.ts's matching
-// fix for the Dashboard). A 404 means this camera id has no backend row at
-// all -- one of the browser-only fixed/manual sources -- so it falls back
-// to the legacy client-side check, the only option left for something the
-// backend has never heard of.
-async function probeStreamReachable(cameraId: number, fallbackUrl: string | null): Promise<boolean> {
-  const registryApiUrl = process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000';
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${registryApiUrl}/cameras/${cameraId}/live-check`, {
-      headers: authHeaders(),
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    if (res.status === 404) {
-      return fallbackUrl ? legacyProbeStreamReachable(fallbackUrl) : false;
-    }
-    if (!res.ok) return false;
-    const data: { reachable: boolean } = await res.json();
-    return data.reachable;
-  } catch {
-    return fallbackUrl ? legacyProbeStreamReachable(fallbackUrl) : false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-// WHEP endpoints are cross-origin here (MediaMTX on the Tailscale host, app
-// on localhost) and typically only implement POST, so a plain GET can both
-// CORS-fail and 405 even when the server is fully reachable -- neither is a
-// real "offline" signal. `no-cors` sidesteps both: the response is opaque
-// (we can't and don't need to read it), but fetch() only throws on an
-// actual network-level failure (refused/timeout/DNS), which is exactly the
-// "is this host:port up" signal we want.
-async function probeWebRtcReachable(whepUrl: string): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
-  try {
-    await fetch(whepUrl, { method: 'GET', mode: 'no-cors', cache: 'no-store', signal: controller.signal });
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 interface RegistryContextType {
   cameras: Camera[];
@@ -141,13 +67,13 @@ interface RegistryContextType {
   filters: CameraFilters;
   isLoading: boolean;
   error: string | null;
-  /** When the reachability health-check last completed a full pass over every camera --
-   * pair with HEALTH_CHECK_INTERVAL_MS to know whether connectivity_status is still fresh. */
+  /** When GET /cameras was last successfully re-fetched -- pair with
+   * HEALTH_CHECK_INTERVAL_MS to know whether connectivity_status (decided
+   * server-side by backend-registry's own periodic sweep) is still fresh. */
   lastUpdated: Date | null;
   setSelectedCamera: (cam: Camera | null) => void;
   setFilters: React.Dispatch<React.SetStateAction<CameraFilters>>;
   refreshCameras: () => Promise<void>;
-  updateCameraConnectivity: (id: number, status: ConnectivityStatus) => void;
   /** Adds one manually-entered camera (raw backend shape). Auto-assigns an id
    * in the 8000-8999 range when the given id is blank or already taken. */
   addCamera: (raw: OrganizerCamera) => void;
@@ -190,11 +116,10 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   // deliberate separation from the real camera fleet. This provider still
   // has to wrap /scale (AppShell's StatusTicker reads `cameras` from this
   // same context for the top-bar chrome shared by every route), but the
-  // real-camera fetch and its 20s reachability poll are pure overhead there
-  // -- and worse, concurrent network traffic that skews the demo's own
-  // metrics panel. Gating on pathname is the minimal fix: skip firing them
-  // while on /scale, without changing this provider's shape for any other
-  // route.
+  // real-camera fetch and its 20s re-poll are pure overhead there -- and
+  // worse, concurrent network traffic that skews the demo's own metrics
+  // panel. Gating on pathname is the minimal fix: skip firing them while
+  // on /scale, without changing this provider's shape for any other route.
   const pathname = usePathname();
   const isScaleRoute = pathname?.startsWith('/scale') ?? false;
 
@@ -218,6 +143,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load camera registry');
     }
+    setLastUpdated(new Date());
     const manual = loadManualCameras();
     setManualCameras(manual);
     setCameras(
@@ -282,6 +208,19 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     refreshCameras();
   }, [refreshCameras, isScaleRoute]);
 
+  // Keeps connectivity_status (and everything else about a camera) current
+  // without re-probing any stream from the browser -- backend-registry's
+  // own periodic sweep is the only thing that ever decides ONLINE/OFFLINE
+  // now (see run_periodic_connectivity_sweep); this just re-reads whatever
+  // it last decided. Skips /scale for the same reason the old reachability
+  // poll did: synthetic demo data, and concurrent traffic here would skew
+  // that demo's own metrics panel.
+  useEffect(() => {
+    if (isScaleRoute) return;
+    const interval = setInterval(refreshCameras, HEALTH_CHECK_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [refreshCameras, isScaleRoute]);
+
   // This provider mounts once at the app root -- if that first mount
   // happens before anyone has logged in (e.g. landing on /login), the
   // fetch above 401s with no token and never gets a second try, since
@@ -331,38 +270,6 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     });
   }, [cameras, filters]);
 
-  // The organizer's width>0 flag is only a preliminary signal (see
-  // lib/organizerCameras.ts). Once a camera's live feed actually connects or
-  // fails, LiveFeedPlayer reports the real outcome here so the map pin
-  // reflects reality instead of staying stuck on the preliminary guess.
-  const updateCameraConnectivity = useCallback((id: number, status: ConnectivityStatus) => {
-    // .map() always returns a brand-new array, even when no element actually
-    // changed -- with ~30 cameras each independently reporting a health-check
-    // result every 20s, that meant a fresh `cameras` array (and everything
-    // downstream that depends on its reference: filteredCameras, the map's
-    // marker list) on nearly every tick, even when nothing was actually
-    // different. That is what showed up as map flicker. Bail out to the same
-    // `prev` reference when there is genuinely nothing to update.
-    setCameras((prev) => {
-      const idx = prev.findIndex((c) => c.id === id);
-      if (idx === -1 || prev[idx].connectivity_status === status) return prev;
-      // Fire-and-forget: the backend's own dedup is the real safety net
-      // if this fires more than once for the same transition; a failed
-      // report here shouldn't block the UI from updating.
-      fetch(`${process.env.NEXT_PUBLIC_REGISTRY_API_URL || 'http://localhost:8000'}/cameras/${id}`, {
-        method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({ connectivity_status: status }),
-      }).catch(() => {});
-      const next = prev.slice();
-      next[idx] = { ...prev[idx], connectivity_status: status };
-      return next;
-    });
-    setSelectedCamera((prev) =>
-      prev && prev.id === id && prev.connectivity_status !== status ? { ...prev, connectivity_status: status } : prev
-    );
-  }, []);
-
   const applyCameraUpdate = useCallback((id: number, patch: Partial<Camera>) => {
     setCameras((prev) => {
       const idx = prev.findIndex((c) => c.id === id);
@@ -379,62 +286,6 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     setSelectedCamera((prev) => (prev && prev.id === id ? null : prev));
   }, []);
 
-  // Real-time online/offline for every camera — list, badges, and map pins
-  // all read connectivity_status off shared state, so this one poller is
-  // what keeps all of them current instead of only whichever camera an
-  // officer has the drawer open on. A ref (not `cameras` in the deps array)
-  // keeps this interval from being torn down and restarted every time a
-  // probe result changes state, which would otherwise happen every tick.
-  const camerasRef = useRef<Camera[]>(cameras);
-  useEffect(() => {
-    camerasRef.current = cameras;
-  }, [cameras]);
-
-  useEffect(() => {
-    if (isScaleRoute) return;
-    let cancelled = false;
-
-    const webrtcBase = process.env.NEXT_PUBLIC_MEDIAMTX_WEBRTC_URL;
-
-    const checkAll = async () => {
-      const snapshot = camerasRef.current;
-      await Promise.allSettled(
-        snapshot.map(async (cam) => {
-          // Same transport priority as CameraLivePlayer (WebRTC first, HLS
-          // fallback) -- previously this always checked HLS only, so a
-          // camera playing fine over WebRTC (e.g. Tailscale-only, no
-          // Cloudflare tunnel for HLS) still got flipped to "offline" by
-          // this poller every 20s.
-          const whepUrl = getWebRtcWhepUrl(cam, webrtcBase);
-          const stream = getCameraStreamUrl(cam);
-          // No stream_id/hls_url provisioned at all means there is nothing that could
-          // ever be live -- report offline instead of leaving the registry's possibly
-          // stale/manually-set connectivity_status in place forever (this poller
-          // otherwise never touches these cameras again).
-          if (!whepUrl && !stream.url) {
-            if (!cancelled) updateCameraConnectivity(cam.id, 'offline');
-            return;
-          }
-
-          const reachable = whepUrl
-            ? (await probeWebRtcReachable(whepUrl)) ||
-              (stream.url ? await probeStreamReachable(cam.id, stream.url) : false)
-            : await probeStreamReachable(cam.id, stream.url ?? null);
-
-          if (!cancelled) updateCameraConnectivity(cam.id, reachable ? 'online' : 'offline');
-        })
-      );
-      if (!cancelled) setLastUpdated(new Date());
-    };
-
-    checkAll();
-    const interval = setInterval(checkAll, HEALTH_CHECK_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [updateCameraConnectivity, isScaleRoute]);
-
   return (
     <CameraRegistryContext.Provider
       value={{
@@ -448,7 +299,6 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         setSelectedCamera,
         setFilters,
         refreshCameras,
-        updateCameraConnectivity,
         addCamera,
         importCameras,
         applyCameraUpdate,

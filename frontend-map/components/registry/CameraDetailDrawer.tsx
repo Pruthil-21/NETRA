@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { Activity, Disc, Film, History, Radio, VideoOff } from 'lucide-react';
 import { Camera } from '@/types/camera';
 import { getCameraStreamUrl } from '@/lib/stream';
-import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { useCameraUptime, formatDuration, formatTimeRange } from '@/hooks/useCameraUptime';
 import { useCameraHealth } from '@/hooks/useCameraHealth';
 import { useRecordingHealthEvents } from '@/hooks/useRecordingHealthEvents';
@@ -32,7 +31,6 @@ function formatEventTime(iso: string | null | undefined): string {
 }
 
 export default function CameraDetailDrawer({ camera }: { camera: Camera | null }) {
-  const { updateCameraConnectivity } = useCameraRegistry();
   const { report: uptime, loading: uptimeLoading, error: uptimeError } = useCameraUptime(camera?.id ?? null);
   const { device: health, loading: healthLoading } = useCameraHealth(camera?.id ?? null);
   const { events: recordingHealthEvents, loading: recordingHealthLoading } = useRecordingHealthEvents(camera?.id ?? null);
@@ -67,9 +65,12 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
     return <div className="p-4 text-xs text-slate-500">No camera selected. Pick one from the list or the map.</div>;
   }
 
-  // Preliminary connectivity_status (from the organizer's width>0 signal, or
-  // the background health check below) isn't the final word — every camera
-  // with a resolvable stream gets a real connection attempt when selected.
+  // connectivity_status is decided server-side now (backend-registry's own
+  // periodic sweep -- see cameras_service.run_periodic_connectivity_sweep),
+  // never by this one viewer's own playback outcome. CameraLivePlayer still
+  // gets no onStatusChange here on purpose: one officer's video element
+  // must never be able to flip the sitewide badge for every other officer,
+  // which is exactly what wiring it into shared state used to let happen.
   const stream = getCameraStreamUrl(camera);
   const isOnline = (camera.connectivity_status || 'offline').toLowerCase() === 'online';
 
@@ -81,7 +82,6 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           camera={camera}
           hlsSrc={stream.url}
           hlsUnavailableReason={stream.reason}
-          onStatusChange={(status) => updateCameraConnectivity(camera.id, status)}
         />
       </div>
       <div className="flex-1 min-w-0 flex flex-col sm:flex-row">

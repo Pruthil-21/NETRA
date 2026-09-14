@@ -47,6 +47,16 @@ class Settings:
     # who's read this file forge the internal-service header every
     # service-to-service endpoint trusts (see require_internal_key).
     internal_service_key: str = os.environ["INTERNAL_SERVICE_KEY"]
+    # Single server-owned camera connectivity health check (see
+    # services/cameras_service.py's run_periodic_connectivity_sweep) --
+    # replaces every client browser independently re-probing every camera's
+    # stream, which is what made ONLINE/OFFLINE badges disagree across pages
+    # and couldn't scale past a small camera count in the first place.
+    camera_health_sweep_interval_seconds: int = int(os.environ.get("CAMERA_HEALTH_SWEEP_INTERVAL_SECONDS", "20"))
+    # Bounds how many outbound reachability probes run at once regardless of
+    # fleet size -- the ceiling that keeps this sweep from opening thousands
+    # of simultaneous connections at 100k+ cameras.
+    camera_health_concurrency: int = int(os.environ.get("CAMERA_HEALTH_CONCURRENCY", "300"))
 
 
 settings = Settings()

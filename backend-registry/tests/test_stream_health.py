@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 from app.services import stream_health_service
 
@@ -5,6 +7,18 @@ from app.services import stream_health_service
 class _FakeResponse:
     def __init__(self, status_code):
         self.status_code = status_code
+
+
+def _fake_async_get(status_code=200, capture: dict | None = None):
+    """Builds an httpx.AsyncClient.get replacement -- check_hls_reachable now
+    calls the async client method, not the module-level httpx.get the sync
+    version used, so tests patch the class method directly (applies
+    regardless of where the AsyncClient instance is constructed)."""
+    async def fake_get(self, url, timeout=None, follow_redirects=None):
+        if capture is not None:
+            capture["url"] = url
+        return _FakeResponse(status_code)
+    return fake_get
 
 
 def test_live_check_requires_auth(client):
@@ -51,12 +65,7 @@ def test_live_check_true_only_on_a_real_200_from_the_manifest(
     gap_analysis_test_cameras.append(created["id"])
 
     captured = {}
-
-    def fake_get(url, timeout=None, follow_redirects=None):
-        captured["url"] = url
-        return _FakeResponse(404)
-
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(404, captured))
     resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
     assert resp.status_code == 200
     assert resp.json() == {"reachable": False}
@@ -68,7 +77,7 @@ def test_live_check_true_only_on_a_real_200_from_the_manifest(
     # bypass it here since this test is deliberately simulating the stream
     # coming online between two checks, not two near-simultaneous callers.
     stream_health_service._cache.clear()
-    monkeypatch.setattr(stream_health_service.httpx, "get", lambda *a, **k: _FakeResponse(200))
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(200))
     resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
     assert resp.json() == {"reachable": True}
 
@@ -86,38 +95,47 @@ def test_live_check_prefers_hls_url_when_set(client, viewer_headers, officer_hea
     gap_analysis_test_cameras.append(created["id"])
 
     captured = {}
-
-    def fake_get(url, timeout=None, follow_redirects=None):
-        captured["url"] = url
-        return _FakeResponse(200)
-
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    stream_health_service._cache.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(200, captured))
     resp = client.get(f"/cameras/{created['id']}/live-check", headers=viewer_headers)
     assert resp.json() == {"reachable": True}
     assert captured["url"] == "https://elsewhere.example/stream/x/index.m3u8"
 
 
 def test_check_hls_reachable_treats_a_network_error_as_unreachable(monkeypatch):
-    def fake_get(*args, **kwargs):
+    async def fake_get(self, url, timeout=None, follow_redirects=None):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
-    assert stream_health_service.check_hls_reachable("https://example.com/stream/x/index.m3u8") is False
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    stream_health_service._cache.clear()
+
+    async def run():
+        async with httpx.AsyncClient() as client:
+            return await stream_health_service.check_hls_reachable(client, "https://example.com/stream/x/index.m3u8")
+
+    assert asyncio.run(run()) is False
 
 
 def test_check_hls_reachable_caches_within_the_ttl(monkeypatch):
     stream_health_service._cache.clear()
     calls = []
 
-    def fake_get(url, timeout=None, follow_redirects=None):
+    async def fake_get(self, url, timeout=None, follow_redirects=None):
         calls.append(url)
         return _FakeResponse(200)
 
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     url = "https://example.com/stream/cache-test/index.m3u8"
 
-    assert stream_health_service.check_hls_reachable(url) is True
-    assert stream_health_service.check_hls_reachable(url) is True
+    async def run():
+        async with httpx.AsyncClient() as client:
+            first = await stream_health_service.check_hls_reachable(client, url)
+            second = await stream_health_service.check_hls_reachable(client, url)
+            return first, second
+
+    first, second = asyncio.run(run())
+    assert first is True
+    assert second is True
     assert len(calls) == 1, "a second check within the TTL must not hit the network again"
 
 
@@ -125,16 +143,23 @@ def test_check_hls_reachable_rechecks_once_the_ttl_expires(monkeypatch):
     stream_health_service._cache.clear()
     calls = []
 
-    def fake_get(url, timeout=None, follow_redirects=None):
+    async def fake_get(self, url, timeout=None, follow_redirects=None):
         calls.append(url)
         return _FakeResponse(200)
 
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     monkeypatch.setattr(stream_health_service, "_CACHE_TTL_SECONDS", 0)
     url = "https://example.com/stream/cache-expiry-test/index.m3u8"
 
-    assert stream_health_service.check_hls_reachable(url) is True
-    assert stream_health_service.check_hls_reachable(url) is True
+    async def run():
+        async with httpx.AsyncClient() as client:
+            first = await stream_health_service.check_hls_reachable(client, url)
+            second = await stream_health_service.check_hls_reachable(client, url)
+            return first, second
+
+    first, second = asyncio.run(run())
+    assert first is True
+    assert second is True
     assert len(calls) == 2, "a TTL of 0 must force a fresh check every call"
 
 
@@ -151,12 +176,8 @@ def test_test_stream_false_with_neither_field_set(client, viewer_headers):
 
 def test_test_stream_checks_a_stream_id_not_attached_to_any_camera(client, viewer_headers, monkeypatch):
     captured = {}
-
-    def fake_get(url, timeout=None, follow_redirects=None):
-        captured["url"] = url
-        return _FakeResponse(200)
-
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    stream_health_service._cache.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(200, captured))
     resp = client.post("/cameras/test-stream", json={"stream_id": "not-yet-registered"}, headers=viewer_headers)
     assert resp.status_code == 200
     assert resp.json() == {"reachable": True}
@@ -165,12 +186,8 @@ def test_test_stream_checks_a_stream_id_not_attached_to_any_camera(client, viewe
 
 def test_test_stream_prefers_hls_url_when_both_set(client, viewer_headers, monkeypatch):
     captured = {}
-
-    def fake_get(url, timeout=None, follow_redirects=None):
-        captured["url"] = url
-        return _FakeResponse(200)
-
-    monkeypatch.setattr(stream_health_service.httpx, "get", fake_get)
+    stream_health_service._cache.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(200, captured))
     resp = client.post(
         "/cameras/test-stream",
         json={"stream_id": "should-be-ignored", "hls_url": "https://elsewhere.example/stream/x/index.m3u8"},
@@ -181,6 +198,7 @@ def test_test_stream_prefers_hls_url_when_both_set(client, viewer_headers, monke
 
 
 def test_test_stream_false_on_unreachable_url(client, viewer_headers, monkeypatch):
-    monkeypatch.setattr(stream_health_service.httpx, "get", lambda *a, **k: _FakeResponse(404))
+    stream_health_service._cache.clear()
+    monkeypatch.setattr(httpx.AsyncClient, "get", _fake_async_get(404))
     resp = client.post("/cameras/test-stream", json={"stream_id": "dead-stream"}, headers=viewer_headers)
     assert resp.json() == {"reachable": False}
