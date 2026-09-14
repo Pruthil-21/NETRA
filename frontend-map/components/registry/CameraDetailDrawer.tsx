@@ -75,52 +75,66 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
   const isOnline = (camera.connectivity_status || 'offline').toLowerCase() === 'online';
 
   return (
-    <div className="flex flex-col sm:flex-row bg-panel border-t border-line">
-      <div className="w-full sm:w-64 h-36 shrink-0 border-b sm:border-b-0 sm:border-r border-line">
-        <CameraLivePlayer
-          key={camera.id}
-          camera={camera}
-          hlsSrc={stream.url}
-          hlsUnavailableReason={stream.reason}
-        />
-      </div>
-      <div className="flex-1 min-w-0 flex flex-col sm:flex-row">
-        <div className="p-4 grid grid-cols-2 sm:grid-cols-6 gap-4 text-xs flex-1">
-          <div>
-            <p className="font-bold text-white truncate">{camera.name}</p>
-            <p className="font-mono text-command">{camera.id}</p>
+    <div className="flex flex-col lg:flex-row bg-panel border-t border-line">
+      {/* Identity zone: video is the one thing here that gets real size --
+          everything else in this panel is secondary to "what am I looking
+          at, right now." Name/id/status live directly under it as one
+          tightly-coupled unit, not scattered into the metadata grid where
+          they'd carry no more visual weight than an RTSP string. */}
+      <div className="w-full lg:w-[340px] shrink-0 border-b lg:border-b-0 lg:border-r border-line flex flex-col">
+        <div className="aspect-video w-full bg-ink">
+          <CameraLivePlayer
+            key={camera.id}
+            camera={camera}
+            hlsSrc={stream.url}
+            hlsUnavailableReason={stream.reason}
+          />
+        </div>
+        <div className="p-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-bold text-white text-sm truncate">{camera.name}</p>
+            <p className="font-mono text-command text-[11px]">#{camera.id}</p>
             <Link
               href={`/archive?camera=${camera.id}`}
-              className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400 hover:text-white"
+              className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400 hover:text-white w-fit"
             >
               <Film size={11} />
-              Recorded Footage
+              Recorded footage
             </Link>
           </div>
-          <div className="flex flex-col gap-1.5 items-start">
+          <div className="flex flex-col gap-1.5 items-end shrink-0">
             <Badge status={isOnline ? 'online' : 'offline'} text={isOnline ? 'Online' : 'Offline'} />
             <Badge status={camera.health_status} text={camera.health_status} />
           </div>
-          <div>
+        </div>
+      </div>
+
+      <div className="flex-1 min-w-0 flex flex-col md:flex-row">
+        {/* Metadata zone: two plain-text groups (where it is, what it runs
+            on) plus one raised card (the one thing here that's live/
+            instrumented, not just a fact about the camera) -- the card
+            treatment is what tells them apart at a glance, not another
+            label. */}
+        <div className="p-4 flex flex-col sm:flex-row md:flex-col lg:flex-row flex-1 gap-x-8 gap-y-4 text-xs">
+          <div className="flex flex-col gap-1 sm:w-44 lg:w-40 shrink-0">
+            <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase">Location</p>
             <p className="text-slate-200">{camera.dept}</p>
             <p className="text-slate-500">{camera.ownership}</p>
-            <div className="mt-1.5">
-              <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">Area</p>
-              <p className="text-slate-200">{currentAreaName}</p>
-            </div>
+            <p className="text-slate-500">{currentAreaName}</p>
           </div>
-          <div>
-            <p className="text-slate-200">{camera.storage_type} Architecture</p>
-            <p className="text-slate-500">{camera.retention_days} Days Archival Policy</p>
+
+          <div className="flex flex-col gap-1 sm:w-44 lg:w-44 shrink-0">
+            <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase">Infrastructure</p>
+            <p className="text-slate-200">{camera.storage_type} · {camera.retention_days}d retention</p>
+            <code className="text-slate-500 font-mono text-[11px] break-all">
+              {camera.rtsp_url || 'RTSP not configured'}
+            </code>
           </div>
-          <div>
-            <p className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">RTSP Source</p>
-            <code className="text-command font-mono break-all">{camera.rtsp_url || '—'}</code>
-          </div>
-          <div>
-            <p className="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-0.5">
+
+          <div className="bg-panel-raised rounded-lg p-3 sm:w-44 lg:w-40 shrink-0">
+            <p className="flex items-center gap-1 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-1.5">
               <Activity size={10} />
-              Device Health
+              Device health
             </p>
             {healthLoading && <p className="text-slate-600 italic">Checking…</p>}
             {!healthLoading && !health && <p className="text-slate-600 italic">Not available</p>}
@@ -139,13 +153,13 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
           </div>
         </div>
 
-        <div className="w-full sm:w-64 shrink-0 border-t sm:border-t-0 sm:border-l border-line p-3 flex flex-col min-h-0 gap-3">
+        <div className="w-full md:w-72 shrink-0 border-t md:border-t-0 md:border-l border-line p-3 flex flex-col min-h-0 gap-3">
           {/* Live recording status -- GET /cameras/{id}/recordings/health-events
               for the initial paint (our own local table, never blocked on the
               recording service being reachable), then backend-registry's
               /recordings/health-stream WebSocket pushes anything after that in
               real time, no polling. */}
-          <div className="shrink-0">
+          <div className="bg-panel-raised rounded-lg p-3 shrink-0">
             <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-2">
               <Disc size={11} />
               Recording Health
@@ -177,7 +191,7 @@ export default function CameraDetailDrawer({ camera }: { camera: Camera | null }
               (append-only, one row per real connectivity transition). Most-recent
               window first, since "what's it doing right now / just now" is what an
               officer checking a camera's reliability actually wants first. */}
-          <div className="border-t border-line pt-3 flex flex-col min-h-0 flex-1">
+          <div className="bg-panel-raised rounded-lg p-3 flex flex-col min-h-0 flex-1">
           <p className="flex items-center gap-1.5 text-[10px] font-semibold tracking-wider text-slate-500 uppercase mb-2 shrink-0">
             <History size={11} />
             Runtime
