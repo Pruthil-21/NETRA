@@ -55,6 +55,33 @@ export const createCustomMarkerIcon = (
   });
 };
 
+// Module-scope (not a React ref/state) on purpose -- the cached value is a
+// pure function of the key alone (same camera id + status + selection/
+// route/highlight combo always produces the identical icon), so mutating
+// this plain Map during a component's render is safe and doesn't need to
+// go through a ref or effect the way component-local mutable state would.
+// See CameraMap.tsx's markerIcons useMemo, the only caller: without this,
+// every camera got a brand-new L.divIcon (a real DOM rebuild via Leaflet's
+// setIcon) on every render, including ones that changed nothing about that
+// specific camera.
+const markerIconCache = new Map<string, L.DivIcon>();
+
+export const getCachedMarkerIcon = (
+  camera: Camera,
+  isSelected: boolean,
+  isOnRoute: boolean,
+  isHighlighted: boolean
+): L.DivIcon => {
+  const status = (camera.connectivity_status || 'offline').toLowerCase();
+  const key = `${camera.id}|${status}|${isSelected}|${isOnRoute}|${isHighlighted}`;
+  let icon = markerIconCache.get(key);
+  if (!icon) {
+    icon = createCustomMarkerIcon(camera, isSelected, isOnRoute, isHighlighted);
+    markerIconCache.set(key, icon);
+  }
+  return icon;
+};
+
 // A small chevron rotated to `bearingDeg`, placed at each leg's midpoint --
 // large-scale ALPR platforms (e.g. Genetec AutoVu's ML Core) report
 // "direction of travel" the same way this route does: inferred from the
