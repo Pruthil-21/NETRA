@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { Shield, LayoutDashboard, Map as MapIcon, Search, ShieldAlert, FileBarChart, Film, LogOut, UserCircle2, ScanSearch } from 'lucide-react';
@@ -123,7 +124,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <header className="border-b border-line bg-panel shrink-0">
         <div className="h-14 px-3 sm:px-4 flex items-center gap-1 sm:gap-2">
           <Link href="/" className="flex items-center gap-2 pr-2 sm:pr-3 shrink-0" aria-label="DIGDHRISHTI home">
-            <Shield className="text-command shrink-0" size={20} />
+            <Image src="/logo-mark.png" alt="" width={24} height={24} priority className="shrink-0" />
             <span className="font-bold text-sm tracking-wider uppercase text-white hidden sm:inline">DIGDHRISHTI</span>
           </Link>
 
