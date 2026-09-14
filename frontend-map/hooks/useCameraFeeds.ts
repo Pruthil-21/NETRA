@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CameraFeed } from "@/types/stream";
-import { REGISTRY_API_URL, buildHlsUrl } from "@/config/streams";
+import { REGISTRY_API_URL } from "@/config/streams";
+import { getCameraStreamUrl } from "@/lib/stream";
 import { authorizedFetch, describeFetchError } from "@/lib/apiClient";
 
 // Shape returned by GET /cameras on backend-registry (see contract/API_CONTRACT.md).
@@ -85,7 +86,15 @@ export function useCameraFeeds(): UseCameraFeedsResult {
           location: `${cam.lat.toFixed(4)}, ${cam.long.toFixed(4)}`,
           lat: cam.lat,
           long: cam.long,
-          hlsUrl: buildHlsUrl(cam.id, cam.stream_id, cam.hls_url),
+          // Same URL builder the hover-preview overlay and detail drawer use
+          // (getCameraStreamUrl/lib/stream.ts) -- a separate, drifted builder
+          // used to live here (config/streams.ts's buildHlsUrl), missing the
+          // ?cookieCheck=1 MediaMTX/Cloudflare needs and guessing a URL from
+          // the raw camera id when stream_id was empty instead of correctly
+          // reporting "no stream." That's what let a tile look fine while
+          // its own hover preview -- using the correct builder -- reported
+          // the same camera unavailable.
+          hlsUrl: getCameraStreamUrl({ hls_url: cam.hls_url, stream_id: cam.stream_id }).url ?? "",
           status: resolveStatus(cam.connectivity_status, cam.health_status),
         }))
       );
