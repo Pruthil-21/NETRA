@@ -1,6 +1,7 @@
 """Camera registry CRUD, pagination/scale-demo surface, uptime, SNMP health,
 recordings, and the synthetic-detection ingestion endpoint used by the
 scale-demo load test."""
+import httpx
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import ValidationError
@@ -12,7 +13,6 @@ from ..auth import (
     require_permission,
     require_scale_demo_enabled,
 )
-from ..config import settings
 from ..db import get_conn
 from ..logging_config import logger
 from ..rbac_scope import (
@@ -270,39 +270,42 @@ def camera_snmp_health(camera_id: int, user=Depends(get_current_user)):
     return device
 
 
-def _hls_url_for(hls_url: str | None, stream_id: str | None) -> str | None:
-    return hls_url or (f"{settings.mediamtx_hls_url}/stream/{stream_id}/index.m3u8" if stream_id else None)
-
-
 @router.get("/cameras/{camera_id}/live-check")
-def camera_live_check(camera_id: int, user=Depends(get_current_user)):
+async def camera_live_check(camera_id: int, user=Depends(get_current_user)):
     """Real reachability for this camera's HLS stream -- a server-to-server
     request, so it isn't subject to the browser CORS blind spot the old
     client-side no-cors probe had (see stream_health_service.py). Only
     covers HLS: WebRTC/WHEP reachability stays a client-side check, since
     the camera it applies to today is only reachable over Tailscale from an
-    officer's own browser, not from this server."""
+    officer's own browser, not from this server.
+
+    Manual/on-demand only now (e.g. a "Retry" button) -- no poll loop
+    depends on this anymore, see cameras_service.run_periodic_connectivity_sweep
+    for the single server-owned sweep that actually drives the ONLINE/OFFLINE
+    badge everywhere."""
     with get_conn() as conn:
         camera = cameras_service.get_camera(conn, camera_id)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
-    url = _hls_url_for(camera["hls_url"], camera["stream_id"])
+    url = cameras_service.resolve_hls_url(camera["hls_url"], camera["stream_id"])
     if not url:
         return {"reachable": False}
-    return {"reachable": stream_health_service.check_hls_reachable(url)}
+    async with httpx.AsyncClient() as client:
+        return {"reachable": await stream_health_service.check_hls_reachable(client, url)}
 
 
 @router.post("/cameras/test-stream", response_model=TestStreamOut)
-def test_stream(body: TestStreamIn, user=Depends(get_current_user)):
+async def test_stream(body: TestStreamIn, user=Depends(get_current_user)):
     """Same reachability check as live-check above, but for a stream_id/
     hls_url that isn't attached to any camera row yet -- backs the Add
     Camera modal's "Test Connection" button, so an officer finds out a
     video address doesn't resolve before saving instead of after, when it
     would otherwise just show up as "Feed unavailable" in the grid."""
-    url = _hls_url_for(body.hls_url, body.stream_id)
+    url = cameras_service.resolve_hls_url(body.hls_url, body.stream_id)
     if not url:
         return {"reachable": False}
-    return {"reachable": stream_health_service.check_hls_reachable(url)}
+    async with httpx.AsyncClient() as client:
+        return {"reachable": await stream_health_service.check_hls_reachable(client, url)}
 
 
 def _require_camera_in_scope(conn, camera_id: int, user: dict, *, audit_denial: bool = False) -> dict:

@@ -1,42 +1,33 @@
 import { describe, it, expect } from 'vitest';
-import { mergeFeedStatus } from '@/hooks/useCameraFeeds';
-import { CameraFeed } from '@/types/stream';
+import { resolveStatus } from '@/hooks/useCameraFeeds';
 
-const feedA: CameraFeed = {
-  id: '43', name: 'Cam A', department: 'Traffic', location: '0,0',
-  lat: 0, long: 0, hlsUrl: 'https://example.com/a.m3u8', status: 'UNKNOWN',
-};
-const feedB: CameraFeed = {
-  id: '44', name: 'Cam B', department: 'Traffic', location: '0,0',
-  lat: 0, long: 0, hlsUrl: 'https://example.com/b.m3u8', status: 'UNKNOWN',
-};
-
-describe('mergeFeedStatus', () => {
-  it('keeps the same object reference for a feed whose resolved status did not change', () => {
-    const first = mergeFeedStatus([feedA, feedB], { '43': true, '44': false });
-    const second = mergeFeedStatus(first, { '43': true, '44': false });
-
-    expect(second[0]).toBe(first[0]); // feedA: still ONLINE both times -- same reference
-    expect(second[1]).toBe(first[1]); // feedB: still OFFLINE both times -- same reference
+// connectivity_status/health_status are decided entirely server-side now
+// (backend-registry's own periodic sweep) -- resolveStatus is a direct
+// mapping of that already-authoritative state, not a pre-probe guess a
+// client-side reachability check used to override (see this file's own
+// git history / useCameraFeeds.ts's module comment).
+describe('resolveStatus', () => {
+  it('maps connectivity_status "online" straight to ONLINE', () => {
+    expect(resolveStatus('online', 'operational')).toBe('ONLINE');
   });
 
-  it('allocates a new object only for the feed whose status actually changed', () => {
-    const first = mergeFeedStatus([feedA, feedB], { '43': true, '44': false });
-    const second = mergeFeedStatus(first, { '43': true, '44': true }); // B flipped OFFLINE -> ONLINE
-
-    expect(second[0]).toBe(first[0]); // A unchanged -- same reference
-    expect(second[1]).not.toBe(first[1]); // B changed -- new reference
-    expect(second[1].status).toBe('ONLINE');
+  it('maps connectivity_status "offline" straight to OFFLINE', () => {
+    expect(resolveStatus('offline', 'operational')).toBe('OFFLINE');
   });
 
-  it('leaves DEGRADED feeds alone regardless of reachability', () => {
-    const degraded: CameraFeed = { ...feedA, status: 'DEGRADED' };
-    const result = mergeFeedStatus([degraded], { '43': true });
-    expect(result[0]).toBe(degraded);
+  it('health_status "degraded" overrides an online connectivity_status', () => {
+    expect(resolveStatus('online', 'degraded')).toBe('DEGRADED');
   });
 
-  it('leaves a feed with no reachability result yet unchanged', () => {
-    const result = mergeFeedStatus([feedA], {});
-    expect(result[0]).toBe(feedA);
+  it('health_status "down" overrides an online connectivity_status', () => {
+    expect(resolveStatus('online', 'down')).toBe('DEGRADED');
+  });
+
+  it('falls back to UNKNOWN for an unrecognized connectivity_status', () => {
+    expect(resolveStatus('unknown', 'operational')).toBe('UNKNOWN');
+  });
+
+  it('treats a blank connectivity_status as UNKNOWN, not OFFLINE', () => {
+    expect(resolveStatus('', '')).toBe('UNKNOWN');
   });
 });

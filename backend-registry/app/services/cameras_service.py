@@ -1,7 +1,13 @@
 """Business logic for cameras — raw SQL via psycopg, no ORM."""
+import asyncio
 from datetime import datetime, timezone
 
-from . import audit_service
+import httpx
+
+from ..config import settings
+from ..db import get_conn
+from ..logging_config import logger
+from . import audit_service, stream_health_service
 
 
 def _format_duration(seconds: float) -> str:
@@ -369,3 +375,120 @@ def get_district_summary(conn, bbox: tuple[float, float, float, float] | None = 
         )
         cols = [c.name for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def resolve_hls_url(hls_url: str | None, stream_id: str | None) -> str | None:
+    """Same fallback routers/cameras.py's live-check/test-stream endpoints
+    use, shared here so the periodic sweep below resolves a camera's
+    checkable URL identically to those on-demand endpoints."""
+    return hls_url or (f"{settings.mediamtx_hls_url}/stream/{stream_id}/index.m3u8" if stream_id else None)
+
+
+# How many consecutive failed sweeps a camera must rack up before the badge
+# actually flips to offline -- absorbs a single missed probe (a transient
+# network blip, a MediaMTX restart) instead of flapping the sitewide badge
+# on one bad tick, the same "require a run of consecutive failures" flap-
+# avoidance convention real monitoring systems use (Nagios flap detection,
+# Prometheus debounce windows). Recovery is intentionally NOT symmetric --
+# a single successful probe clears the counter and flips back online right
+# away, since a false "still offline" is worse for an officer than a false
+# "back online" that a following check agrees or disagrees with a moment
+# later anyway.
+_OFFLINE_AFTER_CONSECUTIVE_FAILURES = 2
+# Bounds concurrent sync DB writes (each update_camera call runs in its own
+# thread via asyncio.to_thread) so a tick with many simultaneous real
+# transitions -- e.g. the very first sweep after deploy, when every camera
+# is still at its seeded/default status -- can't check out more connections
+# at once than is reasonable against the shared pool (db.py's
+# DB_POOL_MAX_SIZE), independent of the much larger HTTP-probe concurrency.
+_DB_WRITE_CONCURRENCY = 10
+
+# Per-camera run of consecutive failed probes, in-process only -- resets on
+# restart (one extra debounce cycle after a redeploy, an acceptable cost for
+# not needing a dedicated DB column/table just for this counter).
+_consecutive_failures: dict[int, int] = {}
+
+
+async def _probe_camera(client: httpx.AsyncClient, http_sem: asyncio.Semaphore, camera: dict) -> tuple[int, bool]:
+    url = resolve_hls_url(camera["hls_url"], camera["stream_id"])
+    if url is None:
+        # Nothing configured to check -- not a transient failure, this
+        # camera can never be "online" until it has a real stream endpoint.
+        return camera["id"], False
+    async with http_sem:
+        reachable = await stream_health_service.check_hls_reachable(client, url)
+    return camera["id"], reachable
+
+
+def _write_transition(camera_id: int, new_status: str) -> None:
+    with get_conn() as conn:
+        update_camera(conn, camera_id, {"connectivity_status": new_status})
+
+
+async def _apply_probe_results(results: list[tuple[int, bool]], current_by_id: dict[int, str]) -> None:
+    write_sem = asyncio.Semaphore(_DB_WRITE_CONCURRENCY)
+
+    async def maybe_write(camera_id: int, reachable: bool) -> None:
+        current_status = current_by_id.get(camera_id)
+        if reachable:
+            _consecutive_failures.pop(camera_id, None)
+            if current_status != "online":
+                async with write_sem:
+                    await asyncio.to_thread(_write_transition, camera_id, "online")
+            return
+
+        failures = _consecutive_failures.get(camera_id, 0) + 1
+        _consecutive_failures[camera_id] = failures
+        if failures >= _OFFLINE_AFTER_CONSECUTIVE_FAILURES and current_status != "offline":
+            async with write_sem:
+                await asyncio.to_thread(_write_transition, camera_id, "offline")
+
+    await asyncio.gather(*(maybe_write(camera_id, reachable) for camera_id, reachable in results))
+
+
+async def sweep_connectivity_once() -> None:
+    """One full pass over every real (non-synthetic, non-virtual-capture)
+    camera -- pages MAX_PAGE_LIMIT at a time so memory and in-flight work
+    stay bounded regardless of fleet size, and probes each page's cameras
+    concurrently under settings.camera_health_concurrency. This is the ONE
+    server-owned writer of cameras.connectivity_status now -- frontend
+    clients only ever read it, never probe streams themselves (see
+    CameraRegistryContext.tsx / useCameraFeeds.ts, which used to run this
+    exact kind of check from every open browser tab, independently,
+    disagreeing with each other and with this sweep -- the root cause this
+    sweep exists to fix)."""
+    http_sem = asyncio.Semaphore(settings.camera_health_concurrency)
+    cursor: int | None = None
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            def fetch_page(c=cursor):
+                with get_conn() as conn:
+                    return list_cameras_page(conn, cursor=c, limit=MAX_PAGE_LIMIT, include_synthetic=False)
+
+            page = await asyncio.to_thread(fetch_page)
+            cameras = page["cameras"]
+            if not cameras:
+                break
+
+            current_by_id = {cam["id"]: cam["connectivity_status"] for cam in cameras}
+            results = await asyncio.gather(*(_probe_camera(client, http_sem, cam) for cam in cameras))
+            await _apply_probe_results(results, current_by_id)
+
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+
+
+async def run_periodic_connectivity_sweep() -> None:
+    """Background task, one sweep every settings.camera_health_sweep_interval_seconds
+    -- started from main.py's startup event, cancelled on shutdown (same
+    shape backend-watchlist uses for its own periodic loops). One failed
+    tick is logged and skipped rather than killing the loop -- the next
+    sweep catches up on whatever this one missed."""
+    while True:
+        try:
+            await sweep_connectivity_once()
+        except Exception:  # noqa: BLE001 -- one bad tick must not kill the loop; see docstring
+            logger.exception("camera connectivity sweep tick failed")
+        await asyncio.sleep(settings.camera_health_sweep_interval_seconds)

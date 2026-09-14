@@ -9,6 +9,12 @@ CORS restriction at all, so this reads the real status code: MediaMTX only
 serves the .m3u8 manifest (200) for a path someone is actively publishing
 to, and 404s an unpublished one -- an actually correct signal, not a
 "is the host merely up" guess.
+
+Async (httpx.AsyncClient), not the old blocking httpx.get -- this is now
+called from cameras_service.run_periodic_connectivity_sweep under an
+asyncio.Semaphore for hundreds of cameras concurrently; a blocking call here
+would serialize the whole sweep and stall the event loop for every other
+request on every cache miss.
 """
 import time
 
@@ -16,26 +22,23 @@ import httpx
 
 _TIMEOUT_SECONDS = 5.0
 
-# Two independent frontend pollers (CameraRegistryContext's map-wide check
-# and useCameraFeeds' dashboard check) hit this per camera on their own
-# ~15-20s intervals, from however many tabs an officer has open -- without
-# this, each one pays a fresh network round trip to MediaMTX for the exact
-# same URL within the same few seconds, and can disagree with each other
-# purely from timing (one call lands mid-blip, the other doesn't). A short
-# TTL cache means near-simultaneous callers see the same answer and the
-# relay isn't hit more often than the result could plausibly have changed.
+# GET /cameras/{id}/live-check (an officer's manual "Retry" affordance) and
+# the periodic sweep can land on the same URL within moments of each other --
+# a short TTL cache means they see the same answer instead of paying two
+# independent round trips to MediaMTX for a result that couldn't plausibly
+# have changed in between.
 _CACHE_TTL_SECONDS = 8.0
 _cache: dict[str, tuple[float, bool]] = {}
 
 
-def check_hls_reachable(url: str) -> bool:
+async def check_hls_reachable(client: httpx.AsyncClient, url: str) -> bool:
     now = time.monotonic()
     cached = _cache.get(url)
     if cached is not None and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
 
     try:
-        response = httpx.get(url, timeout=_TIMEOUT_SECONDS, follow_redirects=True)
+        response = await client.get(url, timeout=_TIMEOUT_SECONDS, follow_redirects=True)
         reachable = response.status_code == 200
     except httpx.HTTPError:
         reachable = False

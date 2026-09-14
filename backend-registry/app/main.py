@@ -7,6 +7,7 @@ together: middleware, the federation proxy mount, and each router.
 Run locally: uvicorn app.main:app --reload --port 8000
 """
 import asyncio
+import os
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +34,7 @@ from .routers import (
     reports,
     roles,
 )
-from .services import recording_health_stream
+from .services import cameras_service, recording_health_stream
 
 configure_logging()
 
@@ -81,6 +82,28 @@ async def _capture_recording_health_stream_loop():
     # the running event loop to schedule the actual async send -- same
     # pattern as backend-watchlist's alerts_stream capture.
     recording_health_stream.manager.loop = asyncio.get_running_loop()
+
+
+@app.on_event("startup")
+async def _start_camera_connectivity_sweep_loop():
+    # pytest sets this for the duration of every test, and every one of
+    # this suite's tests opens its own `with TestClient(app)` (see
+    # conftest.py's `client` fixture), each firing this same startup event --
+    # left unguarded, that's every test concurrently sweeping every camera
+    # and racing every other test's monkeypatched settings against the
+    # shared dev DB. Same guard backend-watchlist's own periodic loops use.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    app.state.camera_connectivity_sweep_task = asyncio.create_task(
+        cameras_service.run_periodic_connectivity_sweep()
+    )
+
+
+@app.on_event("shutdown")
+async def _stop_camera_connectivity_sweep_loop():
+    task = getattr(app.state, "camera_connectivity_sweep_task", None)
+    if task is not None:
+        task.cancel()
 
 
 @app.get("/health")

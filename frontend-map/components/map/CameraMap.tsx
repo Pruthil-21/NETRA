@@ -313,12 +313,13 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // Positions (not just membership) drive MapController's bounds-fit effect,
   // so highlightedIdsKey alone isn't enough to keep highlightedPositions'
   // array reference stable -- a raw `cameras` dependency here re-triggers
-  // that effect (and yanks the viewport back via flyToBounds) on every real
-  // connectivity-status flip, since `cameras` gets a new array reference on
-  // every such flip (see CameraRegistryContext's updateCameraConnectivity).
-  // This key captures the lat/long of just the highlighted cameras, so it
-  // only changes when a highlighted camera's position (or the highlighted
-  // set itself) actually changes -- mirrors cameraIdKey/highlightedIdsKey above.
+  // that effect (and yanks the viewport back via flyToBounds) on every
+  // periodic registry re-fetch, since `cameras` gets a brand-new array
+  // reference on every such refresh (see CameraRegistryContext.tsx's
+  // refreshCameras). This key captures the lat/long of just the highlighted
+  // cameras, so it only changes when a highlighted camera's position (or the
+  // highlighted set itself) actually changes -- mirrors cameraIdKey/
+  // highlightedIdsKey above.
   const highlightedPositionsKey = useMemo(() => {
     if (!highlightedCameraIds || highlightedCameraIds.size === 0) return '';
     return cameras
@@ -341,8 +342,8 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // One stable ref-callback per camera id, reused across renders -- without this,
   // the inline arrow passed to each <Marker ref={...}> below is a brand-new function
   // every render, which makes React detach-then-reattach every marker's ref on every
-  // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from the
-  // background connectivity poller in CameraRegistryContext, whether or not this
+  // re-render (this component re-renders every HEALTH_CHECK_INTERVAL_MS from
+  // CameraRegistryContext's periodic registry re-fetch, whether or not this
   // specific camera's own data changed). Built via useMemo (keyed on the stable set of
   // camera ids, not the `cameras` array reference -- see below) rather
   // than a lazy ref-cache read during render -- the closures themselves only touch
@@ -364,14 +365,14 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     }
     return map;
     // Keyed on the stable set of camera ids (cameraIdKey), not the `cameras`
-    // array reference -- that reference still changes on every real
-    // connectivity-status flip (see updateCameraConnectivity in
-    // CameraRegistryContext.tsx), which previously forced every marker's ref
-    // to detach/reattach on every such flip. During a hover, if the 20s
-    // background health-poll flipped even one *other* camera's status, all
-    // marker refs churned and Leaflet closed whatever popup was open --
-    // this is the actual cause of the reported "hover flickers and shows
-    // nothing" bug. Keying on ids-only means a status-only update never
+    // array reference -- that reference still changes on every periodic
+    // registry re-fetch (see refreshCameras in CameraRegistryContext.tsx),
+    // which previously forced every marker's ref to detach/reattach on every
+    // such refresh. During a hover, if the poll landed mid-hover and even
+    // one *other* camera's status had changed, all marker refs churned and
+    // Leaflet closed whatever popup was open -- this is the actual cause of
+    // the reported "hover flickers and shows nothing" bug. Keying on
+    // ids-only means a status-only update never
     // touches marker refs; only cameras actually being added/removed does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraIdKey]);
