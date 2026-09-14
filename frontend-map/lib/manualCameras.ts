@@ -15,7 +15,7 @@ import { Camera } from '@/types/camera';
 const STORAGE_KEY = 'netra_manual_cameras';
 
 // Reserved so manually added ids can never collide with an organizer camera
-// (currently 1-30) or the 9000+ standalone test-rig range (lib/testCameras.ts).
+// (currently 1-30).
 const MANUAL_ID_RANGE_START = 8000;
 const MANUAL_ID_RANGE_END = 8999;
 
