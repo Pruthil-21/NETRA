@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 import { Camera } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
@@ -130,9 +130,16 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  // isLoading drives a real UI swap (CameraRegistrySidebar replaces the whole
+  // camera tree with a skeleton while it's true) -- only the very first fetch
+  // should ever trigger that. Every later call is a background re-poll (the
+  // periodic refresh below, or a manual refresh button), and must update
+  // `cameras` in place without yanking the tree out from under whatever an
+  // officer has expanded/scrolled/selected.
+  const hasLoadedOnceRef = useRef(false);
 
   const refreshCameras = useCallback(async () => {
-    setIsLoading(true);
+    if (!hasLoadedOnceRef.current) setIsLoading(true);
     // backend-registry being unreachable shouldn't blank the manual, test-rig,
     // and vehicle-trace-demo cameras, none of which need that network call --
     // same "one source failing doesn't blank the others" rule as before.
@@ -154,6 +161,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         VEHICLE_TRACE_DEMO_CAMERAS
       )
     );
+    hasLoadedOnceRef.current = true;
     setIsLoading(false);
   }, []);
 
