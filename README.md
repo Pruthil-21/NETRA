@@ -202,11 +202,11 @@ feed).
 
 | Area | Contributor(s) |
 |---|---|
-| Backend & Frontend | Pruthil |
-| ML / ANPR & Backend | Avi |
+| Backend, Frontend & Federation | Pruthil |
+| ML / ANPR | Avi |
 | Backend (registry & watchlist) | Anushka |
 | Frontend | Krishna, Vrunda |
-| Streaming & Federation | Dhruv |
+| Streaming | Dhruv |
 
 ---
 
