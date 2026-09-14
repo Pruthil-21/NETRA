@@ -5,7 +5,7 @@ import L from 'leaflet';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
-import { createCustomMarkerIcon, createDirectionArrowIcon, createVehicleTraceIcon, POLICE_STATION_ICON } from './MapCustomMarker';
+import { createDirectionArrowIcon, createVehicleTraceIcon, POLICE_STATION_ICON, getCachedMarkerIcon } from './MapCustomMarker';
 import { fetchPoliceStations, PoliceStation } from '@/services/policeStationsService';
 import { MarkerClusterGroup } from './MarkerClusterGroup';
 import { SATELLITE_TILES, SATELLITE_LABELS_TILES, SATELLITE_MAX_ZOOM, SATELLITE_ATTRIBUTION } from '@/lib/constants/mapConfig';
@@ -376,6 +376,30 @@ export const CameraMap: React.FC<CameraMapProps> = ({
     // touches marker refs; only cameras actually being added/removed does.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cameraIdKey]);
+  // Marker icons are the map's single biggest render cost at real camera
+  // counts: createCustomMarkerIcon builds an HTML string and instantiates a
+  // brand-new L.divIcon, and react-leaflet calls the underlying marker's
+  // setIcon() (real DOM work -- tear down the old icon element, parse and
+  // attach the new one) whenever that icon's object reference changes.
+  // Without caching, EVERY camera got a new icon object on EVERY render --
+  // including a hover on one marker, a filter change, or the periodic
+  // registry poll -- so hundreds of markers redid this DOM work for a
+  // change that affected at most a handful of them. getCachedMarkerIcon
+  // (module-scope, not a ref -- see its own comment) reuses the same icon
+  // object across renders for any camera whose actual
+  // status/selection/route/highlight state hasn't changed, so unrelated
+  // re-renders only touch the markers that actually need it.
+  const markerIcons = useMemo(() => {
+    const icons = new Map<number, L.DivIcon>();
+    for (const cam of cameras) {
+      const isSelected = selectedCamera?.id === cam.id;
+      const isOnRoute = routeCameraIds.has(cam.id);
+      const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
+      icons.set(cam.id, getCachedMarkerIcon(cam, isSelected, isOnRoute, isHighlighted));
+    }
+    return icons;
+  }, [cameras, selectedCamera, routeCameraIds, highlightedCameraIds]);
+
   // One hover-grace controller per camera id, created lazily on first hover and
   // reused after -- mirrors the per-marker-ref cache above for the same reason
   // (this component manages every marker from one instance, so per-marker state
@@ -452,6 +476,12 @@ export const CameraMap: React.FC<CameraMapProps> = ({
       <MapContainer
         center={[22.2587, 71.1924]}
         zoom={7}
+        // Renders every Polyline/CircleMarker (route legs, sighting dots,
+        // anomaly rings) onto one shared <canvas> instead of an individual
+        // SVG element each -- cheaper to draw and cheaper for the browser
+        // to keep up during pan/zoom, and matches the canvas-based
+        // coverage/density/flow layers already used elsewhere on this map.
+        preferCanvas
         className="w-full h-full bg-slate-950"
       >
         <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
@@ -471,15 +501,12 @@ export const CameraMap: React.FC<CameraMapProps> = ({
                 visible and clickable regardless of what's selected in the tree. */}
             {cameras.map((cam: Camera) => {
               const longitude = cam.long ?? 0;
-              const isSelected = selectedCamera?.id === cam.id;
-              const isOnRoute = routeCameraIds.has(cam.id);
-              const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
               return (
                 <Marker
                   key={cam.id}
                   ref={markerRefCallbacks.get(cam.id)}
                   position={[cam.lat, longitude]}
-                  icon={createCustomMarkerIcon(cam, isSelected, isOnRoute, isHighlighted)}
+                  icon={markerIcons.get(cam.id)}
                   eventHandlers={{
                     click: () => onSelectCamera(cam),
                     mouseover: () => handleMarkerHoverStart(cam.id),
