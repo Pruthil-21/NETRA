@@ -6,8 +6,6 @@ import { Camera } from '@/types/camera';
 import { CameraFilters } from '@/types/filters';
 import { OrganizerCamera } from '@/types/organizerCamera';
 import { organizerCameraToCamera } from '@/lib/organizerCameras';
-import { TEST_CCTV_CAMERAS } from '@/lib/testCameras';
-import { VEHICLE_TRACE_DEMO_CAMERAS } from '@/lib/vehicleTraceCameras';
 import { loadManualCameras, saveManualCameras, nextManualId } from '@/lib/manualCameras';
 import { authHeaders } from '@/lib/apiAuth';
 import { SESSION_CHANGED_EVENT } from '@/lib/session';
@@ -20,15 +18,12 @@ import { SESSION_CHANGED_EVENT } from '@/lib/session';
 // `organizer-cam01`..`organizer-cam30`). GET /cameras always requires a bearer
 // token (any role), same as the rest of the registry API -- see
 // backend-registry/app/auth.py.
-// The cameras array is assembled from four independent sources (registry API,
-// manually-entered, the fixed test rig, the fixed vehicle-trace demo) that don't
-// know about each other's ids. TEST_CCTV_CAMERAS (9000+) and VEHICLE_TRACE_DEMO_CAMERAS
-// (101-103) are *reserved* ranges by convention, but nothing enforced that against
-// the registry's own auto-incrementing ids -- which is exactly how registry cameras
-// landed on 101/102/103 once already, producing a duplicate React key crash on every
-// map/marker render. This dedupes by id, keeping the *last* occurrence -- callers
-// list the reserved/fixed arrays last specifically so they always win a collision
-// over a same-id registry/manual entry, never the other way around.
+// The cameras array is assembled from two independent sources (registry API,
+// manually-entered) that don't know about each other's ids -- a manually-added
+// camera's id (see lib/manualCameras.ts's 8000-8999 range) could in principle
+// still collide with a real registry id. This dedupes by id, keeping the
+// *last* occurrence, so a collision never produces a duplicate React key
+// crash on map/marker render.
 function mergeCameraSources(...sources: Camera[][]): Camera[] {
   const byId = new Map<number, Camera>();
   for (const source of sources) {
@@ -153,14 +148,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
     setLastUpdated(new Date());
     const manual = loadManualCameras();
     setManualCameras(manual);
-    setCameras(
-      mergeCameraSources(
-        registryCameras,
-        manual.map(organizerCameraToCamera),
-        TEST_CCTV_CAMERAS,
-        VEHICLE_TRACE_DEMO_CAMERAS
-      )
-    );
+    setCameras(mergeCameraSources(registryCameras, manual.map(organizerCameraToCamera)));
     hasLoadedOnceRef.current = true;
     setIsLoading(false);
   }, []);

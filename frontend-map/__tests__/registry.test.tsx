@@ -130,14 +130,19 @@ describe('P2 Frontend Map: Feature Tests', () => {
     });
   });
 
-  it('Feature 5: CameraRegistryContext deduplicates a registry camera that collides with a reserved demo id', async () => {
-    // id 101 is reserved for VEHICLE_TRACE_DEMO_CAMERAS's "Petlad Entry Checkpoint" --
-    // this simulates the registry's own auto-incrementing ids accidentally landing on
-    // it too, which produced a duplicate-key React crash on every map render.
-    const collidingRegistryCamera: Camera = { ...MOCK_CAMERAS[0], id: 101, name: 'Accidental Collision Camera' };
+  it('Feature 5: CameraRegistryContext deduplicates a manually-added camera that collides with a registry id', async () => {
+    // Manual ids live in the 8000-8999 range by convention (lib/manualCameras.ts),
+    // but nothing enforces that against the registry's own auto-incrementing ids --
+    // this simulates the two landing on the same id, which previously produced a
+    // duplicate-key React crash on every map/marker render.
+    const collidingRegistryCamera: Camera = { ...MOCK_CAMERAS[0], id: 8500, name: 'Registry Camera' };
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ ok: true, json: async () => [collidingRegistryCamera] })
+    );
+    window.localStorage.setItem(
+      'netra_manual_cameras',
+      JSON.stringify([{ id: '8500', name: 'Manually Added Camera' }])
     );
 
     function TestConsumer() {
@@ -160,9 +165,11 @@ describe('P2 Frontend Map: Feature Tests', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('101:Petlad Entry Checkpoint')).toBeInTheDocument();
+      expect(screen.getByText('8500:Manually Added Camera')).toBeInTheDocument();
     });
-    expect(screen.queryByText('101:Accidental Collision Camera')).not.toBeInTheDocument();
-    expect(screen.getAllByText(/^101:/)).toHaveLength(1);
+    expect(screen.queryByText('8500:Registry Camera')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/^8500:/)).toHaveLength(1);
+
+    window.localStorage.removeItem('netra_manual_cameras');
   });
 });
