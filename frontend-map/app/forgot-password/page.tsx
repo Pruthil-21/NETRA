@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, UserCheck, Mail, KeyRound } from 'lucide-react';
+import Image from 'next/image';
+import { UserCheck, Mail, KeyRound } from 'lucide-react';
 import { requestPasswordResetOtp, resetPasswordWithOtp } from '@/lib/session';
 import { PasswordStrengthMeter } from '@/components/common/PasswordStrengthMeter';
 import { analyzePassword } from '@/lib/passwordStrength';
@@ -59,9 +60,7 @@ export default function ForgotPasswordPage() {
     <main className="min-h-screen bg-ink flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-panel border border-line rounded-lg p-8 shadow-2xl">
         <div className="text-center mb-8">
-          <div className="inline-flex p-3 bg-command/10 border border-command/30 text-command rounded-lg mb-3">
-            <Shield size={32} />
-          </div>
+          <Image src="/logo-mark.png" alt="" width={56} height={56} priority className="mx-auto mb-3" />
           <h1 className="text-2xl font-bold text-white tracking-wider">Reset Password</h1>
           <p className="text-xs text-slate-500 mt-1">Only works if you have an email on file</p>
         </div>

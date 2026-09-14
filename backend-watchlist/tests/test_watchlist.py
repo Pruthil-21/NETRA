@@ -7,7 +7,10 @@ from app.config import settings
 
 
 def _random_plate():
-    return f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() -- this shared "GJ01AB"
+    # namespace needs more than 4 hex chars of entropy to avoid cross-test
+    # plate collisions within one CI run.
+    return f"GJ01AB{uuid.uuid4().hex[:10].upper()}"
 
 
 def _direct_conn():

@@ -14,7 +14,10 @@ def _direct_conn():
 
 
 def _random_plate():
-    return f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() -- this shared "GJ01AB"
+    # namespace needs more than 4 hex chars of entropy to avoid cross-test
+    # plate collisions within one CI run.
+    return f"GJ01AB{uuid.uuid4().hex[:10].upper()}"
 
 
 def test_single_detection_creates_one_summary_row_with_one_timestamp(client, internal_headers):

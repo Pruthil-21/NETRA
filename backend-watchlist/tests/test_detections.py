@@ -14,7 +14,13 @@ def _direct_conn():
 
 
 def _random_plate():
-    return f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
+    # 10 hex chars, not 4 -- this exact "GJ01AB" prefix is shared with
+    # several other test files' own _random_plate(), and 4 chars (65536
+    # values) was thin enough across one CI run's combined draws to produce
+    # real cross-test plate collisions; see test_vehicle_traces.py's
+    # _random_plate() for the full explanation of how that actually broke
+    # an unrelated assertion there.
+    return f"GJ01AB{uuid.uuid4().hex[:10].upper()}"
 
 
 def test_post_detection_requires_internal_key(client):

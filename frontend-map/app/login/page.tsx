@@ -2,7 +2,8 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Shield, KeyRound, UserCheck, Mail } from 'lucide-react';
+import Image from 'next/image';
+import { KeyRound, UserCheck, Mail } from 'lucide-react';
 import { login, verifyLoginOtp } from '@/lib/session';
 
 export default function LoginPage() {
@@ -55,9 +56,7 @@ export default function LoginPage() {
     <main className="min-h-screen bg-ink flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-panel border border-line rounded-lg p-8 shadow-2xl">
         <div className="text-center mb-8">
-          <div className="inline-flex p-3 bg-command/10 border border-command/30 text-command rounded-lg mb-3">
-            <Shield size={32} />
-          </div>
+          <Image src="/logo-mark.png" alt="" width={56} height={56} priority className="mx-auto mb-3" />
           <h1 className="text-2xl font-bold text-white tracking-wider">DIGDHRISHTI</h1>
           <p className="text-xs text-slate-500 mt-1">Gujarat Unified Video Integration System</p>
         </div>
