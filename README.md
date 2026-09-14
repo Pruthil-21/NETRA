@@ -12,7 +12,7 @@
 
 **Real-time vehicle intelligence for a growing camera network.**
 
-DIGDHRISHTI (Gujarati: "sharp/clear vision") is an ANPR (Automatic Number
+DIGDHRISHTI is an ANPR (Automatic Number
 Plate Recognition) surveillance and investigation platform built for Gujarat
 Police under Smart India Hackathon. It turns a state-wide network of traffic
 and CCTV cameras — today heterogeneous, siloed, and manually monitored — into
@@ -199,8 +199,6 @@ feed).
   running on every vehicle trace.
 
 ## Team
-
-Built by a six-member team for Smart India Hackathon:
 
 | Area | Contributor(s) |
 |---|---|
