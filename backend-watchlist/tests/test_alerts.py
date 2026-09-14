@@ -12,7 +12,10 @@ def _direct_conn():
 
 
 def _seed_watchlist_and_detection(client, internal_headers, camera_id=1):
-    plate = f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() -- this shared "GJ01AB"
+    # namespace needs more than 4 hex chars of entropy to avoid cross-test
+    # plate collisions within one CI run.
+    plate = f"GJ01AB{uuid.uuid4().hex[:10].upper()}"
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "INSERT INTO watchlist (plate_number, reason, dept_flagged) VALUES (%s, %s, %s) RETURNING id",

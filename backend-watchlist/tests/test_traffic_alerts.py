@@ -16,7 +16,9 @@ def _direct_conn():
 
 
 def _random_plate():
-    return f"GJ01TA{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() for why 4 hex chars of
+    # suffix entropy is thin enough to risk a cross-test plate collision.
+    return f"GJ01TA{uuid.uuid4().hex[:10].upper()}"
 
 
 def _insert_test_camera(dept: str, lat: float = 23.0, long: float = 72.5) -> int:

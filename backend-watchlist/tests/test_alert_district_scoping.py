@@ -38,7 +38,9 @@ def _delete_test_camera(camera_id: int):
 
 
 def _seed_watchlist_and_detection(client, internal_headers, camera_id: int, dept_flagged: str):
-    plate = f"GJ01AS{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() for why 4 hex chars of
+    # suffix entropy is thin enough to risk a cross-test plate collision.
+    plate = f"GJ01AS{uuid.uuid4().hex[:10].upper()}"
     with _direct_conn() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             "INSERT INTO watchlist (plate_number, reason, dept_flagged) VALUES (%s, %s, %s) RETURNING id",

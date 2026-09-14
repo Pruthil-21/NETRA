@@ -57,7 +57,9 @@ def _rbac_token(role, scope_type, scope_value=None):
 
 
 def _random_plate_for_stream_test():
-    return f"GJ01WS{uuid.uuid4().hex[:4].upper()}"
+    # See test_vehicle_traces.py's _random_plate() for why 4 hex chars of
+    # suffix entropy is thin enough to risk a cross-test plate collision.
+    return f"GJ01WS{uuid.uuid4().hex[:10].upper()}"
 
 
 def _insert_test_camera(dept: str) -> int:

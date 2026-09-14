@@ -10,7 +10,18 @@ from app.services import camera_metadata
 
 
 def _random_plate():
-    return f"GJ01AB{uuid.uuid4().hex[:4].upper()}"
+    # 10 hex chars, not 4 -- this exact "GJ01AB" prefix is reused by several
+    # other test files' own _random_plate() (test_detections.py,
+    # test_watchlist.py, test_vehicle_daily_sightings.py, test_alerts.py),
+    # all drawing from the same shared namespace in one CI run. At 4 chars
+    # (65536 values) across the 40+ draws that namespace sees per run, plate
+    # collisions between unrelated tests were a real, if rare, occurrence --
+    # and a big one: a collided plate merges two tests' detections into one
+    # vehicle-traces query, and if the other test's camera was already
+    # cleaned up by its own fixture teardown, camera_metadata.lookup()
+    # correctly returns None for that foreign sighting, which can land at
+    # sightings[0] and fail an assertion that has nothing wrong with it.
+    return f"GJ01AB{uuid.uuid4().hex[:10].upper()}"
 
 
 def _direct_conn():
