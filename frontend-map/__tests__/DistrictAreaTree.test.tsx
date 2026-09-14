@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { DistrictAreaTree } from '@/components/tree/DistrictAreaTree';
+import { DistrictAreaTree, getParentSelection } from '@/components/tree/DistrictAreaTree';
 
 const AREAS = [
   { id: 1, name: 'APC Area', district: 'Anand', district_id: 1, village: 'Village', taluka: 'Taluka', village_id: 1, created_at: '2026-01-01T00:00:00Z' },
@@ -201,5 +201,92 @@ describe('DistrictAreaTree', () => {
 
     fireEvent.click(screen.getByText('Empty Area'));
     expect(onSelect).toHaveBeenCalledWith({ type: 'area', value: 3 });
+  });
+
+  describe('getParentSelection', () => {
+    it('steps a camera up to its area', () => {
+      expect(getParentSelection({ type: 'camera', value: 101 }, CAMERAS, AREAS)).toEqual({
+        type: 'area', value: 1,
+      });
+    });
+
+    it('steps an unassigned camera (no area_id) straight to its district', () => {
+      const orphan = [...CAMERAS, { id: 104, name: 'Camera 04', dept: 'Anand', area_id: null }];
+      expect(getParentSelection({ type: 'camera', value: 104 }, orphan, AREAS)).toEqual({
+        type: 'district', value: 'Anand',
+      });
+    });
+
+    it('steps an area up to its district', () => {
+      expect(getParentSelection({ type: 'area', value: 1 }, CAMERAS, AREAS)).toEqual({
+        type: 'district', value: 'Anand',
+      });
+    });
+
+    it('steps a district up to everything (null)', () => {
+      expect(getParentSelection({ type: 'district', value: 'Anand' }, CAMERAS, AREAS)).toBeNull();
+    });
+
+    it('leaves null unchanged -- already at the top', () => {
+      expect(getParentSelection(null, CAMERAS, AREAS)).toBeNull();
+    });
+
+    it('resolves to null for a camera/area id no longer in the given lists, rather than guessing', () => {
+      expect(getParentSelection({ type: 'camera', value: 999 }, CAMERAS, AREAS)).toBeNull();
+      expect(getParentSelection({ type: 'area', value: 999 }, CAMERAS, AREAS)).toBeNull();
+    });
+  });
+
+  it('Escape steps the selection up one level: camera -> area -> district -> everything', () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={{ type: 'camera', value: 101 }} onSelect={onSelect} />
+    );
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onSelect).toHaveBeenLastCalledWith({ type: 'area', value: 1 });
+
+    rerender(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={{ type: 'area', value: 1 }} onSelect={onSelect} />
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onSelect).toHaveBeenLastCalledWith({ type: 'district', value: 'Anand' });
+
+    rerender(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={{ type: 'district', value: 'Anand' }} onSelect={onSelect} />
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onSelect).toHaveBeenLastCalledWith(null);
+
+    // Already at the top -- Escape is a no-op, not a spurious extra call.
+    onSelect.mockClear();
+    rerender(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={null} onSelect={onSelect} />
+    );
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('Escape closes an open district search box instead of stepping the selection up', () => {
+    const onSelect = vi.fn();
+    render(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={{ type: 'camera', value: 101 }} onSelect={onSelect} />
+    );
+
+    fireEvent.click(screen.getByLabelText('Search cameras in Anand'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByPlaceholderText('Search in Anand…')).not.toBeInTheDocument();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('the Gujarat header is clickable and resets the selection to everything', () => {
+    const onSelect = vi.fn();
+    render(
+      <DistrictAreaTree districts={['Anand']} areas={AREAS} cameras={CAMERAS} selected={{ type: 'area', value: 1 }} onSelect={onSelect} />
+    );
+
+    fireEvent.click(screen.getByText('Gujarat'));
+    expect(onSelect).toHaveBeenCalledWith(null);
   });
 });

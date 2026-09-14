@@ -82,10 +82,9 @@ describe('P2 Frontend Map: Feature Tests', () => {
     );
 
     expect(screen.getByText('Sector 10 CH Road Junction')).toBeInTheDocument();
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByText('#1')).toBeInTheDocument();
     expect(screen.getByText('Gandhinagar Police')).toBeInTheDocument();
-    expect(screen.getByText('Cloud Architecture')).toBeInTheDocument();
-    expect(screen.getByText('30 Days Archival Policy')).toBeInTheDocument();
+    expect(screen.getByText('Cloud · 30d retention')).toBeInTheDocument();
     expect(screen.getByText('rtsp://localhost:8554/cam1')).toBeInTheDocument();
   });
 

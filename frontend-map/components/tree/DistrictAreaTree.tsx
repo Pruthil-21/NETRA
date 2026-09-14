@@ -48,6 +48,35 @@ interface DistrictAreaTreeProps {
   onPlayCamera?: (cameraId: number) => void;
 }
 
+/** One step up the State -> District -> Area -> Camera hierarchy from the
+ * given selection -- camera to its area (or straight to its district if
+ * it's unassigned), area to its district, district to "everything" (null).
+ * Pure and RBAC-free by design: it only ever resolves to a value already
+ * reachable through `cameras`/`areas`, which the caller has already scoped
+ * to the signed-in officer's jurisdiction (see effective_district_scopes on
+ * the backend) -- there's no broader place for it to step up TO than what
+ * was already visible in the tree. Returns null (unchanged) if the
+ * selection's own camera/area can't be found, rather than guessing. */
+export function getParentSelection(
+  selection: TreeSelection,
+  cameras: Camera[],
+  areas: Area[]
+): TreeSelection {
+  if (selection === null) return null;
+  if (selection.type === 'camera') {
+    const camera = cameras.find((c) => c.id === selection.value);
+    if (!camera) return null;
+    return camera.area_id != null
+      ? { type: 'area', value: camera.area_id }
+      : { type: 'district', value: camera.dept };
+  }
+  if (selection.type === 'area') {
+    const area = areas.find((a) => a.id === selection.value);
+    return area ? { type: 'district', value: area.district } : null;
+  }
+  return null;
+}
+
 /** Draws the ├──/└── connector for one row in a sibling list: a vertical
  * trunk down the row's left edge (full row height when a sibling follows,
  * half when this is the last one, so the trunk never dangles past the last
@@ -215,6 +244,31 @@ export function DistrictAreaTree({
     };
   }, [hasOpenDistrictSearch]);
 
+  // Escape steps the current selection up one level of the hierarchy
+  // instead of doing nothing -- camera -> its area -> its district ->
+  // everything. Skipped while a local district search box is open (the
+  // handler above owns Escape then: closing that box takes priority over
+  // navigating the tree behind it) and once selection is already null
+  // (nothing left to step up to). A ref, not `selected` itself, in the
+  // effect body avoids tearing this listener down and re-attaching it on
+  // every selection change -- it only needs to run once per mount and read
+  // whatever the latest selection/cameras/areas are when Escape actually
+  // fires.
+  const selectedRef = useRef(selected);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+  useEffect(() => {
+    if (hasOpenDistrictSearch) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (selectedRef.current === null) return;
+      onSelect(getParentSelection(selectedRef.current, cameras, areas));
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [hasOpenDistrictSearch, onSelect, cameras, areas]);
+
   const areasByDistrict = useMemo(() => {
     const map = new Map<string, Area[]>();
     for (const area of areas) {
@@ -344,10 +398,15 @@ export function DistrictAreaTree({
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold">
+      <button
+        type="button"
+        onClick={() => onSelect(null)}
+        title={`Show every camera in ${STATE_NAME}`}
+        className="w-full flex items-center gap-1.5 px-2 py-1.5 text-slate-200 font-semibold hover:bg-panel-raised hover:text-white text-left"
+      >
         <Landmark size={12} className="shrink-0" />
         <span className="truncate">{STATE_NAME}</span>
-      </div>
+      </button>
       <div className="pl-4">
       {orderedDistricts.map((district, di) => {
         const districtAreasAll = areasByDistrict.get(district) ?? [];
