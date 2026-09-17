@@ -18,6 +18,12 @@ export interface CameraFilters {
    * areaIds below (picking a city and a specific area in another city
    * means "either," not "both"). */
   departments: string[];
+  /** Selected owning GOVERNMENT DEPARTMENTS (Police/GSRTC/Panchayat/
+   * Municipal Corporation/Health/...) -- see Camera.owning_department.
+   * Empty means "every department, including untagged cameras." Distinct
+   * from `departments` above (which is really city/district) on purpose --
+   * same reasoning as the backend's separate owning_department column. */
+  owningDepartments: string[];
   /** Selected area/area ids -- empty means "every area." */
   areaIds: number[];
   connectivity: ConnectivityStatus | 'all';
@@ -43,4 +49,14 @@ export interface CameraFilters {
    * marker, so it isn't affected by the coverage/density/flow overlays
    * that hide camera pins. Defaults to true. */
   showPoliceStations: boolean;
+  /** Model 1's spec asks for a GIS map layer per "department, camera type,
+   * status, and coverage" -- department/status/coverage already existed as
+   * filters/layers, camera type didn't. Independent of mapLayer on purpose
+   * (real GIS layer panels like ArcGIS/QGIS stack symbology layers rather
+   * than making them mutually exclusive): toggling this recolors/reshapes
+   * marker icons by camera_type without hiding whatever coverage/density/
+   * flow layer is also active. Defaults to false -- off means every marker
+   * looks exactly as it always has, zero visual change for anyone who
+   * never opens this toggle. */
+  showCameraType: boolean;
 }

@@ -10,11 +10,22 @@ export interface CoverageTarget {
   priority: string;
 }
 
+export interface PlacementSuggestion {
+  suggested_at_target_id: number;
+  suggested_at_name: string;
+  district: string;
+  lat: number;
+  long: number;
+  covers_target_ids: number[];
+  priority_weighted_score: number;
+}
+
 export interface GapAnalysisReport {
   uncovered_zones: {
     target_id: number;
     name: string;
     district: string;
+    priority: string;
     nearest_camera_id: number | null;
     distance_meters: number | null;
   }[];
@@ -24,7 +35,9 @@ export interface GapAnalysisReport {
     district: string;
     age_days: number;
     degraded_transition_count_90d: number;
+    risk_level: string;
   }[];
+  placement_suggestions: PlacementSuggestion[];
 }
 
 export async function fetchCoverageTargets(): Promise<CoverageTarget[]> {
@@ -52,6 +65,26 @@ export async function fetchGapAnalysisReport(): Promise<GapAnalysisReport> {
   const res = await fetch(`${REGISTRY_API_URL}/reports/gap-analysis`, { headers: authHeaders(), cache: 'no-store' });
   if (!res.ok) throw new Error(`Registry API returned ${res.status}`);
   return res.json();
+}
+
+// The export endpoint needs the same Authorization header as every other
+// registry call, so a plain <a href> can't hit it directly (a bare
+// cross-origin GET would carry no auth and 401). Fetched as a Blob and
+// opened in a new tab instead -- the report is meant to be read/printed
+// (see backend's Content-Disposition: inline), not silently saved, so a
+// viewable tab is the right target, not a forced file download.
+export async function openGapAnalysisReport(): Promise<void> {
+  const res = await fetch(`${REGISTRY_API_URL}/reports/gap-analysis/export`, {
+    headers: authHeaders(),
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`Registry API returned ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  // Revoked after a delay, not immediately -- the new tab needs the blob
+  // URL to still resolve by the time it finishes loading.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 
 export interface ReportSummary {

@@ -1,11 +1,65 @@
 import L from 'leaflet';
 import { Camera } from '../../types/camera';
 
+// Model 1's GIS map layer requirement lists "department, camera type,
+// status, and coverage" -- department (city/area) and status (the
+// circle/diamond shape below) already existed, coverage is its own canvas
+// layer; camera type didn't have a symbology at all. Real GIS layer panels
+// (ArcGIS "unique values renderer", QGIS categorized symbology) encode a
+// category as an icon/badge rather than a filter that just hides things --
+// this is that: a small colored corner badge, independent of and layered
+// on top of the existing status shape, not a replacement for it. Free-text
+// camera_type values are normalized case/punctuation-insensitively so
+// "PTZ", "ptz", "PTZ Camera" all match the same badge; anything
+// unrecognized gets a neutral "?" badge rather than silently no badge,
+// so an unusual value is visible as data-needing-cleanup, not invisible.
+type CameraTypeBadge = { letter: string; color: string; label: string };
+
+// ptz/dome/bullet/anpr are this registry's actual current camera_type values
+// (see types/camera.ts's CameraType union); fixed/cmount/daynight are kept
+// too since the backend column is free TEXT, not a DB-enforced enum (see
+// backend-registry/app/schema.sql) -- a future onboarded camera using one of
+// those values still gets a real badge instead of silently falling through
+// to "Other".
+const CAMERA_TYPE_BADGES: Record<string, CameraTypeBadge> = {
+  ptz: { letter: 'P', color: '#8B5CF6', label: 'PTZ' },
+  dome: { letter: 'D', color: '#F59E0B', label: 'Dome' },
+  bullet: { letter: 'B', color: '#14B8A6', label: 'Bullet' },
+  anpr: { letter: 'A', color: '#22C55E', label: 'ANPR' },
+  fixed: { letter: 'F', color: '#0EA5E9', label: 'Fixed' },
+  cmount: { letter: 'C', color: '#EC4899', label: 'C-Mount' },
+  daynight: { letter: 'N', color: '#6366F1', label: 'Day/Night' },
+};
+
+const UNKNOWN_TYPE_BADGE: CameraTypeBadge = { letter: '?', color: '#64748B', label: 'Other' };
+
+export function normalizeCameraTypeKey(cameraType: string | null | undefined): string {
+  return (cameraType || '').toLowerCase().replace(/[^a-z]/g, '');
+}
+
+export function getCameraTypeBadge(cameraType: string | null | undefined): CameraTypeBadge {
+  const key = normalizeCameraTypeKey(cameraType);
+  // Substring match, not exact -- a real registry value like "PTZ Dome" or
+  // "Fixed-IR" still resolves to a sensible badge instead of falling
+  // through to "Other" just because it isn't byte-for-byte one of the
+  // known keys.
+  for (const [needle, badge] of Object.entries(CAMERA_TYPE_BADGES)) {
+    if (key.includes(needle)) return badge;
+  }
+  return UNKNOWN_TYPE_BADGE;
+}
+
+export const CAMERA_TYPE_LEGEND: CameraTypeBadge[] = [
+  ...Object.values(CAMERA_TYPE_BADGES),
+  UNKNOWN_TYPE_BADGE,
+];
+
 export const createCustomMarkerIcon = (
   camera: Camera,
   isSelected: boolean,
   isOnRoute: boolean = false,
-  isHighlighted: boolean = false
+  isHighlighted: boolean = false,
+  showCameraType: boolean = false
 ) => {
   const status = (camera.connectivity_status || 'offline').toLowerCase();
   const isOnline = status === 'online';
@@ -36,6 +90,22 @@ export const createCustomMarkerIcon = (
         ? `<div class="absolute -inset-1 rounded-full border-2 border-amber-400 bg-amber-400/10"></div>`
         : '';
 
+  // A small corner badge, not a shape swap -- keeps the existing
+  // circle/diamond status language fully legible while adding the type
+  // dimension on top. Only computed/rendered when the Camera Type layer is
+  // actually on, so an officer who never toggles it sees byte-identical
+  // markers to before this feature existed.
+  const typeBadge = showCameraType
+    ? (() => {
+        const badge = getCameraTypeBadge(camera.camera_type);
+        return `<svg viewBox="0 0 32 32" class="absolute inset-0 w-8 h-8">
+          <circle cx="25" cy="25" r="6.5" fill="${badge.color}" stroke="#05070A" stroke-width="1.5" />
+          <text x="25" y="25" text-anchor="middle" dominant-baseline="central"
+                font-size="8" font-weight="700" fill="#05070A">${badge.letter}</text>
+        </svg>`;
+      })()
+    : '';
+
   const html = `
     <div class="relative flex items-center justify-center w-8 h-8 ${isOnline ? 'radar-sweep' : ''}">
       ${highlightRing}
@@ -43,6 +113,7 @@ export const createCustomMarkerIcon = (
         <circle cx="16" cy="16" r="14" fill="#05070A" stroke="${color}" stroke-width="${isSelected ? '3' : '2'}" />
         ${innerShape}
       </svg>
+      ${typeBadge}
     </div>
   `;
 
@@ -70,13 +141,14 @@ export const getCachedMarkerIcon = (
   camera: Camera,
   isSelected: boolean,
   isOnRoute: boolean,
-  isHighlighted: boolean
+  isHighlighted: boolean,
+  showCameraType: boolean = false
 ): L.DivIcon => {
   const status = (camera.connectivity_status || 'offline').toLowerCase();
-  const key = `${camera.id}|${status}|${isSelected}|${isOnRoute}|${isHighlighted}`;
+  const key = `${camera.id}|${status}|${isSelected}|${isOnRoute}|${isHighlighted}|${showCameraType}`;
   let icon = markerIconCache.get(key);
   if (!icon) {
-    icon = createCustomMarkerIcon(camera, isSelected, isOnRoute, isHighlighted);
+    icon = createCustomMarkerIcon(camera, isSelected, isOnRoute, isHighlighted, showCameraType);
     markerIconCache.set(key, icon);
   }
   return icon;
