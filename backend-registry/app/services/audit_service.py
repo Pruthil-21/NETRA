@@ -29,7 +29,7 @@ def _compute_entry_hash(prev_hash: str, row: dict) -> str:
     # regardless of dict insertion order -- required for verify_chain to be
     # able to recompute the exact same hash later.
     canonical = json.dumps(row, sort_keys=True, default=str, separators=(",", ":"))
-    return hashlib.sha256(f"{prev_hash}:{canonical}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{prev_hash}:{canonical}".encode()).hexdigest()
 
 
 def log(conn, user_id: str, action: str, resource_type: str, resource_id=None, badge_number=None, reason_code=None):

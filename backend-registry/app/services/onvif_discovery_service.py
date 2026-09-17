@@ -60,7 +60,7 @@ def _build_probe_message() -> bytes:
       <d:Types>dn:NetworkVideoTransmitter</d:Types>
     </d:Probe>
   </e:Body>
-</e:Envelope>""".encode("utf-8")
+</e:Envelope>""".encode()
 
 
 class _ProbeProtocol(asyncio.DatagramProtocol):
