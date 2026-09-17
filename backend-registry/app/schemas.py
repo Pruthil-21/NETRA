@@ -20,6 +20,21 @@ def _validate_email_format(value: str) -> str:
     return value
 
 
+# FIWARE/IUDX Smart Data Models `Camera` schema's real cameraUsage enum
+# (dataModel.Device/Camera) -- not DB-enforced (see schema.sql), just the
+# suggested/documented set. A value outside this list is still accepted:
+# real deployments outgrow a fixed enum faster than a schema migration.
+SUGGESTED_CAMERA_USAGE = ("SURVEILLANCE", "RLVD", "ANPR_LPR", "TRAFFIC")
+
+# The five departments the problem statement's own dataset actually spans
+# (FAQ #39: "cameras deployed across five Government departments: Health,
+# Police, GSRTC, Panchayat, and Municipal Corporation") -- the suggested,
+# not enforced, set for owning_department. The real statewide deployment
+# names 26 departments total (FAQ #3); this is deliberately not a closed
+# enum for that reason.
+SUGGESTED_OWNING_DEPARTMENTS = ("Police", "GSRTC", "Panchayat", "Municipal Corporation", "Health")
+
+
 class CameraCreate(BaseModel):
     name: str
     dept: str
@@ -36,6 +51,18 @@ class CameraCreate(BaseModel):
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
     area_id: Optional[int] = None
+    # IUDX/FIWARE alignment, CMDB lifecycle, DPDP documentation -- all
+    # optional/defaulted so every existing caller (bulk CSV import, the
+    # scale-demo seed scripts, the Add Camera modal) keeps working unchanged.
+    camera_usage: Optional[str] = None
+    lifecycle_stage: str = "operational"
+    lawful_basis: Optional[str] = None
+    privacy_review_completed: bool = False
+    # The owning GOVERNMENT DEPARTMENT (Police/GSRTC/Panchayat/Municipal
+    # Corporation/Health/...) -- distinct from `dept` above, which is the
+    # owning city/district. See schema.sql's owning_department column
+    # comment for why these are two separate fields, not one.
+    owning_department: Optional[str] = None
 
 
 class CameraUpdate(BaseModel):
@@ -53,6 +80,11 @@ class CameraUpdate(BaseModel):
     stream_id: Optional[str] = None
     hls_url: Optional[str] = None
     area_id: Optional[int] = None
+    camera_usage: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
+    lawful_basis: Optional[str] = None
+    privacy_review_completed: Optional[bool] = None
+    owning_department: Optional[str] = None
 
 
 class CameraOut(CameraCreate):
@@ -604,6 +636,7 @@ class UncoveredZone(BaseModel):
     target_id: int
     name: str
     district: str
+    priority: str
     nearest_camera_id: Optional[int] = None
     distance_meters: Optional[float] = None
 
@@ -614,11 +647,57 @@ class AgeingCamera(BaseModel):
     district: str
     age_days: int
     degraded_transition_count_90d: int
+    risk_level: str
+
+
+class PlacementSuggestion(BaseModel):
+    """One recommended new-camera site, from gap_analysis_service's greedy
+    set-cover placement algorithm -- see that module's docstring for why
+    greedy (not ILP) is the right tradeoff here."""
+    suggested_at_target_id: int
+    suggested_at_name: str
+    district: str
+    lat: float
+    long: float
+    covers_target_ids: list[int]
+    priority_weighted_score: float
 
 
 class GapAnalysisReport(BaseModel):
     uncovered_zones: list[UncoveredZone]
     ageing_infrastructure: list[AgeingCamera]
+    placement_suggestions: list[PlacementSuggestion] = []
+
+
+class DiscoveredCamera(BaseModel):
+    """One ONVIF device found by a WS-Discovery network scan -- see
+    onvif_discovery_service.py. Deliberately shaped close to CameraCreate's
+    fields so a discovered device can be handed straight to POST
+    /cameras/bulk once an officer fills in dept/lat/long (discovery finds
+    *that a device exists*, not what department owns it or where it sits on
+    a map -- neither is knowable from the network probe alone)."""
+    ip_address: str
+    onvif_service_url: str
+    device_uuid: Optional[str] = None
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    firmware_version: Optional[str] = None
+    stream_uri: Optional[str] = None
+    ptz_capable: Optional[bool] = None
+    reachable_detail: Optional[str] = None
+
+
+class DiscoveryScanResult(BaseModel):
+    devices: list[DiscoveredCamera]
+    scan_duration_seconds: float
+    subnet_scanned: Optional[str] = None
+
+
+class ChainVerifyResult(BaseModel):
+    valid: bool
+    chained_rows: int
+    broken_at_id: Optional[int] = None
+    reason: Optional[str] = None
 
 
 class AuditLogOut(BaseModel):

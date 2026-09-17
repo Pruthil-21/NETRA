@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from ..auth import require_permission
 from ..db import get_conn
 from ..rbac_scope import effective_district_scopes
-from ..schemas import AuditLogsPage
+from ..schemas import AuditLogsPage, ChainVerifyResult
 from ..services import audit_logs_service
 
 router = APIRouter(prefix="/audit-logs", tags=["audit logs"])
@@ -50,3 +50,17 @@ def list_audit_log_categories(user=Depends(require_permission("view_audit_logs")
     duplicate the action/resource_type -> category mapping (single source of
     truth stays audit_logs_service.CATEGORIES)."""
     return {"categories": list(audit_logs_service.CATEGORIES.keys()) + ["other"]}
+
+
+@router.get("/verify-chain", response_model=ChainVerifyResult)
+def verify_audit_chain(user=Depends(require_permission("view_audit_logs"))):
+    """Proves (or disproves) that no hash-chained audit row has been altered
+    or removed since it was written -- see audit_service.log's module
+    docstring. Gated on view_audit_logs, same as every other read here, so
+    the platform-wide, permissions-free "Auditor" role (scripts/seed_rbac.py)
+    can run this itself rather than needing to trust anyone else's word that
+    the log is intact. Not district-scoped: chain integrity is a whole-table
+    property, checking only a district's own rows can't prove anything about
+    the chain as a whole."""
+    with get_conn() as conn:
+        return audit_logs_service.verify_chain(conn)
