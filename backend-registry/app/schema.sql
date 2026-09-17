@@ -666,3 +666,62 @@ END $$;
 -- detections_service's camera density/flow queries).
 ALTER TABLE cameras ADD COLUMN IF NOT EXISTS is_virtual_capture BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS idx_cameras_virtual_capture ON cameras (is_virtual_capture) WHERE is_virtual_capture;
+
+-- Model 1 registry-completeness pass (research-grounded, see project notes):
+--
+-- camera_usage aligns with the FIWARE/IUDX Smart Data Models `Camera`
+-- schema's cameraUsage field (dataModel.Device/Camera) -- a real,
+-- Government-of-India-co-published vocabulary (SURVEILLANCE, RLVD, ANPR_LPR,
+-- TRAFFIC), confirmed to already match the overlay tags burned into the
+-- actual hackathon-provided camera feeds ("RLVD", "PTZ", "FIX"). Kept
+-- separate from the existing free-text camera_type column on purpose:
+-- camera_type is the physical form factor (PTZ/FIXED/DOME/...), camera_usage
+-- is the functional purpose -- two different IUDX fields, not one. No DB
+-- CHECK constraint (kept free-text, like every other permission/role string
+-- in this codebase) so a value outside the four IUDX examples never hard-fails
+-- an insert; schemas.py documents the suggested set instead.
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS camera_usage TEXT;
+
+-- CMDB-style lifecycle stage (ServiceNow/ITIL Plan-Build-Operate-Retire
+-- convention) -- distinct from connectivity_status, which is a live
+-- up/down signal, not where an asset sits in its procurement/deployment/
+-- decommission lifecycle. Defaults every existing and newly-onboarded
+-- camera to 'operational' (the only stage the registry could previously
+-- represent at all), so this is purely additive.
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lifecycle_stage TEXT NOT NULL DEFAULT 'operational'
+    CHECK (lifecycle_stage IN ('planned', 'installed', 'operational', 'retired'));
+CREATE INDEX IF NOT EXISTS idx_cameras_lifecycle_stage ON cameras (lifecycle_stage);
+
+-- DPDP Act, 2023 documentation fields. Police processing is very likely
+-- exempt under Section 17(1)(c) (investigative purposes), but documenting
+-- lawful basis and review status anyway is the stronger, voluntary-compliance
+-- posture rather than relying silently on the exemption -- cheap to store,
+-- never enforced/gated on by any code path.
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS lawful_basis TEXT;
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS privacy_review_completed BOOLEAN NOT NULL DEFAULT false;
+
+-- Tamper-evident audit log (Schneier & Kelsey, "Secure Audit Logs to Support
+-- Computer Forensics", ACM TISSEC 1999 -- the real canonical source; AWS's
+-- own current guidance after retiring QLDB is to hand-roll exactly this
+-- hash-chain directly on Postgres, which is what audit_service.log now does).
+-- entry_hash = sha256(prev_hash + this row's own fields); prev_hash points at
+-- the immediately preceding chained row's entry_hash. NULL on any row written
+-- before this migration (or by a writer that hasn't adopted the chain) --
+-- verify_chain() skips those rather than treating a NULL as a broken link,
+-- so old history isn't retroactively flagged as tampered.
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS entry_hash TEXT;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS prev_hash TEXT;
+CREATE INDEX IF NOT EXISTS idx_audit_logs_entry_hash ON audit_logs (id) WHERE entry_hash IS NOT NULL;
+
+-- Owning GOVERNMENT DEPARTMENT (Police, GSRTC, Panchayat, Municipal
+-- Corporation, Health, ... — the real 26-department set the problem
+-- statement's own FAQ names), deliberately a separate column from the
+-- existing `dept`, which despite its name has always stored the owning
+-- CITY/DISTRICT (e.g. "Ahmedabad", "Anand") for RBAC scoping and map
+-- filtering, not which department owns the camera. Conflating the two
+-- would have broken every existing district-scope check and every
+-- department-filter on the map. Free text, no CHECK constraint, same
+-- reasoning as camera_usage above: the real dataset spans at least 5 known
+-- values, and the full statewide set is larger and open-ended.
+ALTER TABLE cameras ADD COLUMN IF NOT EXISTS owning_department TEXT;
+CREATE INDEX IF NOT EXISTS idx_cameras_owning_department ON cameras (owning_department);

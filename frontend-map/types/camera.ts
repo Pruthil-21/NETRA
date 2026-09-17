@@ -37,4 +37,11 @@ export interface Camera {
    * not under any Area node.
    */
   area_id?: number | null;
+  /**
+   * The owning GOVERNMENT DEPARTMENT (e.g. "Police", "GSRTC", "Panchayat",
+   * "Municipal Corporation", "Health") — distinct from `dept` above, which
+   * despite its name has always meant the owning city/district, not which
+   * department owns the camera. `null`/absent means not yet tagged.
+   */
+  owning_department?: string | null;
 }

@@ -2,6 +2,11 @@
 """Business logic for the admin console: listing officers/postings and
 reassigning postings (the only mutation -- role_name/scope on a posting
 are never edited in place, see plan Global Constraints)."""
+import asyncio
+
+from ..config import settings
+from ..db import get_conn
+from ..logging_config import logger
 
 
 def list_officers(conn) -> list[dict]:
@@ -146,23 +151,61 @@ def get_officer_profile(conn, officer_id: int) -> dict | None:
 
 
 def expire_stale_postings(conn) -> int:
-    """Time-bound postings (spec Section 3.8): a posting with an
-    expires_at in the past auto-expires instead of staying is_active
-    forever until someone remembers to revoke it. Auth-critical read paths
-    (auth_service.get_active_postings) already filter on expires_at
-    defensively -- this is what keeps is_active itself (and everything
-    that lists postings without re-checking expires_at, like GET
-    /admin/postings) honest too.
-    Run by hand or on a schedule -- scripts/expire_postings.py is the unit
-    either would call, same pattern as archive_synthetic_events.py."""
+    """Time-bound postings (spec Section 3.8, and the academic Temporal RBAC
+    model -- Bertino/Bonatti/Ferrari, ACM TISSEC 2001 -- this is the simple,
+    production-shaped version of that idea, not the full periodic-trigger
+    machinery): a posting with an expires_at in the past auto-expires
+    instead of staying is_active forever until someone remembers to revoke
+    it. Auth-critical read paths (auth_service.get_active_postings) already
+    filter on expires_at defensively -- this is what keeps is_active itself
+    (and everything that lists postings without re-checking expires_at,
+    like GET /admin/postings) honest too.
+
+    Now run automatically (see main.py's periodic sweep loop, same shape as
+    cameras_service.run_periodic_connectivity_sweep), not just by hand --
+    scripts/expire_postings.py still works unchanged as a one-off/cron
+    alternative. Every real expiry gets its own audit_logs row (actor
+    "system", same convention cameras_service.update_camera uses for a
+    connectivity transition nobody's browser actually triggered) so
+    "why did this officer's access disappear" is always answerable from the
+    audit trail, not silent."""
+    from . import audit_service
+
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE postings SET is_active = false, ended_at = now() "
-            "WHERE is_active AND expires_at IS NOT NULL AND expires_at <= now() RETURNING id"
+            "WHERE is_active AND expires_at IS NOT NULL AND expires_at <= now() "
+            "RETURNING id, officer_id, role_id"
         )
-        expired = len(cur.fetchall())
+        expired_rows = cur.fetchall()
     conn.commit()
-    return expired
+
+    for posting_id, officer_id, role_id in expired_rows:
+        audit_service.log(
+            conn, "system", "posting_auto_expired", "posting", posting_id,
+            reason_code=f"officer_id={officer_id} role_id={role_id} -- expires_at reached",
+        )
+    return len(expired_rows)
+
+
+async def run_periodic_posting_expiry_sweep() -> None:
+    """Background task, one sweep every
+    settings.posting_expiry_sweep_interval_seconds -- started from main.py's
+    startup event, cancelled on shutdown, same shape as
+    cameras_service.run_periodic_connectivity_sweep. Opens its own
+    connection per tick (rather than holding one for the process lifetime)
+    for the same reason that sweep does: a long-lived checked-out connection
+    would sit idle in the pool between ticks, starving concurrent request
+    handlers of a connection they actually need right now."""
+    while True:
+        try:
+            with get_conn() as conn:
+                expired = expire_stale_postings(conn)
+                if expired:
+                    logger.info(f"posting expiry sweep: auto-expired {expired} posting(s)")
+        except Exception:  # noqa: BLE001 -- one bad tick must not kill the loop; see docstring above
+            logger.exception("posting expiry sweep tick failed")
+        await asyncio.sleep(settings.posting_expiry_sweep_interval_seconds)
 
 
 def revoke_posting(conn, posting_id: int) -> dict | None:

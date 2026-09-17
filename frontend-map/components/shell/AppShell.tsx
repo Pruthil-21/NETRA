@@ -25,6 +25,24 @@ const BASE_NAV_ITEMS = [
   { href: '/reports', label: 'Reports', icon: FileBarChart },
 ];
 
+// Warms the Map page's client-only bundle (react-leaflet can't run on the
+// server, so it's always a next/dynamic({ ssr: false }) import -- see
+// app/map/page.tsx) as soon as the app shell itself mounts, i.e. right after
+// login, well before an officer actually clicks "Map". next/link's own
+// viewport-prefetch already starts this once the nav link scrolls into
+// view, which in this always-visible header is immediately anyway -- this
+// is a deliberate belt-and-suspenders warm-up so the one unavoidable "LOADING
+// GIS ENGINE..." wait (Leaflet has no server-side path at all) happens as
+// early and as rarely as possible instead of every fresh session.
+function useWarmMapBundle() {
+  React.useEffect(() => {
+    import('@/components/map/CameraMap').catch(() => {
+      // Non-fatal: worst case, the dynamic import inside app/map/page.tsx
+      // just fetches it again (or for the first time) on actual navigation.
+    });
+  }, []);
+}
+
 // Isolated so the once-a-second tick only re-renders this small readout, not
 // the whole app -- a live clock is a control-room staple, but it must not be
 // the thing that costs frame budget for every page it sits above.
@@ -96,6 +114,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { has } = usePermissions();
   const { isImmersive } = useImmersiveMode();
+  useWarmMapBundle();
   // Every permission gating a section actually rendered on /admin (see that
   // page's own per-section `permissions.includes(...)` checks) -- an Auditor
   // holds only view_audit_logs, never manage_users_roles, so gating the nav

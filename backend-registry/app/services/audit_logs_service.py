@@ -51,6 +51,59 @@ _KNOWN_ACTIONS = {a for c in CATEGORIES.values() for a in c.get("actions", [])}
 _KNOWN_RESOURCE_TYPES = {rt for c in CATEGORIES.values() for rt in c.get("resource_types", [])}
 
 
+def verify_chain(conn) -> dict:
+    """Walks every hash-chained row (entry_hash IS NOT NULL) in id order,
+    recomputing each row's expected hash from its own fields plus the
+    previous chained row's hash, and compares against what's actually
+    stored -- see audit_service.log's module docstring for the scheme.
+    Returns the id of the first row where either the stored prev_hash
+    doesn't match the preceding row's entry_hash (a row was deleted/reordered)
+    or the recomputed entry_hash doesn't match what's stored (a row's own
+    fields were altered after being written). This is the read side an
+    "Independent Auditor" posting (see scripts/seed_rbac.py -- a real
+    platform-wide, view_audit_logs-only role) actually uses to check
+    integrity, not just list rows."""
+    # Local import: audit_service already imports nothing from this module,
+    # so this avoids a circular import while keeping the hashing logic
+    # (GENESIS_HASH, _compute_entry_hash) defined in exactly one place.
+    from . import audit_service
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, user_id, action, resource_type, resource_id, badge_number, reason_code,
+                   prev_hash, entry_hash
+            FROM audit_logs
+            WHERE entry_hash IS NOT NULL
+            ORDER BY id
+            """
+        )
+        rows = cur.fetchall()
+
+    expected_prev = audit_service.GENESIS_HASH
+    for row_id, user_id, action, resource_type, resource_id, badge_number, reason_code, prev_hash, entry_hash in rows:
+        if prev_hash != expected_prev:
+            return {
+                "valid": False, "chained_rows": len(rows), "broken_at_id": row_id,
+                "reason": "stored prev_hash does not match the preceding chained row's hash "
+                          "-- a row was likely deleted or reordered",
+            }
+        row_data = {
+            "user_id": user_id, "action": action, "resource_type": resource_type,
+            "resource_id": resource_id, "badge_number": badge_number, "reason_code": reason_code,
+        }
+        recomputed = audit_service._compute_entry_hash(prev_hash, row_data)
+        if recomputed != entry_hash:
+            return {
+                "valid": False, "chained_rows": len(rows), "broken_at_id": row_id,
+                "reason": "recomputed hash does not match the stored entry_hash "
+                          "-- this row's contents were altered after being written",
+            }
+        expected_prev = entry_hash
+
+    return {"valid": True, "chained_rows": len(rows), "broken_at_id": None, "reason": None}
+
+
 def categorize(action: str, resource_type: str) -> str:
     for name, rule in CATEGORIES.items():
         if action in rule.get("actions", ()) or resource_type in rule.get("resource_types", ()):

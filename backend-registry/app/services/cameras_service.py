@@ -24,24 +24,26 @@ def _format_duration(seconds: float) -> str:
     return f"{days}d {hours}h" if hours else f"{days}d"
 
 
+_CAMERA_SELECT_FIELDS = """id, name, dept, ST_Y(location::geometry) AS lat,
+                       ST_X(location::geometry) AS long, camera_type, ownership,
+                       connectivity_status, storage_type, retention_days,
+                       health_status, rtsp_url, stream_id, hls_url, area_id,
+                       camera_usage, lifecycle_stage, lawful_basis, privacy_review_completed,
+                       owning_department"""
+
+
 def list_cameras(conn, dept: str | None = None):
     with conn.cursor() as cur:
         if dept is None:
-            cur.execute("""
-                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
-                       ST_X(location::geometry) AS long, camera_type, ownership,
-                       connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url, area_id
+            cur.execute(f"""
+                SELECT {_CAMERA_SELECT_FIELDS}
                 FROM cameras
                 WHERE is_synthetic = false AND is_virtual_capture = false
                 ORDER BY id
             """)
         else:
-            cur.execute("""
-                SELECT id, name, dept, ST_Y(location::geometry) AS lat,
-                       ST_X(location::geometry) AS long, camera_type, ownership,
-                       connectivity_status, storage_type, retention_days,
-                       health_status, rtsp_url, stream_id, hls_url, area_id
+            cur.execute(f"""
+                SELECT {_CAMERA_SELECT_FIELDS}
                 FROM cameras
                 WHERE dept = %s AND is_synthetic = false AND is_virtual_capture = false
                 ORDER BY id
@@ -53,11 +55,7 @@ def list_cameras(conn, dept: str | None = None):
 
 MAX_PAGE_LIMIT = 500
 
-_CAMERA_COLUMNS = """id, name, dept, ST_Y(location::geometry) AS lat,
-                     ST_X(location::geometry) AS long, camera_type, ownership,
-                     connectivity_status, storage_type, retention_days,
-                     health_status, rtsp_url, stream_id, hls_url, area_id,
-                     is_synthetic, edge_node_id"""
+_CAMERA_COLUMNS = _CAMERA_SELECT_FIELDS + ", is_synthetic, edge_node_id"
 
 
 def list_cameras_page(
@@ -112,11 +110,8 @@ def list_cameras_page(
 
 def get_camera(conn, camera_id: int):
     with conn.cursor() as cur:
-        cur.execute("""
-            SELECT id, name, dept, ST_Y(location::geometry) AS lat,
-                   ST_X(location::geometry) AS long, camera_type, ownership,
-                   connectivity_status, storage_type, retention_days,
-                   health_status, rtsp_url, stream_id, hls_url, area_id
+        cur.execute(f"""
+            SELECT {_CAMERA_SELECT_FIELDS}
             FROM cameras
             WHERE id = %s
         """, (camera_id,))
@@ -147,18 +142,26 @@ def create_camera(conn, data: dict):
             INSERT INTO cameras (
                 name, dept, location, camera_type, ownership,
                 connectivity_status, storage_type, retention_days,
-                health_status, rtsp_url, stream_id, hls_url, area_id
+                health_status, rtsp_url, stream_id, hls_url, area_id,
+                camera_usage, lifecycle_stage, lawful_basis, privacy_review_completed,
+                owning_department
             )
             VALUES (
                 %(name)s, %(dept)s,
                 ST_SetSRID(ST_MakePoint(%(long)s, %(lat)s), 4326),
                 %(camera_type)s, %(ownership)s, %(connectivity_status)s,
                 %(storage_type)s, %(retention_days)s, %(health_status)s,
-                %(rtsp_url)s, %(stream_id)s, %(hls_url)s, %(area_id)s
+                %(rtsp_url)s, %(stream_id)s, %(hls_url)s, %(area_id)s,
+                %(camera_usage)s, %(lifecycle_stage)s, %(lawful_basis)s, %(privacy_review_completed)s,
+                %(owning_department)s
             )
             RETURNING id
         """, {**data, "stream_id": data.get("stream_id"), "hls_url": data.get("hls_url"),
-              "area_id": data.get("area_id")})
+              "area_id": data.get("area_id"), "camera_usage": data.get("camera_usage"),
+              "lifecycle_stage": data.get("lifecycle_stage") or "operational",
+              "lawful_basis": data.get("lawful_basis"),
+              "privacy_review_completed": data.get("privacy_review_completed") or False,
+              "owning_department": data.get("owning_department")})
         new_id = cur.fetchone()[0]
         conn.commit()
     return get_camera(conn, new_id)

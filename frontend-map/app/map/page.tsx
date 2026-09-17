@@ -14,13 +14,31 @@ import { DensityLoadStatus } from '@/components/map/DensityCanvasLayer';
 import { FlowLoadStatus } from '@/components/map/FlowCanvasLayer';
 import { areasService, Area } from '@/services/areasService';
 
+// react-leaflet needs `window`, so this can never render on the server --
+// ssr: false is required, not a choice, and the `loading` fallback below is
+// genuinely unavoidable on a cold load (the very first time a browser has
+// never fetched this chunk before). AppShell's useWarmMapBundle already
+// starts downloading this same chunk the moment the app shell itself
+// mounts (right after login), so in practice this fallback is rarely what
+// actually renders -- it only shows on that one true first-ever visit
+// during a session, and every navigation back to /map afterward is
+// instant (the browser already has the chunk cached). The fallback itself
+// is a static skeleton matching the real map's final layout/colors rather
+// than a bare spinner + "loading" text, so even that rare first paint reads
+// as "the map is arriving" instead of "something heavy is booting up".
 const CameraMap = dynamic(() => import('@/components/map/CameraMap'), {
   ssr: false,
   loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-ink text-slate-500 text-xs">
-      <div className="flex flex-col items-center gap-2">
-        <div className="w-6 h-6 border-2 border-command border-t-transparent rounded-full animate-spin" />
-        <span className="font-mono">LOADING GIS ENGINE…</span>
+    <div className="w-full h-full relative bg-ink overflow-hidden">
+      <div className="absolute inset-0 opacity-[0.15]" style={{
+        backgroundImage: 'linear-gradient(rgba(148,163,184,0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.4) 1px, transparent 1px)',
+        backgroundSize: '48px 48px',
+      }} />
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-2.5 text-slate-600">
+          <div className="w-5 h-5 border-2 border-slate-600 border-t-command rounded-full animate-spin" />
+          <span className="text-[11px] font-medium tracking-wide">Opening map…</span>
+        </div>
       </div>
     </div>
   ),
@@ -155,6 +173,7 @@ export default function MapPage() {
               highlightedCameraIds={highlightedCameraIds}
               hideMarkers={filters.mapLayer !== 'none'}
               showPoliceStations={filters.showPoliceStations}
+              showCameraType={filters.showCameraType}
               coverage={filters.mapLayer === 'coverage' ? { cameras: filteredCameras } : undefined}
               density={
                 filters.mapLayer === 'density'

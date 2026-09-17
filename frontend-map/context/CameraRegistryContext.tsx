@@ -89,6 +89,7 @@ interface RegistryContextType {
 
 const initialFilters: CameraFilters = {
   departments: [],
+  owningDepartments: [],
   areaIds: [],
   connectivity: 'all',
   health: 'all',
@@ -101,6 +102,7 @@ const initialFilters: CameraFilters = {
   flowWindowMinutes: 30,
   flowHour: new Date().getHours(),
   showPoliceStations: true,
+  showCameraType: false,
 };
 
 const CameraRegistryContext = createContext<RegistryContextType | undefined>(undefined);
@@ -242,6 +244,16 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         filters.departments.some((d) => cam.dept?.toLowerCase() === d.toLowerCase()) ||
         (cam.area_id != null && filters.areaIds.includes(cam.area_id));
 
+      // 1b. Owning-department filter (Police/GSRTC/Panchayat/Municipal
+      // Corporation/Health/...) -- a genuinely separate dimension from the
+      // city/area filter above (see Camera.owning_department's own comment
+      // for why). No selection means every department passes, including
+      // cameras with no owning_department tagged at all yet.
+      const matchesOwningDepartment =
+        filters.owningDepartments.length === 0 ||
+        (cam.owning_department != null &&
+          filters.owningDepartments.some((d) => cam.owning_department?.toLowerCase() === d.toLowerCase()));
+
       // 2. Connectivity filter (online / offline / all)
       const matchesConnectivity =
         !filters.connectivity ||
@@ -262,7 +274,7 @@ export function CameraRegistryProvider({ children }: { children: React.ReactNode
         cam.dept?.toLowerCase().includes(query) ||
         String(cam.id).toLowerCase().includes(query);
 
-      return matchesDept && matchesConnectivity && matchesHealth && matchesSearch;
+      return matchesDept && matchesOwningDepartment && matchesConnectivity && matchesHealth && matchesSearch;
     });
   }, [cameras, filters]);
 

@@ -9,12 +9,19 @@ import { DENSITY_WINDOW_OPTIONS, formatDensityHour } from '@/lib/densityMath';
 import { LayerWindowMode, MapLayer } from '@/types/filters';
 import { DensityLoadStatus } from './DensityCanvasLayer';
 import { FlowLoadStatus } from './FlowCanvasLayer';
+import { CAMERA_TYPE_LEGEND } from './MapCustomMarker';
 
 const STATUS_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: 'online', label: 'Online' },
   { value: 'offline', label: 'Offline' },
 ] as const;
+
+// The five departments the problem statement's own dataset actually spans
+// (see backend schemas.py's SUGGESTED_OWNING_DEPARTMENTS) -- quick-pick
+// chips for the common case; a camera tagged with anything else still
+// filters correctly, it just doesn't get its own dedicated chip here.
+const OWNING_DEPARTMENT_OPTIONS = ['Police', 'GSRTC', 'Panchayat', 'Municipal Corporation', 'Health'] as const;
 
 const LAYER_OPTIONS = [
   { value: 'none', label: 'None' },
@@ -190,7 +197,8 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
     (filters.mapLayer !== 'none' ? 1 : 0) +
     (filters.mapLayer === 'none' && filters.connectivity !== 'all' ? 1 : 0) +
     selectedCities.length +
-    selectedAreaIds.length;
+    selectedAreaIds.length +
+    filters.owningDepartments.length;
 
   // One listener pair covers both layers: the location dropdown is the
   // innermost, so a click/Escape closes just it when it's open, leaving the
@@ -247,11 +255,21 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
     }));
   };
 
+  const toggleOwningDepartment = (name: string) => {
+    setFilters((prev) => ({
+      ...prev,
+      owningDepartments: prev.owningDepartments.includes(name)
+        ? prev.owningDepartments.filter((d) => d !== name)
+        : [...prev.owningDepartments, name],
+    }));
+  };
+
   const handleReset = () => {
     setFilters((prev) => ({
       ...prev,
       connectivity: 'all',
       departments: [],
+      owningDepartments: [],
       areaIds: [],
       mapLayer: 'none',
       densityMode: 'live',
@@ -344,6 +362,37 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
 
           <div>
             <span className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1.5">
+              Department
+            </span>
+            <div role="group" aria-label="Filter by owning department" className="flex flex-wrap gap-1.5">
+              {OWNING_DEPARTMENT_OPTIONS.map((name) => {
+                const isActive = filters.owningDepartments.includes(name);
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    aria-pressed={isActive}
+                    onClick={() => toggleOwningDepartment(name)}
+                    className={`py-1 px-2.5 rounded-full text-[11px] font-semibold border transition ${
+                      isActive
+                        ? 'bg-command text-white border-command'
+                        : 'bg-ink text-slate-300 border-line hover:border-slate-500'
+                    }`}
+                  >
+                    {name}
+                  </button>
+                );
+              })}
+            </div>
+            {filters.owningDepartments.length > 0 && (
+              <p className="text-[10px] text-slate-500 leading-snug mt-1.5">
+                Cameras not yet tagged with a department are hidden while any of these are selected.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <span className="block text-[10px] font-semibold tracking-wider text-slate-400 uppercase mb-1.5">
               Markers
             </span>
             <label className="flex items-center gap-2 text-[11px] text-slate-300">
@@ -355,6 +404,35 @@ export function MapFilterControl({ densityStatus, flowStatus }: MapFilterControl
               />
               Police stations
             </label>
+            {/* Independent of the Map layer group below on purpose -- this
+                badges each pin's camera type, it doesn't replace/hide
+                pins the way Coverage/Density/Flow do, so it can be on at
+                the same time as any of them. */}
+            <label className="flex items-center gap-2 text-[11px] text-slate-300 mt-1.5">
+              <input
+                type="checkbox"
+                checked={filters.showCameraType}
+                onChange={(e) => setFilters((prev) => ({ ...prev, showCameraType: e.target.checked }))}
+                className="accent-command"
+              />
+              Camera type
+            </label>
+            {filters.showCameraType && (
+              <div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1">
+                {CAMERA_TYPE_LEGEND.map((b) => (
+                  <div key={b.label} className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                    <span
+                      className="w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] font-bold shrink-0"
+                      style={{ backgroundColor: b.color, color: '#05070A' }}
+                      aria-hidden
+                    >
+                      {b.letter}
+                    </span>
+                    {b.label}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div>

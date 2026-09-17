@@ -1,6 +1,8 @@
 """Camera registry CRUD, pagination/scale-demo surface, uptime, SNMP health,
 recordings, and the synthetic-detection ingestion endpoint used by the
 scale-demo load test."""
+import time
+
 import httpx
 import psycopg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -26,6 +28,7 @@ from ..schemas import (
     CameraOut,
     CameraUpdate,
     CameraUptimeReport,
+    DiscoveryScanResult,
     SyntheticDetectionEventAccepted,
     SyntheticDetectionEventIn,
     TestStreamIn,
@@ -35,6 +38,7 @@ from ..services import (
     areas_service,
     audit_service,
     cameras_service,
+    onvif_discovery_service,
     push_service,
     recording_health_events_service,
     recordings_service,
@@ -198,6 +202,33 @@ def create_cameras_bulk(cameras: list[dict], user=Depends(require_permission("ma
             audit_service.log(conn, user.get("badge_number", user.get("sub")), "create", "camera", created["id"])
             results.append(CameraBulkResult(index=index, status="created", camera=created))
     return results
+
+
+@router.post("/cameras/discover", response_model=DiscoveryScanResult)
+async def discover_cameras(
+    timeout_seconds: float = 4.0,
+    user=Depends(require_permission("manage_cameras")),
+):
+    """ONVIF WS-Discovery scan of the local network — the auto-discovery
+    onboarding path every real VMS ships (Milestone XProtect's "Scan for
+    hardware", Genetec's auto-discovery) alongside bulk/manual/API entry.
+    Returns candidates only; nothing is written to the registry here — an
+    officer reviews the results and POSTs the ones they want onto the
+    existing POST /cameras/bulk, same review-before-commit shape as CSV
+    import already uses. Gated on manage_cameras (same permission bulk
+    import requires), not merely authentication, since even a read-only
+    network probe is an administrative action on this deployment's own
+    infrastructure. timeout_seconds is capped at 15s so a slow/misconfigured
+    network can't tie up a worker indefinitely.
+    """
+    timeout_seconds = max(1.0, min(timeout_seconds, 15.0))
+    started = time.monotonic()
+    devices = await onvif_discovery_service.scan_and_enrich(timeout_seconds)
+    return {
+        "devices": devices,
+        "scan_duration_seconds": round(time.monotonic() - started, 2),
+        "subnet_scanned": None,
+    }
 
 
 @router.put("/cameras/{camera_id}", response_model=CameraOut)

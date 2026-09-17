@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import { Camera } from '../../types/camera';
 import { Detection } from '../../types/detection';
 import { createDirectionArrowIcon, createVehicleTraceIcon, POLICE_STATION_ICON, getCachedMarkerIcon } from './MapCustomMarker';
@@ -16,6 +16,7 @@ import { DensityCanvasLayer, DensityLoadStatus } from './DensityCanvasLayer';
 import { FlowCanvasLayer, FlowLoadStatus } from './FlowCanvasLayer';
 import { LayerWindowMode } from '@/types/filters';
 import { fetchDrivingRoute } from '@/lib/routing';
+import { computeScaleTiering, SCALE_TIERING_THRESHOLD, ViewportBounds } from '@/lib/mapScaleTiering';
 
 // Hold the hover this long before the popup grows into a live preview — long
 // enough that scanning past several markers doesn't spin up a decoder per pin.
@@ -71,6 +72,37 @@ const MapController: React.FC<MapControllerProps> = ({ selectedCamera, routePosi
       map.flyToBounds(L.latLngBounds(highlightedPositions), { padding: [64, 64], duration: 1 });
     }
   }, [highlightedPositions, map]);
+
+  return null;
+};
+
+/** Reports the current viewport (as lat/long bounds) and zoom level up to
+ * CameraMap, on mount and after every pan/zoom settles -- the same
+ * BoundsWatcher shape components/scale/ScaleMap.tsx already proved out,
+ * applied to the real registry's own map. Only mounted when the registry is
+ * large enough for scale-tiering to actually matter (see CameraMap's own
+ * `cameras.length > SCALE_TIERING_THRESHOLD` check) -- at today's real
+ * camera count this component doesn't exist in the tree at all, so it adds
+ * zero overhead to the common case. */
+const BoundsTracker: React.FC<{ onChange: (bounds: ViewportBounds, zoom: number) => void }> = ({ onChange }) => {
+  const map = useMap();
+
+  const report = useCallback(() => {
+    const b = map.getBounds();
+    onChange(
+      { minLat: b.getSouth(), maxLat: b.getNorth(), minLong: b.getWest(), maxLong: b.getEast() },
+      map.getZoom()
+    );
+  }, [map, onChange]);
+
+  useEffect(() => {
+    report();
+  }, [report]);
+
+  useMapEvents({
+    moveend: report,
+    zoomend: report,
+  });
 
   return null;
 };
@@ -170,6 +202,12 @@ interface CameraMapProps {
    * touching camera pins. Defaults to true (shown) so every other caller
    * (the vehicle-tracking view, etc.) keeps its current behavior unchanged. */
   showPoliceStations?: boolean;
+  /** Independent symbology toggle (Model 1's GIS map layer requirement:
+   * department/camera type/status/coverage) -- recolors/badges each marker
+   * by camera_type on top of whatever else is showing, never hides
+   * anything. Defaults to false so every existing caller renders
+   * byte-identical markers to before this prop existed. */
+  showCameraType?: boolean;
   /** Renders the canvas coverage-radius layer for the given cameras/tier
    * instead of (or alongside) pins -- see CoverageCanvasLayer. Omit to
    * render no coverage layer at all. */
@@ -206,10 +244,24 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   timelineIndex,
   hideMarkers,
   showPoliceStations = true,
+  showCameraType = false,
   coverage,
   density,
   flow,
 }) => {
+  // Viewport-bounded + zoom-tiered marker rendering -- see lib/mapScaleTiering.ts's
+  // module docstring. null until BoundsTracker's first report (mount); only
+  // ever mounted/updated at all once the registry is large enough to need
+  // it, so this stays null forever at today's real camera count and costs
+  // nothing.
+  const [viewportBounds, setViewportBounds] = useState<ViewportBounds | null>(null);
+  const [viewportZoom, setViewportZoom] = useState<number | null>(null);
+  const needsScaleTiering = cameras.length > SCALE_TIERING_THRESHOLD;
+  const { renderableCameras, districtSummary, isTiered } = useMemo(
+    () => computeScaleTiering(cameras, viewportBounds, viewportZoom),
+    [cameras, viewportBounds, viewportZoom]
+  );
+
   // Police station pins -- a separate data source from cameras (backend-registry's
   // /police-stations, not /cameras), fetched once on mount. Non-fatal on failure: the
   // map is still fully usable for camera monitoring without station pins.
@@ -391,14 +443,19 @@ export const CameraMap: React.FC<CameraMapProps> = ({
   // re-renders only touch the markers that actually need it.
   const markerIcons = useMemo(() => {
     const icons = new Map<number, L.DivIcon>();
-    for (const cam of cameras) {
+    // Built only for cameras that will actually become a <Marker> this
+    // render (renderableCameras), not the full registry -- at a large,
+    // heavily-tiered camera count, building an L.divIcon for every
+    // off-screen camera on every render would defeat the point of tiering
+    // in the first place.
+    for (const cam of renderableCameras) {
       const isSelected = selectedCamera?.id === cam.id;
       const isOnRoute = routeCameraIds.has(cam.id);
       const isHighlighted = highlightedCameraIds?.has(cam.id) ?? false;
-      icons.set(cam.id, getCachedMarkerIcon(cam, isSelected, isOnRoute, isHighlighted));
+      icons.set(cam.id, getCachedMarkerIcon(cam, isSelected, isOnRoute, isHighlighted, showCameraType));
     }
     return icons;
-  }, [cameras, selectedCamera, routeCameraIds, highlightedCameraIds]);
+  }, [renderableCameras, selectedCamera, routeCameraIds, highlightedCameraIds, showCameraType]);
 
   // One hover-grace controller per camera id, created lazily on first hover and
   // reused after -- mirrors the per-marker-ref cache above for the same reason
@@ -452,6 +509,25 @@ export const CameraMap: React.FC<CameraMapProps> = ({
 
   return (
     <div className="relative w-full h-full">
+      {districtSummary && (
+        <div className="absolute top-3 left-3 z-[1000] bg-panel/90 border border-line rounded-lg p-3 max-h-64 overflow-y-auto text-[11px] shadow-lg">
+          <p className="font-semibold text-white mb-1.5 uppercase tracking-wide text-[10px]">
+            Camera Count by District
+          </p>
+          <p className="text-slate-500 text-[10px] mb-2">Zoom in to see individual camera pins</p>
+          {districtSummary.map(({ district, count }) => (
+            <div key={district} className="flex justify-between gap-4 text-slate-400">
+              <span>{district}</span>
+              <span className="text-slate-300 font-mono">{count.toLocaleString()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {isTiered && !districtSummary && renderableCameras.length > 0 && (
+        <div className="absolute top-3 left-3 z-[1000] px-2.5 py-1 rounded-md bg-panel/90 border border-line text-[10px] text-slate-400 shadow">
+          Showing {renderableCameras.length} of {cameras.length.toLocaleString()} cameras in view
+        </div>
+      )}
       {sightingPoints.length > 0 && (
         <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] px-3 py-1.5 rounded bg-panel/90 border border-blue-500/40 shadow-lg text-center pointer-events-none">
           <p className="text-[11px] font-semibold tracking-wide text-blue-300 uppercase">
@@ -484,8 +560,22 @@ export const CameraMap: React.FC<CameraMapProps> = ({
         preferCanvas
         className="w-full h-full bg-slate-950"
       >
-        <TileLayer attribution={SATELLITE_ATTRIBUTION} url={SATELLITE_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
-        <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} />
+        {/* keepBuffer/updateWhenZooming fix a real, reported bug: black/unloaded
+            tile chunks during fast pan or zoom. Leaflet's own docs explain why --
+            updateWhenIdle defaults to false on desktop specifically because "it is
+            easy to pan outside the keepBuffer option in desktop browsers", and the
+            default keepBuffer (2) is too thin for a fast real-world pan. Raising it
+            pre-loads a wider ring of tiles around the viewport; updateWhenZooming=false
+            defers fetching new tiles until a zoom gesture finishes, so the map shows a
+            scaled version of tiles it already has instead of blank ones mid-zoom. */}
+        <TileLayer
+          attribution={SATELLITE_ATTRIBUTION}
+          url={SATELLITE_TILES}
+          maxZoom={SATELLITE_MAX_ZOOM}
+          keepBuffer={6}
+          updateWhenZooming={false}
+        />
+        <TileLayer url={SATELLITE_LABELS_TILES} maxZoom={SATELLITE_MAX_ZOOM} keepBuffer={6} updateWhenZooming={false} />
 
         <MapController
           selectedCamera={selectedCamera}
@@ -493,13 +583,21 @@ export const CameraMap: React.FC<CameraMapProps> = ({
           highlightedPositions={highlightedPositions}
         />
 
+        {needsScaleTiering && <BoundsTracker onChange={(b, z) => { setViewportBounds(b); setViewportZoom(z); }} />}
+
         {!hideMarkers && (
           <MarkerClusterGroup chunkedLoading maxClusterRadius={40} spiderfyOnMaxZoom showCoverageOnHover={false}>
-            {/* Unconditional over every camera passed in -- the tree's highlightedCameraIds
-                (below) only adds a visual ring and drives the pan/zoom effect above, it
-                never filters this list. Every camera in the caller's RBAC scope stays
-                visible and clickable regardless of what's selected in the tree. */}
-            {cameras.map((cam: Camera) => {
+            {/* renderableCameras === cameras (every camera passed in, no filtering)
+                below the tiering threshold -- see lib/mapScaleTiering.ts. The tree's
+                highlightedCameraIds only adds a visual ring and drives the pan/zoom
+                effect above, it never filters this list; every camera in the
+                caller's RBAC scope stays visible and clickable regardless of what's
+                selected in the tree, UNLESS the registry is large enough that
+                viewport tiering is culling off-screen cameras, in which case "in
+                RBAC scope" and "currently rendered" are no longer the same set by
+                design -- the summary panel below makes that explicit rather than
+                silently dropping pins. */}
+            {renderableCameras.map((cam: Camera) => {
               const longitude = cam.long ?? 0;
               return (
                 <Marker

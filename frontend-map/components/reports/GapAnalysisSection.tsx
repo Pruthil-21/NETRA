@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Target, MapPinOff, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Target, MapPinOff, AlertTriangle, ShieldCheck, MapPinPlus, Download } from 'lucide-react';
 import {
   fetchGapAnalysisReport,
   fetchCoverageTargets,
   deleteCoverageTarget,
+  openGapAnalysisReport,
   GapAnalysisReport,
   CoverageTarget,
 } from '@/services/coverageTargetsService';
@@ -54,8 +55,13 @@ function distanceTone(meters: number | null): Tone {
   return meters === null || meters >= 500 ? 'red' : 'amber';
 }
 
-function degradedTone(count: number): Tone {
-  return count >= 3 ? 'red' : count >= 1 ? 'amber' : 'slate';
+// Backend's own honest, explainable risk_level (age + connectivity history
+// only -- deliberately not a statistical failure-prediction model, see
+// gap_analysis_service.compute_ageing_infrastructure's docstring) is now the
+// authoritative signal, replacing what used to be a frontend-only re-derivation
+// from degraded_transition_count_90d alone.
+function riskTone(riskLevel: string): Tone {
+  return riskLevel === 'high' ? 'red' : riskLevel === 'medium' ? 'amber' : 'slate';
 }
 
 function SectionCard({
@@ -109,7 +115,21 @@ export function GapAnalysisSection() {
   const [targets, setTargets] = useState<CoverageTarget[] | null>(null);
   const [targetsError, setTargetsError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const { has } = usePermissions();
+
+  const handleDownload = async () => {
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      await openGapAnalysisReport();
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : 'Failed to generate report');
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   useEffect(() => {
     fetchGapAnalysisReport()
@@ -152,6 +172,22 @@ export function GapAnalysisSection() {
 
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          {downloadError && <p className="text-signal-red text-[11px]">{downloadError}</p>}
+        </div>
+        <button
+          type="button"
+          onClick={handleDownload}
+          disabled={downloading}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-line bg-panel text-slate-200 text-xs font-semibold hover:bg-panel-raised disabled:opacity-50 shrink-0"
+          title="Open a printable, shareable copy of this report"
+        >
+          <Download size={13} />
+          {downloading ? 'Generating…' : 'Download Report'}
+        </button>
+      </div>
+
       {coveragePct !== null && (
         <div className="bg-panel border border-line rounded-lg p-4 flex items-center gap-3">
           <span className="inline-flex p-2 bg-command/10 border border-command/30 text-command rounded-lg shrink-0">
@@ -206,7 +242,7 @@ export function GapAnalysisSection() {
           <EmptyState icon={MapPinOff} message="No coverage gaps found." />
         ) : (
           <table className="w-full text-xs">
-            <TableHead columns={['Target', 'District', 'Nearest Camera']} />
+            <TableHead columns={['Target', 'District', 'Priority', 'Nearest Camera']} />
             <tbody>
               {report.uncovered_zones.map((z) => {
                 const tone = distanceTone(z.distance_meters);
@@ -214,6 +250,7 @@ export function GapAnalysisSection() {
                   <tr key={z.target_id} className="border-t border-line hover:bg-panel-raised/60">
                     <td className="py-2 text-white">{z.name}</td>
                     <td className="py-2 text-slate-400">{z.district}</td>
+                    <td className="py-2">{priorityBadge(z.priority)}</td>
                     <td className="py-2">
                       <div className="flex items-center gap-2">
                         <SeverityBadge tone={tone}>{tone === 'red' ? 'Critical' : 'Gap'}</SeverityBadge>
@@ -239,7 +276,7 @@ export function GapAnalysisSection() {
             <TableHead columns={['Camera', 'District', 'Age', 'Degraded Events (90d)']} />
             <tbody>
               {report.ageing_infrastructure.map((c) => {
-                const tone = degradedTone(c.degraded_transition_count_90d);
+                const tone = riskTone(c.risk_level);
                 return (
                   <tr key={c.camera_id} className="border-t border-line hover:bg-panel-raised/60">
                     <td className="py-2 text-white">{c.name}</td>
@@ -248,7 +285,7 @@ export function GapAnalysisSection() {
                     <td className="py-2">
                       <div className="flex items-center gap-2">
                         <SeverityBadge tone={tone}>
-                          {tone === 'red' ? 'Degrading' : tone === 'amber' ? 'Watch' : 'Stable'}
+                          {tone === 'red' ? 'High risk' : tone === 'amber' ? 'Watch' : 'Stable'}
                         </SeverityBadge>
                         <span className="font-mono text-slate-400">{c.degraded_transition_count_90d}</span>
                       </div>
@@ -259,6 +296,29 @@ export function GapAnalysisSection() {
             </tbody>
           </table>
         )}
+      </SectionCard>
+
+      <SectionCard icon={MapPinPlus} title="Recommended New Sites" count={report.placement_suggestions.length}>
+        {report.placement_suggestions.length === 0 ? (
+          <EmptyState icon={MapPinPlus} message="No uncovered checkpoints to suggest sites for." />
+        ) : (
+          <table className="w-full text-xs">
+            <TableHead columns={['Suggested Site', 'District', 'Checkpoints Closed', 'Priority Score']} />
+            <tbody>
+              {report.placement_suggestions.map((p) => (
+                <tr key={p.suggested_at_target_id} className="border-t border-line hover:bg-panel-raised/60">
+                  <td className="py-2 text-white">{p.suggested_at_name}</td>
+                  <td className="py-2 text-slate-400">{p.district}</td>
+                  <td className="py-2 text-slate-400">{p.covers_target_ids.length}</td>
+                  <td className="py-2 font-mono text-slate-400">{p.priority_weighted_score.toFixed(0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="text-[10px] text-slate-600 mt-2">
+          Greedy set-cover, weighted by checkpoint priority — a best-effort recommendation, not a guaranteed-optimal placement.
+        </p>
       </SectionCard>
     </div>
   );

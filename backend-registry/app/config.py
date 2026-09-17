@@ -57,6 +57,14 @@ class Settings:
     # fleet size -- the ceiling that keeps this sweep from opening thousands
     # of simultaneous connections at 100k+ cameras.
     camera_health_concurrency: int = int(os.environ.get("CAMERA_HEALTH_CONCURRENCY", "300"))
+    # Auto-expiring postings sweep (see services/admin_service.expire_stale_postings)
+    # -- runs on the same periodic-startup-loop pattern as the camera
+    # connectivity sweep above. 5 minutes by default: postings don't churn
+    # anywhere near as often as camera reachability, so there's no reason to
+    # poll as aggressively as the 20s connectivity sweep does.
+    posting_expiry_sweep_interval_seconds: int = int(
+        os.environ.get("POSTING_EXPIRY_SWEEP_INTERVAL_SECONDS", "300")
+    )
 
 
 settings = Settings()
