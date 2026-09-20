@@ -6,6 +6,7 @@ import { Area } from '@/services/areasService';
 import { Camera } from '@/types/camera';
 import { startCameraDrag } from '@/lib/cameraDrag';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { isInScope } from '@/lib/scope';
 import { CameraContextMenu } from '@/components/registry/CameraContextMenu';
 import CameraDetailModal from '@/components/registry/CameraDetailModal';
@@ -305,8 +306,12 @@ export function DistrictAreaTree({
     return map;
   }, [cameras]);
 
-  const isSearching = searchTerm.trim().length > 0;
-  const term = searchTerm.trim().toLowerCase();
+  // The input itself stays bound to searchTerm (immediate) so typing never
+  // feels laggy; only the derived filtering below -- which re-walks the
+  // whole camera tree -- waits for typing to pause.
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 200);
+  const isSearching = debouncedSearchTerm.trim().length > 0;
+  const term = debouncedSearchTerm.trim().toLowerCase();
   const matchesTerm = (name: string) => name.toLowerCase().includes(term);
   const textMatches = (value: string, t: string) => value.toLowerCase().includes(t);
   const cameraMatchesLocal = (cam: Camera, t: string) => textMatches(cam.name, t) || String(cam.id).includes(t);

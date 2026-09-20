@@ -13,9 +13,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@react-leaflet/core": "^3.0.0",
     "@tanstack/react-virtual": "^3.14.10",
     "@types/zxcvbn": "^4.4.5",
-    "clsx": "^2.1.1",
     "hls.js": "^1.7.1",
     "leaflet": "^1.9.4",
     "leaflet.markercluster": "^1.5.3",
@@ -25,13 +25,11 @@
     "react-dom": "^19.2.8",
     "react-leaflet": "^5.0.0",
     "recharts": "^3.10.1",
-    "tailwind-merge": "^2.5.2",
     "zxcvbn": "^4.4.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.8",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.5.2",
     "@types/leaflet": "^1.9.12",
     "@types/leaflet.markercluster": "^1.5.6",
     "@types/node": "^20.14.14",
