@@ -15,6 +15,7 @@ from psycopg2.extras import RealDictCursor
 
 from ..schemas import DetectionIn, normalize_plate
 from . import camera_metadata, geo, route_geometry_service
+from .ttl_cache import ttl_cache
 
 
 def _upsert_daily_sighting(
@@ -211,6 +212,10 @@ def _time_window_clauses(window_minutes: int | None, hour: int | None, on_date) 
     )
 
 
+# The Map page's live density layer is polled repeatedly by every officer
+# who has it open -- 10s absorbs that concurrent/repeat load while still
+# feeling live (well under a human's own re-check cadence).
+@ttl_cache(10)
 def camera_density_counts(
     db: RealDictCursor,
     window_minutes: int | None = None,
@@ -335,6 +340,10 @@ def _with_avg_speed(db: RealDictCursor, pairs: list[dict]) -> list[dict]:
     return flows
 
 
+# Same reasoning as camera_density_counts above -- this one's also doubly
+# expensive per call (the transition CTE plus a route-geometry lookup per
+# corridor), so the win from a short cache is larger here, not smaller.
+@ttl_cache(10)
 def camera_flow_pairs(
     db: RealDictCursor,
     window_minutes: int | None = None,

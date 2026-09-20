@@ -6,6 +6,7 @@ import os
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .database import get_connection
 from .logging_config import configure_logging
@@ -85,6 +86,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compresses every JSON response over 500 bytes (detections, alerts, traffic
+# alerts) before it goes out -- transparent to every existing client, since
+# httpx/fetch/browsers all send Accept-Encoding: gzip already and decompress
+# automatically.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.include_router(watchlist.router)
 app.include_router(alerts.router)

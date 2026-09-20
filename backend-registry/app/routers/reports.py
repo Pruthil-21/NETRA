@@ -11,10 +11,17 @@ from ..db import get_conn
 from ..logging_config import logger
 from ..schemas import GapAnalysisReport, ReportSummary
 from ..services import gap_analysis_service, reports_service
+from ..services.ttl_cache import ttl_cache
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
+# The registry/coverage-targets state this report reads from changes rarely
+# (a camera onboarded, a coverage target added) -- 30s means every officer
+# opening the Gap Analysis report (or immediately exporting it after
+# viewing) around the same time shares one real computation instead of each
+# re-running the same PostGIS nearest-neighbor scan.
+@ttl_cache(30)
 def _compute_gap_analysis(conn, threshold_m: int, age_threshold_days: int, budget: int) -> dict:
     try:
         uncovered = gap_analysis_service.compute_uncovered_zones(conn, threshold_m)
