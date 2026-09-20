@@ -5,7 +5,23 @@ import psycopg2
 import pytest
 from app.config import settings
 from app.main import app
+from app.services import detections_service
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _clear_query_caches():
+    """The Map layer's density/flow queries are TTL-cached in production
+    (see services/detections_service.py) so repeated officer polling doesn't
+    re-run the same expensive query -- but a test that inserts a detection
+    and immediately re-queries expects a fresh result regardless of timing,
+    so every test starts and ends with an empty cache rather than depending
+    on tests happening to run more than one cache TTL apart."""
+    detections_service.camera_density_counts.cache_clear()
+    detections_service.camera_flow_pairs.cache_clear()
+    yield
+    detections_service.camera_density_counts.cache_clear()
+    detections_service.camera_flow_pairs.cache_clear()
 
 
 @pytest.fixture

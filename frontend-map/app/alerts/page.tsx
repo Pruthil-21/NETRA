@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight, Plus, Navigation, Search, Check, ArrowUpCirc
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
 import { alertsService } from '@/services/alertsService';
 import { useAlertsStream } from '@/hooks/useAlertsStream';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { Alert, AlertHistoryEntry, AlertStatus } from '@/types/alert';
 import { AddToWatchlistModal } from '@/components/alerts/AddToWatchlistModal';
 import { TrafficAlertsSection } from '@/components/alerts/TrafficAlertsSection';
@@ -189,11 +190,12 @@ export default function AlertsPage() {
       });
   }, [alerts, camerasById, homeDistrict]);
 
+  const debouncedCitySearch = useDebouncedValue(citySearch, 200);
   const visibleGroups = useMemo(() => {
-    const query = citySearch.trim().toLowerCase();
+    const query = debouncedCitySearch.trim().toLowerCase();
     if (!query) return groupedByCity;
     return groupedByCity.filter(({ city }) => city.toLowerCase().includes(query));
-  }, [groupedByCity, citySearch]);
+  }, [groupedByCity, debouncedCitySearch]);
 
   const toggleCity = (city: string) => {
     setExpandedCities((prev) => {

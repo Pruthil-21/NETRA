@@ -11,6 +11,7 @@ import os
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 
 from .auth import get_current_user, has_permission
@@ -51,6 +52,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compresses every JSON response over 500 bytes (camera lists, audit logs,
+# gap-analysis reports) before it goes out -- transparent to every existing
+# client, since httpx/fetch/browsers all send Accept-Encoding: gzip already
+# and decompress automatically.
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # DIGDHRISHTI Federation (D:\middleware) camera-inventory proxy -- see
 # federation_proxy.py's module docstring. Every /federation/* route goes

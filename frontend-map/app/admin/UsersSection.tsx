@@ -9,6 +9,7 @@ import { adminService, OfficerOut, OfficerProfileOut } from '@/services/adminSer
 import { roleBadgeClass } from './roleBadge';
 import { PasswordStrengthMeter } from '@/components/common/PasswordStrengthMeter';
 import { analyzePassword } from '@/lib/passwordStrength';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 
 // super_admin is deliberately last, not filtered out -- the backend
 // (main.py's posting-authorization check) already rejects anyone whose own
@@ -100,12 +101,15 @@ export function UsersSection({ canResetPasswords }: { canResetPasswords: boolean
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  const debouncedSearch = useDebouncedValue(search, 200);
   const filteredOfficers = useMemo(
     () =>
       officers.filter(
-        (o) => o.name.toLowerCase().includes(search.toLowerCase()) || o.badge_number.toLowerCase().includes(search.toLowerCase())
+        (o) =>
+          o.name.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+          o.badge_number.toLowerCase().includes(debouncedSearch.toLowerCase())
       ),
-    [officers, search]
+    [officers, debouncedSearch]
   );
 
   const selectedOfficer = officers.find((o) => o.id === selectedId) ?? null;

@@ -3,9 +3,22 @@ import pytest
 from app.config import settings
 from app.db import get_conn
 from app.main import app
+from app.routers.reports import _compute_gap_analysis
 from app.services import email_service
 from app.services.rbac_service import VALID_PERMISSIONS
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _clear_gap_analysis_cache():
+    """The gap-analysis report is TTL-cached in production (see
+    routers/reports.py) so repeated views/exports share one computation --
+    but a test that onboards a camera or coverage target and immediately
+    re-requests the report expects a fresh result regardless of timing, so
+    every test starts and ends with an empty cache."""
+    _compute_gap_analysis.cache_clear()
+    yield
+    _compute_gap_analysis.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { federationService, FederationSource, FederationSourceInput, FederationCamera } from '@/services/federationService';
 import { useCameraRegistry } from '@/context/CameraRegistryContext';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 
 const AUTO_REFRESH_MS = 20_000;
 
@@ -78,13 +79,14 @@ function MappingPicker({ camera, onClose, onMapped }: MappingPickerProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const debouncedQuery = useDebouncedValue(query, 200);
   const matches = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = debouncedQuery.trim().toLowerCase();
     const pool = q
       ? cameras.filter((c) => c.name.toLowerCase().includes(q) || c.dept.toLowerCase().includes(q) || String(c.id).includes(q))
       : cameras;
     return pool.slice(0, 40);
-  }, [cameras, query]);
+  }, [cameras, debouncedQuery]);
 
   const handleConfirm = async () => {
     if (selectedId == null) return;
@@ -426,8 +428,9 @@ export function FederationSection() {
     return { total: cameras.length, mapped, unmapped: cameras.length - mapped, sources: sources.length, errored };
   }, [cameras, sources]);
 
+  const debouncedSearch = useDebouncedValue(search, 200);
   const filteredCameras = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = debouncedSearch.trim().toLowerCase();
     return cameras.filter((c) => {
       if (sourceFilter !== 'all' && c.source_id !== sourceFilter) return false;
       if (mappedFilter === 'mapped' && c.registry_camera_id == null) return false;
@@ -435,7 +438,7 @@ export function FederationSection() {
       if (q && !c.name.toLowerCase().includes(q) && !c.external_id.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [cameras, search, sourceFilter, mappedFilter]);
+  }, [cameras, debouncedSearch, sourceFilter, mappedFilter]);
 
   if (loading) return <p className="text-xs text-slate-500">Loading federation inventory...</p>;
 
