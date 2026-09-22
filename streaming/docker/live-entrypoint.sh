@@ -14,6 +14,10 @@ EMAIL_FILE="${ORGANIZER_EMAIL_FILE:-/run/secrets/organizer_email}"
 CAMERA_LIMIT="${CAMERA_LIMIT:-30}"
 STREAM_PREFIX="${STREAM_PREFIX:-direct}"
 RETRY_SECONDS="${RETRY_SECONDS:-10}"
+MAX_RETRY_SECONDS="${MAX_RETRY_SECONDS:-300}"
+CONNECT_INTERVAL_SECONDS="${CONNECT_INTERVAL_SECONDS:-5}"
+RATE_LIMIT_SECONDS="${RATE_LIMIT_SECONDS:-300}"
+MAX_RATE_LIMIT_SECONDS="${MAX_RATE_LIMIT_SECONDS:-3600}"
 AUTH_REFRESH_SECONDS="${AUTH_REFRESH_SECONDS:-600}"
 STALL_SECONDS="${STALL_SECONDS:-45}"
 RELAY_FPS="${RELAY_FPS:-15}"
@@ -45,7 +49,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-for variable_name in CAMERA_LIMIT RETRY_SECONDS AUTH_REFRESH_SECONDS STALL_SECONDS RELAY_FPS; do
+for variable_name in CAMERA_LIMIT RETRY_SECONDS MAX_RETRY_SECONDS CONNECT_INTERVAL_SECONDS RATE_LIMIT_SECONDS MAX_RATE_LIMIT_SECONDS AUTH_REFRESH_SECONDS STALL_SECONDS RELAY_FPS; do
   value="${!variable_name}"
 
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
@@ -65,9 +69,27 @@ if [[ ! -s "$PASSWORD_FILE" ]]; then
   exit 1
 fi
 
-rm -rf "$RUNTIME_DIR"
+# Keep cooldown state across process restarts inside this container.
+rm -rf "$STATUS_DIR"
+rm -f "$MANIFEST" "$RUNTIME_DIR/auth-success"
 mkdir -p "$STATUS_DIR"
 chmod 700 "$RUNTIME_DIR"
+source /usr/local/bin/organizer-request-gate.sh
+
+organizer_curl() {
+  local result=0 retry_after
+  curl "$@" -D "$RUNTIME_DIR/auth-headers" || result=$?
+  if grep -Eq '^HTTP/[^ ]+ 429([[:space:]]|$)' "$RUNTIME_DIR/auth-headers"; then
+    retry_after=$(awk 'tolower($1)=="retry-after:" {gsub("\r", ""); $1=""; sub(/^ /, ""); print; exit}' "$RUNTIME_DIR/auth-headers")
+    if [[ -n "$retry_after" && ! "$retry_after" =~ ^[0-9]+$ ]]; then
+      retry_after=$(date -d "$retry_after" +%s 2>/dev/null || echo 0)
+      retry_after=$((retry_after - $(date +%s)))
+    fi
+    gate_rate_limited "$retry_after"
+    return 1
+  fi
+  return "$result"
+}
 
 log "Waiting for MediaMTX at $MEDIAMTX_HOST:$MEDIAMTX_PORT."
 
@@ -89,6 +111,7 @@ if (( mediamtx_ready == 0 )); then
 fi
 
 authenticate() {
+  gate_slot
   local email
   local password
   local temporary_cookie
@@ -101,14 +124,14 @@ authenticate() {
 
   rm -f "$temporary_cookie" "$temporary_manifest"
 
-  curl -4 -fsSL \
+  organizer_curl -4 -fsSL \
     --connect-timeout 10 \
     --max-time 60 \
     -c "$temporary_cookie" \
     -o /dev/null \
     "$PORTAL_URL/" || return 1
 
-  curl -4 -fsSL \
+  organizer_curl -4 -fsSL \
     --connect-timeout 10 \
     --max-time 60 \
     -b "$temporary_cookie" \
@@ -120,7 +143,7 @@ authenticate() {
 
   unset email password
 
-  curl -4 -fsSL \
+  organizer_curl -4 -fsSL \
     --connect-timeout 10 \
     --max-time 60 \
     -b "$temporary_cookie" \
@@ -142,13 +165,17 @@ authenticate() {
 }
 
 authentication_loop() {
+  local retry_delay="$RETRY_SECONDS"
   while true; do
     if authenticate; then
       log "Organizer authentication refreshed successfully."
+      retry_delay="$RETRY_SECONDS"
       sleep "$AUTH_REFRESH_SECONDS"
     else
       log "Organizer authentication failed; feeds remain offline."
-      sleep "$RETRY_SECONDS"
+      sleep "$retry_delay"
+      retry_delay=$((retry_delay * 2))
+      (( retry_delay <= MAX_RETRY_SECONDS )) || retry_delay=$MAX_RETRY_SECONDS
     fi
   done
 }
@@ -171,27 +198,14 @@ cookie_header() {
   ' "$COOKIE_JAR"
 }
 
-probe_camera() {
-  local camera_id="$1"
-  local cookies="$2"
-  local source_url
-
-  source_url="${PORTAL_URL%/}/$camera_id/index.m3u8"
-
-  timeout 20 ffmpeg \
-    -nostdin \
-    -hide_banner \
-    -loglevel error \
-    -rw_timeout 15000000 \
-    -http_persistent 0 \
-    -user_agent "$USER_AGENT" \
-    -headers "Cookie: $cookies"$'\r\n'"Referer: $PORTAL_URL/"$'\r\n' \
-    -i "$source_url" \
-    -map 0:v:0 \
-    -frames:v 1 \
-    -an \
-    -f null - \
-    >/dev/null 2>&1
+publisher_errors() {
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == *"429 Too Many Requests"* || "$line" == *"HTTP error 429"* ]]; then
+      gate_rate_limited
+    fi
+    printf '%s\n' "${line//${MEDIAMTX_PUBLISH_PASSWORD}/[redacted]}" >&2
+  done
 }
 
 publish_camera() {
@@ -210,6 +224,7 @@ publish_camera() {
       -nostdin \
       -hide_banner \
       -loglevel warning \
+      -re \
       -rw_timeout 15000000 \
       -http_persistent 0 \
       -user_agent "$USER_AGENT" \
@@ -240,6 +255,7 @@ publish_camera() {
       -nostdin \
       -hide_banner \
       -loglevel warning \
+      -re \
       -rw_timeout 15000000 \
       -http_persistent 0 \
       -user_agent "$USER_AGENT" \
@@ -277,6 +293,7 @@ camera_supervisor() (
   local cookies
   local camera_number
   local initial_delay
+  local retry_delay="$RETRY_SECONDS" started_at
 
   camera_number="${camera_id#cam}"
   initial_delay=$((10#$camera_number % 10))
@@ -287,6 +304,7 @@ camera_supervisor() (
   while true; do
     printf '%s\n' offline > "$STATUS_DIR/$camera_id"
 
+    gate_slot
     cookies="$(cookie_header 2>/dev/null || true)"
 
     if [[ -z "$cookies" ]]; then
@@ -296,21 +314,16 @@ camera_supervisor() (
 
     printf '%s\n' checking > "$STATUS_DIR/$camera_id"
 
-    if ! probe_camera "$camera_id" "$cookies"; then
-      printf '%s\n' offline > "$STATUS_DIR/$camera_id"
-      log "[$camera_id] Organizer feed unavailable; status=offline"
-      sleep "$RETRY_SECONDS"
-      continue
-    fi
-
-    printf '%s\n' checking > "$STATUS_DIR/$camera_id"
-    publish_camera "$camera_id" "$cookies" &
+    started_at=$(date +%s)
+    publish_camera "$camera_id" "$cookies" 2> >(publisher_errors) &
     publisher_pid="$!"
 
     hls_ready=0
 
     for _ in {1..8}; do
       sleep 5
+
+      if gate_cooling; then break; fi
 
       if ! kill -0 "$publisher_pid" 2>/dev/null; then
         break
@@ -328,7 +341,9 @@ camera_supervisor() (
 
       printf '%s\n' offline > "$STATUS_DIR/$camera_id"
       log "[$camera_id] no playable HLS output; status=offline"
-      sleep "$RETRY_SECONDS"
+      sleep "$((retry_delay + RANDOM % 5))"
+      retry_delay=$((retry_delay * 2))
+      (( retry_delay <= MAX_RETRY_SECONDS )) || retry_delay=$MAX_RETRY_SECONDS
       continue
     fi
 
@@ -336,9 +351,19 @@ camera_supervisor() (
     log "[$camera_id] source=organizer-live HLS=playable status=online"
 
     hls_failures=0
+    probe_ticks=0
 
     while kill -0 "$publisher_pid" 2>/dev/null; do
-      sleep 15
+      sleep 5
+
+      if gate_cooling; then
+        kill -TERM "$publisher_pid" 2>/dev/null || true
+        break
+      fi
+
+      probe_ticks=$((probe_ticks + 1))
+      if (( probe_ticks < 3 )); then continue; fi
+      probe_ticks=0
 
       if hls_available "$camera_id"; then
         hls_failures=0
@@ -357,7 +382,11 @@ camera_supervisor() (
 
     printf '%s\n' offline > "$STATUS_DIR/$camera_id"
     log "[$camera_id] Organizer/HLS feed disconnected; status=offline"
-    sleep "$RETRY_SECONDS"
+    # Brief initial playback is not recovery; only reset after stable service.
+    if (( $(date +%s) - started_at >= 300 )); then retry_delay="$RETRY_SECONDS"; fi
+    sleep "$((retry_delay + RANDOM % 5))"
+    retry_delay=$((retry_delay * 2))
+    (( retry_delay <= MAX_RETRY_SECONDS )) || retry_delay=$MAX_RETRY_SECONDS
   done
 )
 

@@ -1,0 +1,41 @@
+name: digdhrishti-organizer-replay
+services:
+  organizer-replay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.organizer-replay
+    container_name: netra-organizer-replay
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    cpus: "2.0"
+    mem_limit: 1g
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      CAMERA_LIMIT: ${CAMERA_LIMIT:-30}
+      FOOTAGE_DIR: /footage
+      MEDIAMTX_HOST: mediamtx
+      MEDIAMTX_PUBLISH_PASSWORD: '${MEDIAMTX_PUBLISH_PASSWORD:?set publishing password}'
+    volumes:
+      - type: bind
+        source: ${ORGANIZER_ARCHIVE_DIR:-${HOME}/Downloads/NETRA-organizer-archive}
+        target: /footage
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - streaming
+    healthcheck:
+      test: ["CMD-SHELL", "for n in $$(seq -w 1 $${CAMERA_LIMIT:-30}); do f=/tmp/direct-cam$$n.progress; test -s $$f && test $$(( $$(date +%s) - $$(stat -c %Y $$f) )) -lt 30 || exit 1; done"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+networks:
+  streaming:
+    external: true
+    name: netra-live_default

@@ -1,0 +1,5 @@
+FROM alpine:3.22
+RUN apk add --no-cache bash ffmpeg
+COPY docker/organizer-replay-entrypoint.sh /usr/local/bin/organizer-replay
+RUN chmod +x /usr/local/bin/organizer-replay
+ENTRYPOINT ["/usr/local/bin/organizer-replay"]

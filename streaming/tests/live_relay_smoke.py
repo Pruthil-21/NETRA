@@ -41,6 +41,7 @@ def main():
                 '-preset','ultrafast','-tune','zerolatency','-g','15','-bf','0','-threads','1',
                 '-f','rtsp','-rtsp_transport','tcp',f'rtsp://publisher:{password}@127.0.0.1:{rtsp}/upstream/cam01'],stdout=log,stderr=log)
             wait_playlist(f'http://127.0.0.1:{hls}/upstream/cam01/index.m3u8?cookieCheck=1')
+            rate_limited = threading.Event()
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self,*args): pass
                 def respond(self,code,data=b'',cookie=False):
@@ -59,6 +60,8 @@ def main():
                         self.respond(200,json.dumps([{'id':'cam01','name':'Synthetic'}]).encode());return
                     if not self.path.startswith('/cam01/'):
                         self.respond(404);return
+                    if rate_limited.is_set():
+                        self.respond(429);return
                     path=self.path.replace('/cam01/','/upstream/cam01/',1)
                     if path.endswith('index.m3u8'): path+='?cookieCheck=1'
                     try:
@@ -75,6 +78,7 @@ def main():
                     '-e','MEDIAMTX_HOST='+origin,'-e','CAMERA_LIMIT=30',
                     '-e','MEDIAMTX_PUBLISH_PASSWORD='+password,
                     '-e','RETRY_SECONDS=1','-e','TRANSCODE_CAMERAS=^cam01$',
+                    '-e','CONNECT_INTERVAL_SECONDS=1','-e','RATE_LIMIT_SECONDS=10',
                     'digdhrishti-stream-audit:local')
             containers.append(relay)
             deadline=time.monotonic()+60
@@ -86,10 +90,32 @@ def main():
                 print(command('docker','logs',relay))
                 raise RuntimeError('Synthetic organizer relay did not become healthy')
             wait_playlist(f'http://127.0.0.1:{hls}/stream/direct-cam01/index.m3u8?cookieCheck=1')
+            rate_limited.set()
+            deadline=time.monotonic()+40
+            while time.monotonic()<deadline:
+                result=subprocess.run(['docker','exec',relay,'test','-s','/tmp/netra-live/cooldown'],capture_output=True)
+                if result.returncode==0: break
+                time.sleep(1)
+            else: raise RuntimeError('429 did not open the shared cooldown')
+            rate_limited.clear()
+            # A throttled publisher must be stopped, then recover automatically.
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                status=command('docker','exec',relay,'cat','/tmp/netra-live/status/cam01').strip()
+                if status=='offline': break
+                time.sleep(.5)
+            else: raise RuntimeError('Publisher did not stop during cooldown')
+            deadline=time.monotonic()+60
+            while time.monotonic()<deadline:
+                result=subprocess.run(['docker','exec',relay,'/usr/local/bin/live-healthcheck'],capture_output=True)
+                if result.returncode==0: break
+                time.sleep(1)
+            else: raise RuntimeError('Relay did not recover after the rate limit cleared')
+            wait_playlist(f'http://127.0.0.1:{hls}/stream/direct-cam01/index.m3u8?cookieCheck=1')
             command('docker','stop','--time','8',relay)
             code=int(command('docker','inspect','--format','{{.State.ExitCode}}',relay))
             assert code==143,code
-            print('PASS: cookie login, one-camera manifest with limit 30, transcode, advancing HLS, health, and SIGTERM exit 143.')
+            print('PASS: cookie login, publishing, advancing HLS, 429 cooldown, automatic recovery, health, and SIGTERM exit 143.')
         finally:
             for container in reversed(containers):
                 subprocess.run(['docker','rm','-f',container],capture_output=True)

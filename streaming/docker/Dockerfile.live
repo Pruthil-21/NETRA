@@ -4,11 +4,13 @@ RUN apk add --no-cache \
     bash \
     curl \
     ffmpeg \
-    jq
+    jq \
+    util-linux
 
 COPY docker/live-entrypoint.sh /usr/local/bin/live-entrypoint
 COPY docker/live-healthcheck.sh /usr/local/bin/live-healthcheck
 COPY docker/hls-probe.sh /usr/local/bin/hls-probe
+COPY docker/organizer-request-gate.sh /usr/local/bin/organizer-request-gate.sh
 
 RUN chmod +x /usr/local/bin/live-entrypoint /usr/local/bin/live-healthcheck /usr/local/bin/hls-probe
 
