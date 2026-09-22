@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Play, Download, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Play, Download, Loader2, ChevronLeft, ChevronRight, RotateCcw, RotateCw } from 'lucide-react';
 import { RecordingSegment, fetchRecordingSegments } from '@/services/recordingsService';
 import { formatDuration } from '@/hooks/useCameraUptime';
 import { detectionService } from '@/services/detectionService';
@@ -105,7 +105,7 @@ export function RecordingPlayer({
   const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
   const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [activeClip, setActiveClip] = useState<{ url: string; offsetIntoSegment: number; autoPlay: boolean } | null>(null);
+  const [activeClip, setActiveClip] = useState<{ url: string; offsetIntoSegment: number; autoPlay: boolean; segStartMs: number } | null>(null);
   const [activeClipLoading, setActiveClipLoading] = useState(false);
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
@@ -256,6 +256,7 @@ export function RecordingPlayer({
           url: segment.url,
           offsetIntoSegment: Math.max(0, (playPointMs - segStartMs) / 1000),
           autoPlay: shouldAutoPlay,
+          segStartMs,
         });
       })
       .catch((err) => {
@@ -362,6 +363,18 @@ export function RecordingPlayer({
     video.currentTime = Math.max(0, video.currentTime + direction * FRAME_SECONDS);
   };
 
+  // Coarse ±10s skip, distinct from stepFrame's ±1/25s -- the standard
+  // "back/forward 10" transport convention (YouTube, most native OS video
+  // apps), for jumping through footage quickly rather than nudging frame by
+  // frame. Clamped to this <video>'s own loaded duration, not the whole
+  // day's span -- it only ever operates on whatever's currently loaded.
+  const skipSeconds = (deltaSeconds: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
+    video.currentTime = Math.min(duration, Math.max(0, video.currentTime + deltaSeconds));
+  };
+
   const handlePlayerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === '.') {
       e.preventDefault();
@@ -369,6 +382,12 @@ export function RecordingPlayer({
     } else if (e.key === ',') {
       e.preventDefault();
       stepFrame(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      skipSeconds(10);
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      skipSeconds(-10);
     }
   };
 
@@ -541,6 +560,22 @@ export function RecordingPlayer({
               onLoadedMetadata={(e) => {
                 e.currentTarget.currentTime = activeClip.offsetIntoSegment;
               }}
+              // Keeps the Archive-time readout (previewIso, in the scrubber
+              // row below) advancing with actual playback -- without this,
+              // it only ever reflected the last manual scrub/click and sat
+              // frozen at the moment "Play from here" was pressed while the
+              // video kept playing past it. requestAnimationFrame-rate via
+              // the browser's own timeupdate cadence (roughly 4x/sec) is
+              // plenty for a wall-clock readout; no separate rAF loop needed.
+              onTimeUpdate={(e) => {
+                // Skip while the officer is actively dragging the scrubber
+                // handle -- both this and the drag handler write
+                // previewSeconds, and without this guard they'd fight for
+                // it every ~250ms, making the handle jitter mid-drag.
+                if (draggingHandleRef.current) return;
+                const seconds = (activeClip.segStartMs + e.currentTarget.currentTime * 1000 - span.earliestStartMs) / 1000;
+                setPreviewSeconds(seconds);
+              }}
               onEnded={handleEnded}
               onError={() => setPlaybackError('Playback failed for this moment — try "Play from here" again, or pick a slightly different point.')}
             />
@@ -552,8 +587,30 @@ export function RecordingPlayer({
       {playbackError && <p className="text-xs text-signal-red">{playbackError}</p>}
 
       {playFromSeconds !== null && activeClip && (
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mr-1">Frame</span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mr-1">Skip</span>
+          <button
+            type="button"
+            onClick={() => skipSeconds(-10)}
+            aria-label="Back 10 seconds"
+            title="Back 10 seconds"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-line text-slate-300 hover:text-white hover:bg-panel-raised"
+          >
+            <RotateCcw size={13} />
+            <span className="text-[11px]">10s</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => skipSeconds(10)}
+            aria-label="Forward 10 seconds"
+            title="Forward 10 seconds"
+            className="flex items-center gap-1 px-2 py-1 rounded border border-line text-slate-300 hover:text-white hover:bg-panel-raised"
+          >
+            <RotateCw size={13} />
+            <span className="text-[11px]">10s</span>
+          </button>
+
+          <span className="text-[10px] font-semibold tracking-wider text-slate-500 uppercase mx-1">Frame</span>
           <button
             type="button"
             onClick={() => stepFrame(-1)}
@@ -570,7 +627,7 @@ export function RecordingPlayer({
           >
             <ChevronRight size={14} />
           </button>
-          <span className="text-[10px] text-slate-600">(or , / . keys while the player is focused)</span>
+          <span className="text-[10px] text-slate-600">(← / → for ±10s, , / . for one frame, while the player is focused)</span>
         </div>
       )}
 
