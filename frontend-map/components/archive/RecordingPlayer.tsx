@@ -37,18 +37,31 @@ function computeSpan(segments: RecordingSegment[]): Span {
 }
 
 // How far on either side of a requested play point to ask the recording
-// service for -- empirically, its playback URLs 409 ("Overlapping
-// recordings require a narrower range") for any window much wider than
-// ~15 minutes, even though its own /list response for a wide query still
-// reports one segment spanning the whole thing with a `duration` that
-// looks fine. So a segment's own `duration` can't be trusted for playback
-// once it was fetched with a wide range (the day-level fetch that feeds
-// this component's `segments`/`span` props) -- only a narrow, freshly
-// re-fetched window (well under that threshold) reliably has a playable
-// url. This mirrors exactly what "Mark clip start/end" already does for
-// exporting a clip; playback now does the same narrow re-fetch, just
-// automatically around wherever the officer presses play.
+// service for, when a continuous recording is too long to fetch whole (see
+// SAFE_SINGLE_FETCH_SECONDS below) -- empirically, its playback URLs 409
+// ("Overlapping recordings require a narrower range") for any window much
+// wider than ~15 minutes, even though its own /list response for a wide
+// query still reports one segment spanning the whole thing with a
+// `duration` that looks fine. So a segment's own `duration` can't be
+// trusted for playback once it was fetched with a wide range (the
+// day-level fetch that feeds this component's `segments`/`span` props) --
+// only a narrow, freshly re-fetched window (well under that threshold)
+// reliably has a playable url. This mirrors exactly what "Mark clip
+// start/end" already does for exporting a clip.
 const PLAYBACK_WINDOW_SECONDS = 5 * 60;
+
+// A single contiguous recording no longer than this gets fetched whole, in
+// one request, instead of the rolling window above -- real margin under the
+// ~15-minute 409 threshold. Re-fetching a fresh narrow window every
+// PLAYBACK_WINDOW_SECONDS/2 tears down the <video> element each time (see
+// `key={activeClip.url}` below) and makes the browser renegotiate the
+// connection and rebuild its buffer from zero -- for a short recording
+// (this demo's whole 10 minutes included) that reads as "loads, buffers a
+// couple of minutes, then just stops," regardless of how fast the network
+// actually is, the same failure mode real players avoid by keeping one
+// continuous buffered stream per contiguous source instead of re-chunking
+// it into repeated fresh HTTP requests.
+const SAFE_SINGLE_FETCH_SECONDS = 12 * 60;
 
 // A drag on the timeline shorter than this (in pixels) is treated as a plain
 // click-to-seek rather than a zoom-select -- without a threshold, a hand
@@ -105,7 +118,18 @@ export function RecordingPlayer({
   const [clipStartSeconds, setClipStartSeconds] = useState<number | null>(null);
   const [clipEndSeconds, setClipEndSeconds] = useState<number | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [activeClip, setActiveClip] = useState<{ url: string; offsetIntoSegment: number; autoPlay: boolean; segStartMs: number } | null>(null);
+  const [activeClip, setActiveClip] = useState<{
+    url: string;
+    offsetIntoSegment: number;
+    autoPlay: boolean;
+    segStartMs: number;
+    /** Where this fetched clip's own data actually ends, in seconds from
+     * the day span's start -- authoritative for handleEnded's "is there
+     * really more to play" check, since it's the real segment.duration the
+     * service reported for the url we're playing, not just whatever we
+     * asked for. */
+    coveredEndSeconds: number;
+  } | null>(null);
   const [activeClipLoading, setActiveClipLoading] = useState(false);
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [exportLoading, setExportLoading] = useState(false);
@@ -212,15 +236,17 @@ export function RecordingPlayer({
     };
   }, [cameraId, span]);
 
-  // Always re-fetches a narrow window right around the play point instead
-  // of reusing whatever URL came back with `segments` (see
-  // PLAYBACK_WINDOW_SECONDS) -- a segment fetched with a wide range (e.g.
-  // this component's day-level `segments` prop) reports a `duration`
-  // spanning the whole request, but its `url` 409s the moment it's
-  // actually played if that span crosses the recording service's own
-  // overlapping-file boundaries. A fresh, narrow fetch is the only
-  // reliable way to get something playable, mirroring the clip-export
-  // effect below exactly.
+  // Fetches whatever's needed to play from playFromSeconds onward -- the
+  // whole covering recording in one request when it's short enough
+  // (SAFE_SINGLE_FETCH_SECONDS), a narrow rolling window centered on the
+  // play point otherwise (see PLAYBACK_WINDOW_SECONDS). Never reuses
+  // whatever url came back with `segments` (this component's day-level
+  // prop): that was fetched with a wide range purely to feed the calendar's
+  // "which days have anything" dots, and its own `url` 409s the moment
+  // it's actually played if that wide range crossed the recording
+  // service's overlapping-file boundaries. A fresh fetch scoped to just
+  // this one contiguous recording is the only reliable way to get
+  // something playable, mirroring the clip-export effect below.
   useEffect(() => {
     if (playFromSeconds === null || !span) {
       setActiveClip(null);
@@ -232,8 +258,33 @@ export function RecordingPlayer({
     setActiveClipLoading(true);
     setPlaybackError(null);
     const playPointMs = span.earliestStartMs + playFromSeconds * 1000;
-    const windowStart = new Date(playPointMs - (PLAYBACK_WINDOW_SECONDS / 2) * 1000).toISOString();
-    const windowEnd = new Date(playPointMs + (PLAYBACK_WINDOW_SECONDS / 2) * 1000).toISOString();
+
+    // `segments` already reports each contiguous recording's real
+    // [start, start+duration) bounds from the day-level fetch -- use that
+    // to size the request instead of always assuming a fixed rolling
+    // window, and to clamp the fallback window so it never asks for time
+    // before the recording started or after it ended (wasted/confusing
+    // range for the service either way).
+    const covering = segments.find((s) => {
+      const segStartMs = new Date(s.start).getTime();
+      const segEndMs = segStartMs + s.duration * 1000;
+      return playPointMs >= segStartMs && playPointMs < segEndMs;
+    });
+
+    let windowStart: string;
+    let windowEnd: string;
+    if (covering && covering.duration <= SAFE_SINGLE_FETCH_SECONDS) {
+      windowStart = covering.start;
+      windowEnd = new Date(new Date(covering.start).getTime() + covering.duration * 1000).toISOString();
+    } else {
+      const rawStartMs = playPointMs - (PLAYBACK_WINDOW_SECONDS / 2) * 1000;
+      const rawEndMs = playPointMs + (PLAYBACK_WINDOW_SECONDS / 2) * 1000;
+      const segStartMs = covering ? new Date(covering.start).getTime() : null;
+      const segEndMs = covering ? segStartMs! + covering.duration * 1000 : null;
+      windowStart = new Date(segStartMs !== null ? Math.max(rawStartMs, segStartMs) : rawStartMs).toISOString();
+      windowEnd = new Date(segEndMs !== null ? Math.min(rawEndMs, segEndMs) : rawEndMs).toISOString();
+    }
+
     fetchRecordingSegments(cameraId, { start: windowStart, end: windowEnd })
       .then((result) => {
         if (cancelled) return;
@@ -257,6 +308,7 @@ export function RecordingPlayer({
           offsetIntoSegment: Math.max(0, (playPointMs - segStartMs) / 1000),
           autoPlay: shouldAutoPlay,
           segStartMs,
+          coveredEndSeconds: (segStartMs + segment.duration * 1000 - span.earliestStartMs) / 1000,
         });
       })
       .catch((err) => {
@@ -271,7 +323,7 @@ export function RecordingPlayer({
     return () => {
       cancelled = true;
     };
-  }, [cameraId, playFromSeconds, span]);
+  }, [cameraId, playFromSeconds, span, segments]);
 
   // Marking both ends of a clip mints a fresh, tightly-scoped segment for
   // exactly that range -- an arbitrary officer-picked range essentially
@@ -391,18 +443,18 @@ export function RecordingPlayer({
     }
   };
 
-  // The active window's own playable duration matches exactly what was
-  // requested (PLAYBACK_WINDOW_SECONDS, centered on playFromSeconds) -- the
-  // recording service clips its returned segment to the requested range
-  // rather than handing back its full underlying file. So reaching the end
-  // of this <video>'s src means "ran off the edge of the fetched window,"
-  // not "no more footage exists" -- advance to the next window and keep
-  // going instead of just stopping, unless there's genuinely nothing left
-  // in the day's span.
+  // Reaching the end of this <video>'s src means either "ran off the edge
+  // of a fetched rolling window, more footage exists past it" or "actually
+  // finished the whole covering recording" -- activeClip.coveredEndSeconds
+  // (the real end the service reported for the url just played, not an
+  // assumed fixed stride) tells them apart. Advance and keep going only in
+  // the first case; a short recording fetched whole (see
+  // SAFE_SINGLE_FETCH_SECONDS) ends here instead of pointlessly re-fetching
+  // a window past data that was never going to exist.
   const handleEnded = () => {
-    if (playFromSeconds === null || !span) return;
-    const nextSeconds = playFromSeconds + PLAYBACK_WINDOW_SECONDS / 2;
-    if (nextSeconds >= span.totalSeconds) return;
+    if (playFromSeconds === null || !span || !activeClip) return;
+    const nextSeconds = activeClip.coveredEndSeconds;
+    if (nextSeconds >= span.totalSeconds - 0.5) return;
     autoAdvanceRef.current = true;
     setPreviewSeconds(nextSeconds);
     setPlayFromSeconds(nextSeconds);
@@ -556,6 +608,7 @@ export function RecordingPlayer({
               src={activeClip.url}
               controls
               autoPlay={activeClip.autoPlay}
+              preload="auto"
               className="w-full h-full"
               onLoadedMetadata={(e) => {
                 e.currentTarget.currentTime = activeClip.offsetIntoSegment;
