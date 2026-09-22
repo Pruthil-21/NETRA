@@ -553,11 +553,9 @@ pathDefaults:
   ###############################################
   # Default path settings -> Record
 
-  # Record streams to disk. Backs the recorded-footage timeline -- see
-  # streaming/README.md's "Recorded footage / VOD playback" section for the
-  # path-naming convention (MediaMTX path == camera.stream_id, same as the
-  # live HLS URL) and the playback API this feeds.
-  record: true
+  # Shared live/replay relay only. Archive storage is managed separately
+  # by streaming/recording; do not duplicate recordings in this container.
+  record: false
   # Path of recording segments.
   # Extension is added automatically.
   # Available variables are %path (path name), %Y %m %d (year, month, day),

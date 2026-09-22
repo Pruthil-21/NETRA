@@ -120,6 +120,14 @@ docker compose -f compose.recorded.yaml -f compose.hybrid.yaml -f compose.snmp.y
 ```
 
 
+## Organizer request limits
+
+The live relay opens one upstream publisher per selected camera, paced at real time; it does not open a second decoder to pre-test the feed. Authentication and publisher starts share a connection gate (`CONNECT_INTERVAL_SECONDS`, default 5). Failed connections use exponential retries up to `MAX_RETRY_SECONDS` (300), with jitter.
+
+An upstream HTTP 429 pauses all publishers and connection attempts. The fallback cooldown starts at `RATE_LIMIT_SECONDS` (300), doubles on repeated incidents up to `MAX_RATE_LIMIT_SECONDS` (3600), and honors longer numeric Retry-After values exposed by authentication requests. FFmpeg does not expose segment-response Retry-After headers here, so segment failures use the fallback. Cooldown state survives process restarts within the same container, but not container recreation. This is not a measured organizer cooldown or a guarantee of 30-camera capacity. Confirm the permitted concurrent streams and request rate with the organizer before increasing `CAMERA_LIMIT`; run only one organizer relay for this deployment.
+
+The isolated regression test `python3 tests/live_relay_smoke.py` exercises authentication, HLS output, throttling and automatic recovery without organizer credentials. Build the test image first with `docker build -f docker/Dockerfile.live -t digdhrishti-stream-audit:local .`.
+
 ## Continuous recording fleet
 
 The additive Kubernetes recording implementation is in [recording/README.md](recording/README.md), with rollout steps, Pruthil's playback/health contract, integrity controls and scale assumptions. See [recording/VALIDATION.md](recording/VALIDATION.md) for tested behavior and deployment gates. Existing demo commands are unchanged.
