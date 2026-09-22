@@ -17,6 +17,14 @@ const SEGMENTS = [
   { start: '2026-09-05T08:00:00.000Z', duration: 600, url: 'https://playback.example/get?token=day-segment' },
 ];
 
+// A recording longer than SAFE_SINGLE_FETCH_SECONDS (12 minutes, see
+// RecordingPlayer.tsx) -- exercises the rolling-window fallback path
+// specifically, distinct from the default SEGMENTS above (600s, short
+// enough to be fetched whole in one request).
+const LONG_SEGMENTS = [
+  { start: '2026-09-05T08:00:00.000Z', duration: 3600, url: 'https://playback.example/get?token=long-day-segment' },
+];
+
 // The timeline's drag-to-zoom/hover-tooltip math is driven off the track's
 // own rendered pixel width (see ratioFromClientX in RecordingPlayer.tsx) --
 // jsdom never actually lays anything out, so every element's real
@@ -217,7 +225,9 @@ describe('RecordingPlayer', () => {
   });
 
   it('seeks correctly when "Play from here" is clicked again for a different point inside the same clip', async () => {
-    // Each narrow re-fetch gets its own distinct url (the recording service
+    // A recording longer than SAFE_SINGLE_FETCH_SECONDS still takes the
+    // rolling-window fallback path (see PLAYBACK_WINDOW_SECONDS), and each
+    // narrow re-fetch gets its own distinct url (the recording service
     // mints a fresh token per requested window -- see the real /list~/get
     // behavior confirmed earlier against api.digdhrishti.me), so every
     // "Play from here" click swaps in a genuinely fresh <video> (via the
@@ -240,7 +250,20 @@ describe('RecordingPlayer', () => {
       service_reachable: true,
     }));
 
-    render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
+    // Starts well into the middle of the recording (not position 0) --
+    // otherwise the window-clamping that keeps requests from reaching
+    // before the recording actually started (see the component's
+    // Math.max(rawStartMs, segStartMs)) would clip this first window's
+    // offset down to 0 instead of the full symmetric 150s, which isn't
+    // what this test is about.
+    render(
+      <RecordingPlayer
+        cameraId={7}
+        cameraName="Ring Road Camera"
+        segments={LONG_SEGMENTS}
+        initialPlayFromIso="2026-09-05T08:16:40.000Z" // 1000s in
+      />
+    );
     const firstVideo = await waitFor(() => {
       const el = document.querySelector('video');
       expect(el).not.toBeNull();
@@ -250,7 +273,7 @@ describe('RecordingPlayer', () => {
     expect(firstVideo.currentTime).toBe(150); // PLAYBACK_WINDOW_SECONDS / 2
 
     const slider = screen.getByLabelText('Scrub recorded footage timeline');
-    seekTo(slider, 250, 600);
+    seekTo(slider, 2000, 3600);
     fireEvent.click(screen.getByText('Play from here'));
 
     const secondVideo = await waitFor(() => {
@@ -261,6 +284,24 @@ describe('RecordingPlayer', () => {
     });
     fireEvent.loadedMetadata(secondVideo);
     expect(secondVideo.currentTime).toBe(150);
+  });
+
+  it('fetches a short recording whole in one request instead of a rolling window', async () => {
+    // SEGMENTS is 600s, under SAFE_SINGLE_FETCH_SECONDS (12 minutes) -- the
+    // whole thing should be requested in a single call scoped to the
+    // segment's own real [start, start+duration) bounds, not a narrow
+    // +/-150s slice around the play point. This is what actually fixes
+    // "loads, buffers a couple of minutes, then just stops": one continuous
+    // buffered stream per short recording instead of a fresh fetch (and
+    // <video> remount) every PLAYBACK_WINDOW_SECONDS/2 of playback.
+    render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
+    await waitFor(() => {
+      expect(document.querySelector('video')).toHaveAttribute('src', SEGMENTS[0].url);
+    });
+    expect(fetchRecordingSegments).toHaveBeenCalledWith(7, {
+      start: SEGMENTS[0].start,
+      end: new Date(new Date(SEGMENTS[0].start).getTime() + SEGMENTS[0].duration * 1000).toISOString(),
+    });
   });
 
   it('plays the segment that actually contains the requested moment, not just whichever one is listed first', async () => {
@@ -349,11 +390,50 @@ describe('RecordingPlayer', () => {
     expect(video.currentTime).toBeCloseTo(10, 5);
   });
 
-  it('automatically continues into the next window when playback reaches the end, instead of stopping', async () => {
+  it('does not advance past a short recording fetched whole once playback actually ends', async () => {
+    // SEGMENTS (600s) is fetched whole -- see the "fetches a short
+    // recording whole" test above -- so activeClip.coveredEndSeconds
+    // equals the day span's own totalSeconds (600) and there is genuinely
+    // nothing more to play. Previously this always advanced by a fixed
+    // PLAYBACK_WINDOW_SECONDS/2 stride regardless of whether more footage
+    // existed past it.
     render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={SEGMENTS} />);
     const video = await waitFor(() => {
       const el = document.querySelector('video');
       expect(el).toHaveAttribute('src', SEGMENTS[0].url);
+      return el as HTMLVideoElement;
+    });
+
+    fireEvent.ended(video);
+
+    // Give any (incorrect) advance a chance to happen, then assert it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByLabelText('Scrub recorded footage timeline')).toHaveAttribute('aria-valuenow', '0');
+  });
+
+  it('automatically continues into the next window when a long recording reaches the edge of the fetched window, instead of stopping', async () => {
+    // Mirrors the real service: the returned segment matches whatever
+    // range was actually requested, so activeClip.coveredEndSeconds
+    // reflects a genuine windowed fetch (ending 150s in, not the whole
+    // 3600s recording) -- the default static mock elsewhere in this file
+    // would return SEGMENTS' fixed 600s regardless of the request, which
+    // isn't representative of the windowed-fallback path this test covers.
+    vi.mocked(fetchRecordingSegments).mockImplementation(async (_cameraId, range) => ({
+      available: true,
+      segments: range
+        ? [{
+            start: range.start,
+            duration: (new Date(range.end).getTime() - new Date(range.start).getTime()) / 1000,
+            url: `https://playback.example/get?start=${range.start}`,
+          }]
+        : [],
+      service_reachable: true,
+    }));
+
+    render(<RecordingPlayer cameraId={7} cameraName="Ring Road Camera" segments={LONG_SEGMENTS} />);
+    const video = await waitFor(() => {
+      const el = document.querySelector('video');
+      expect(el).not.toBeNull();
       return el as HTMLVideoElement;
     });
 
