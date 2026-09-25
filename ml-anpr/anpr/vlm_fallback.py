@@ -27,7 +27,7 @@ import urllib.request
 
 import cv2
 
-from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions
+from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3:4b"
@@ -145,6 +145,23 @@ def read_plate_vlm(image_bgr):
     else:
         plate = _correct_plate_positions(cleaned)
 
+    if plate is None:
+        return None
+
+    # State-code validation, added once VLM fallback was actually enabled
+    # for the first time (Ollama was never installed/running before
+    # tonight, so this path never fired in practice until now). Confirmed
+    # directly, not theorized: a real test against a known GJ23BL0169 crop
+    # returned VLM text "DJ23BL0169" (structurally valid, G misread as D)
+    # -- structural pattern validation alone lets a fabricated state code
+    # straight through. pop_ready_vlm_confirmations() confirms this
+    # function's result immediately, bypassing PlateConfirmationTracker.add()
+    # entirely (by design, to keep VLM reads out of the normal OCR vote --
+    # see this module's docstring), so this is the only gate a VLM read
+    # gets; without it, VLM fallback could confirm a real-looking but
+    # nonexistent-state plate that the equivalent normal-OCR path would
+    # have caught.
+    plate = _correct_state_code(plate)
     if plate is None:
         return None
     return (plate, VLM_FALLBACK_CONFIDENCE, "ok - vlm fallback")
