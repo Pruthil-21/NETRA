@@ -5315,22 +5315,262 @@ union numbers looked promising for RoadX but didn't survive contact
 with the real voting pipeline -- the same lesson Awiros taught more
 sharply) -- but neither earned a permanent place in the codebase.
 
+# Session 43 -- Session 42's fine-tune plan actually executed: three real recognizer fine-tunes, all lost to baseline; the real wins were two cheap production fixes found along the way
+
+Session 42 closed with a specific recommendation: fine-tune a recognizer
+on labeled real-camera crops. That plan was fully executed this session
+-- team-wide labeling (~5,600 crops split across 6 people, extensively
+verified: format-triage against `INDIAN_PLATE_PATTERN`+state codes,
+frequency-based auto-fix, manual spot-checks), three real training runs,
+and for the first time in this project's history, an eval harness that
+actually works correctly. The honest result: **none of the three
+fine-tunes beat the shipped baseline.** The real accuracy gains this
+session came from two much cheaper production-code fixes found while
+investigating why the fine-tunes and their errors looked the way they
+did, not from the fine-tune itself.
+
+## The eval harness itself was broken, and had been since Session 12ish -- found and fixed first
+
+Before trusting any fine-tune result, the existing `finetuned_pipeline_ab.py`/`ocr_gpu_worker.py`
+real-pipeline A/B harness (used to validate every fine-tune attempt
+across this project's history) was re-run for the very first time
+end-to-end, since a prior fine-tune (v1, Sep 12, ~300 unique plates)
+had never actually been validated against it successfully. Two real,
+concrete bugs found:
+
+- **Character-dictionary size mismatch.** The harness's hardcoded
+  `finetuned_config` assumed `out_channels_list: {"CTCLabelDecode": 64,
+  ...}` -- a stale number from some earlier, smaller-dict experiment.
+  Every real fine-tuned checkpoint (v1's included) was actually trained
+  against PaddleOCR's stock 18,385-character multilingual dictionary (the
+  same one the pretrained checkpoint ships with), so the real
+  `head.ctc_head.fc.weight` shape was `[120, 18385]`, not `[120, 64]`.
+  Paddle's checkpoint loader silently skips a shape-mismatched layer
+  rather than erroring, so **the actual trained CTC output layer was
+  never loading at all** -- every "finetuned" test run before this
+  session was silently running with the CTC head randomly initialized,
+  producing garbled Chinese-character output (this project's stock dict
+  is the general Chinese+English PP-OCRv5 vocabulary). Fixed by reading
+  the real shape directly from the checkpoint's own "not matched"
+  warning at load time (not guessing), never by computing it in advance.
+- **Two older "finetuned" A/B log files on the GPU box
+  (`finetuned_pipeline.log`, `pipeline_finetuned2.log`) had the exact
+  same confirmed-plate list as baseline**, meaning the override never
+  engaged at all in some earlier session's invocation -- those were
+  accidentally re-testing baseline against itself, not the fine-tuned
+  model.
+
+With the dict-size bug fixed, v1's real checkpoint (Sep 12,
+finetune_package/best_accuracy.pdparams) was finally validated for the
+first time: **14/43 = 32.6%** on the standard 3-minute Townhall window,
+vs. baseline's freshly-measured **21/37 = 56.8%** on the same window.
+The original leak-inflated 90.9% training-log number (73.6% train/val
+duplication, documented in an earlier session) was never real, and now
+we know the checkpoint itself doesn't beat baseline either, for the
+first time with real evidence instead of an inference.
+
+## Three fine-tune attempts, all real, all tested, none beat baseline
+
+| Attempt | Data | Architecture | Real result |
+|---|---|---|---|
+| v1 (Sep 12, pre-existing) | ~300 unique plates, leaked split | MultiHead (CTC+NRTR), stock 18,385-char dict | 14/43 = 32.6% |
+| v4 | 943 newly team-labeled rows merged onto v1's data, leak-proof rebuild, 713 unique plates, capped 8 crops/plate | same as v1 | 14/43 = 32.6% (identical count to v1) |
+| v5 | same data as v4 | small custom 36-char dict (0-9,A-Z only, empirically confirmed as the exact real charset), LR 0.00005 (tuned for gentle fine-tuning) | training never converged -- exact-match train acc stuck at 0.0 for all 20 epochs, real A/B skipped |
+| v6 | same as v5 | same small dict, LR raised to 0.001 (20x, for training a from-scratch head) | converged for real (best val acc 11.3%, up from v5's 0%) but real A/B: 1/35 = 2.9% -- the model overfit into repeatedly hallucinating "GJ"/"G" fragments (`GJGJ24`, `GGJ2G63`), a real, systematic mode-collapse, not random noise |
+
+Real lessons, not just a scoreboard:
+- **v4 vs v1 (same recipe, 713 vs 331 unique plates, identical real
+  result) shows data *volume* wasn't the bottleneck.** More diverse
+  training crops made no measurable difference once tested fairly.
+- **v5 vs v6 (same small dict, only LR changed) shows *warm start*
+  matters more than dictionary size.** v4/v1 kept the pretrained
+  checkpoint's oversized-but-genuinely-pretrained classification layer;
+  v5/v6 threw it away for a "right-sized" but randomly-initialized one.
+  A cold-started head with a gentle LR barely learns anything (v5); the
+  same cold-started head with an aggressive LR finds the fastest
+  loss-reducing shortcut, which turned out to be spamming the single
+  most common character (v6) -- neither beats a pretrained, if
+  oversized, warm-started layer.
+- **Real per-crop test (not just the aggregate percentage): a
+  vision-capable model (Claude, read directly) correctly read several
+  crops the CTC recognizer failed on completely** (e.g. `GJ23DH0502`,
+  `GJ23OM9699`, `MP04SO0694`), confirming the information is genuinely
+  present in these crops -- the CTC recognizer's fixed 48px single-line
+  input height squishes a two-line plate's two rows into half the
+  vertical resolution either line needs, a real architectural mismatch
+  for two-wheeler plates specifically, not a training-data problem.
+
+## VLM fallback: installed for the first time, two real bugs fixed, net negative as currently configured -- not shipped
+
+`vlm_fallback.py` (local Ollama + gemma3:4b, last-resort read for
+vehicles that never confirm through normal OCR voting) existed in the
+codebase but Ollama had never actually been running on the GPU box in
+any test this project has done. Installed self-contained under
+`/bkp/NETRA/ollama-bin` (no sudo, matching the existing
+tailscale-bin/cloudflared-bin pattern -- root disk was at 95% full,
+so both the binary and the model cache live under `/bkp`, not home).
+
+Two real bugs found and fixed once it was actually live:
+- `finetuned_pipeline_ab.py` never called
+  `tracker.pop_ready_vlm_confirmations()`, so a completed VLM rescue was
+  silently never collected -- the exact same class of bug already found
+  once before in `townhall_10min_accuracy.py`. Fixed, plus added a
+  proper drain step at video end so in-flight calls aren't dropped.
+- `read_plate_vlm()` validated structure (`INDIAN_PLATE_PATTERN`) but
+  never validated the state code -- confirmed directly: a real
+  `GJ23BL0169` crop came back from the VLM as `DJ23BL0169` (structurally
+  valid, fake state), which `pop_ready_vlm_confirmations()` confirms
+  directly, bypassing `PlateConfirmationTracker.add()`'s hard gate (see
+  below) entirely by design. Fixed by adding the same
+  `_correct_state_code()` call used everywhere else in the pipeline.
+
+Real A/B with VLM properly wired: **26/48 = 54.2%**, vs. 22/33 = 66.7%
+without it (gate fix in place, no VLM). Breakdown of VLM's own 15 new
+confirmations: 4 were genuine plates the OCR pipeline had completely
+missed (`GJ23AX1906`, `GJ23BD0453`, `GJ23CC1170`, `GJ23U2185`) -- real
+value, vehicles that would otherwise have zero chance of ever being
+read. The other 11 were wrong, but notably **all 11 were close (1-2
+characters off) or moderate, zero wild hallucinations** -- the same
+character-quality profile as baseline's own errors, just at higher
+volume, trading recall for precision the same way RoadX and Awiros did
+in Session 42. **Not shipped**, same call as RoadX/Awiros and for the
+same reason. A real, promising follow-up identified but not built:
+require two independent VLM reads to agree before confirming (mirrors
+how normal OCR voting already works) instead of trusting a single read.
+
+## Real production fix #1 (shipped, commit ac36c97): hard-reject unconfirmable plate structures
+
+While characterizing the fine-tune failures, found that
+`PlateConfirmationTracker.add()` only used `INDIAN_PLATE_PATTERN` as a
+soft signal (vote weight + a confidence-tier floor), never a hard
+requirement -- a consistently-wrong reconstructed representative could
+still confirm via the "ok - fallback, unverified pattern" tier at 0.4
+confidence. Real cost, not just noise: baseline's own confirmed list on
+the standard test had 5/37 structurally impossible entries
+(`BI85BS3017`, `BIBI3RRE`, `BLIBI3KHE`, `HGJ230P8070`, `PCH5944`) that
+were never real matches anyway. `jobs_server.py`'s one-shot job path
+already enforced exactly this (its own comment cites a real 16-plate job
+with 2 fallback-tier noise entries) -- this brings the live streaming
+path in line with it, plus the same `_correct_state_code()` recovery
+`detect_plate_from_frame` already applies per-reading.
+
+**Real result: 21/37 = 56.8% -> 22/33 = 66.7%** on the same window, zero
+model change. Verified against the existing test suite (unchanged) and
+two independent live A/B re-runs.
+
+## Real production fix #2 (shipped, commit f50de6f): down-weight RTO-excluded O/I in series-letter voting -- and a real near-miss that almost shipped a regression
+
+Baseline's own near-misses showed a dominant, recurring pattern: the
+series-letter position (right after the 2-digit RTO code) frequently
+read as "O" when the real letter was something else (D five times, also
+U and B, across two independent live test runs -- 7+ occurrences).
+Verified against the actual primary source, not just Wikipedia: Central
+Motor Vehicles Rules 1989, s.50, explicitly excludes 'I' and 'O' from
+the series-letter portion of a registration mark ("continuing until all
+the alphabets, excluding 'I' and 'O' are exhausted"), specifically to
+avoid confusion with digits 1 and 0.
+
+**First attempt (reverted before deployment): a hard rejection** of any
+confirmed plate with O/I in a letter position. Caught by this project's
+own full local test suite before ever reaching the GPU box:
+`test_pipeline_mp_smoke.py`'s `HR26EO6477` (a real, previously-confirmed
+plate this project has referenced 10+ times across its own history) has
+a genuine "O" in exactly that position -- user personally verified
+against the actual `dashcam_trimmed.mp4` footage at ~0:08. A hard rule
+built from an authoritative external source without cross-checking this
+project's own accumulated ground truth first would have regressed a
+real, already-proven case. Reverted cleanly (verified byte-identical to
+the prior commit) before any deployment.
+
+**Rebuilt correctly as a soft per-character vote down-weight**
+(`PlateConfirmationTracker.INVALID_SERIES_LETTER_VOTE_WEIGHT = 0.05` in
+`_reconstruct()`), scoped specifically to positions 4+ only -- never the
+state-code positions (0-1), since Odisha's real, valid state code "OD"
+itself starts with 'O' and checking there too would wrongly discount
+every genuine Odisha plate. Down-weighting is safe by construction: it
+only lets an *already-present* alternative reading win a position's
+vote; a plate every reading agrees on (a real `HR26EO6477`) resolves
+identically to before, since there's nothing to out-vote it with.
+Verified against both a synthetic mixed-reading test and the real
+`HR26EO6477` footage before and after -- confirms correctly both times.
+
+**Real result:** `GJ23OF9047` (wrong) replaced by the correct
+`GJ23DF9047` on a live re-run; wrong confirmations dropped from 22 to
+19; 54.2% -> 57.8% (with VLM active, not the shipped configuration --
+the pure gate+O/I-fix-only number without VLM was not separately
+isolated this session, a real gap worth closing next time). Six plates
+still show the wrong "O" post-fix: two (`GJ23O9016`, `GJ23OR5411`)
+predate this fix entirely and reflect every single OCR reading of that
+specific vehicle agreeing on the wrong letter across every frame it was
+tracked -- voting cannot recover an answer that never once appears as a
+candidate. The other four are VLM-fallback confirmations, which bypass
+`_reconstruct()`'s voting by design and, being single-shot reads, have
+no competing vote to down-weight against regardless of code path -- not
+shipped, so not currently a live concern.
+
+## Two-wheeler plate cropping: found the existing bug report is stale, real root cause identified, not fixed (no proven payoff yet)
+
+`ml-anpr.md`'s own problem list claimed two-wheeler plates are "never
+attempted" due to crop geometry. Re-verified directly against 8 real,
+human-labeled two-wheeler crops: false as currently stated --
+`plate_region_crop()`'s geometry (already widened in an earlier session,
+`feature/plate-region-detector`) produces a crop region for all 8, and
+the existing dual-line-combination + position-correction logic
+successfully reconstructed 2/8 exact plates from separately-read line
+fragments. Doc corrected in `ml-anpr.md`.
+
+The real, still-open issue: motorcycle/scooter plates sit much higher on
+the vehicle (near the headlight/mirrors) than the current crop band
+assumes -- confirmed directly, one real plate (`GJ23EL9207`) was
+entirely outside the crop, not just clipped. The fix needs the vehicle's
+YOLO class ID threaded through `_read_plate_from_box`'s box collection
+(currently discarded right after the area-floor check), a real but
+contained plumbing change. Tested widening the band on the known
+failures first, before writing any code: **it recovered none of them**
+-- even with the plate correctly included, PaddleOCR still couldn't read
+these specific small, tightly-packed, glare-affected crops. Real
+benefit would be "stops guaranteeing failure on some frames," not a
+proven accuracy gain, so this was logged as a precisely-diagnosed,
+ready-to-pick-up item rather than rushed into this session.
+
+Also checked and ruled out as causes for the two-wheeler failures:
+`LP_DETECT_CONFIDENCE` (0.25, an untuned Ultralytics default) -- 5/6
+failures had detector confidence far below any reasonable threshold
+(0.03-0.09, the model genuinely doesn't see a plate there), and the one
+borderline case still failed at OCR even when its box was included by
+lowering the threshold; and `is_blurry()` -- all 8 crops measured well
+above the blur threshold (424-1015 vs. the 250 cutoff), correctly
+identified as sharp, not blurry. Neither is the cause.
+
 ## What's not done / open
 
-- Real, honest accuracy is still far from the 90% goal (29.2% on the
-  fairest full-window measurement). Every off-the-shelf component swap
-  tried across Sessions 39-42 (sharpening, CLAHE, two-line-split, further
-  density/confidence, English OCR model, server OCR model, bigger YOLO
-  detector, RoadX detector both ways, Awiros OCR both ways) has come back
-  flat or negative except sample density and the motorcycle area floor
-  (both small, single-digit-percent wins, both still shipped). The
-  honest strategic read given to the user this session: closing the
-  remaining gap most likely requires fine-tuning a recognition model on
-  labeled examples from this exact camera's real footage (real plan
-  discussed: automated hard-crop extraction across all 5 camera feeds,
-  human labeling ~2,000-5,000 crops, PaddleOCR fine-tune starting from
-  the existing PP-OCRv6 checkpoint, re-measured against the same real
-  A/B methodology used throughout this log) -- not another round of
-  component swaps. Estimated real cost: 3-5 days of dedicated
-  labeling+training effort, not something that fits alongside other
-  hackathon work without being treated as the primary task.
+- Real, honest accuracy on the standard 3-minute Townhall window is now
+  **66.7%** with the two shipped fixes (gate + O/I down-weight,
+  no fine-tuned model, no VLM), up from a freshly-remeasured 56.8%
+  baseline -- both real, model-free wins. The pure gate+O/I-only number
+  (isolated from VLM) was not separately re-measured this session; do
+  that first next time before citing 57.8% as the shipped number.
+- Recognizer fine-tuning, tried three ways this session with real,
+  working infrastructure for the first time (correct eval harness, real
+  A/B methodology), still hasn't beaten baseline. The warm-start lesson
+  (keep the pretrained head even if oversized, don't cold-start a
+  right-sized one) is the one worth carrying into any future attempt --
+  a fourth try should extend v4's recipe (full dict, pretrained head)
+  with meaningfully more epochs (it was still improving at epoch 20, not
+  plateaued) before trying anything more exotic.
+- VLM fallback is real, installed, and has genuine (if partial) value,
+  but isn't shipped. The concrete next step if revisited: require
+  agreement between 2+ independent VLM reads before confirming, instead
+  of trusting a single read -- this should fix the precision problem
+  without losing the real recall benefit already demonstrated.
+- Two-wheeler crop-geometry fix (vehicle-class-aware band widening) is
+  fully diagnosed (exact root cause, exact code location) but not built
+  -- real engineering effort with no proven payoff on the specific
+  crops tested, worth reconsidering with a larger sample or once OCR
+  accuracy on small plates improves some other way.
+- `GJ23O9016` and `GJ23OR5411` (and likely other, undiscovered cases
+  like them) represent a real, harder class of failure: every OCR
+  reading across a vehicle's entire time in frame agreeing on the same
+  wrong character. No amount of voting-based correction can fix an
+  error that never varies -- would need either a genuinely better
+  recognizer or a different signal entirely (e.g. VLM corroboration).

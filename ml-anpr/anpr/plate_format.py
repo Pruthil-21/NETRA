@@ -51,6 +51,23 @@ def _correct_state_code(plate):
     return None
 
 
+def _expected_classes(length):
+    """
+    Character-class layout ('L'=letter, 'D'=digit) for a plate string of
+    the given total length: state code (LL) + RTO code (DD) + series
+    (1 or 2 letters) + number (DDDD). Returns None for any length that
+    isn't a valid Indian-plate total (9 or 10). Factored out of
+    _correct_plate_positions so every position-aware check in this file
+    (and tracking.py's per-character voting) shares one definition
+    instead of drifting apart.
+    """
+    if length == 10:
+        return ['L', 'L', 'D', 'D', 'L', 'L', 'D', 'D', 'D', 'D']
+    if length == 9:
+        return ['L', 'L', 'D', 'D', 'L', 'D', 'D', 'D', 'D']
+    return None
+
+
 def _correct_plate_positions(cleaned):
     """
     Indian plates have fixed character-class positions: letters, then
@@ -65,24 +82,23 @@ def _correct_plate_positions(cleaned):
     pattern -- so this can't turn arbitrary text into a fake plate, only
     recover a plate that was one confusable character away from matching.
     """
-    for total_len, letter_run in ((10, 2), (9, 1)):
-        if len(cleaned) != total_len:
-            continue
-        expected = ['L', 'L', 'D', 'D'] + ['L'] * letter_run + ['D'] * 4
-        chars = list(cleaned)
-        changed = False
-        for i, kind in enumerate(expected):
-            c = chars[i]
-            if kind == 'D' and c in _LETTER_TO_DIGIT:
-                chars[i] = _LETTER_TO_DIGIT[c]
-                changed = True
-            elif kind == 'L' and c in _DIGIT_TO_LETTER:
-                chars[i] = _DIGIT_TO_LETTER[c]
-                changed = True
-        if changed:
-            candidate = ''.join(chars)
-            if INDIAN_PLATE_PATTERN.match(candidate):
-                return candidate
+    expected = _expected_classes(len(cleaned))
+    if expected is None:
+        return None
+    chars = list(cleaned)
+    changed = False
+    for i, kind in enumerate(expected):
+        c = chars[i]
+        if kind == 'D' and c in _LETTER_TO_DIGIT:
+            chars[i] = _LETTER_TO_DIGIT[c]
+            changed = True
+        elif kind == 'L' and c in _DIGIT_TO_LETTER:
+            chars[i] = _DIGIT_TO_LETTER[c]
+            changed = True
+    if changed:
+        candidate = ''.join(chars)
+        if INDIAN_PLATE_PATTERN.match(candidate):
+            return candidate
     return None
 
 
