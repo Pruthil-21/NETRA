@@ -4,7 +4,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 
-from .plate_format import INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code, _plate_similarity
+from .plate_format import (
+    INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code,
+    _expected_classes, _plate_similarity,
+)
 from .enhancement import is_blurry
 from . import vlm_fallback
 
@@ -60,6 +63,39 @@ class PlateConfirmationTracker:
     # structural matches.
     PATTERN_MATCH_VOTE_WEIGHT = 2.5
 
+    # Central Motor Vehicles Rules 1989, s.50: the SERIES-letter portion
+    # of a registration mark (position 4 onward -- never the state code)
+    # must skip 'I' and 'O' entirely ("continuing until all the
+    # alphabets, excluding 'I' and 'O' are exhausted"), specifically to
+    # avoid confusion with the digits 1 and 0. Confirmed against the
+    # primary rule text and cross-checked against Wikipedia's "Vehicle
+    # registration plates of India" (2026-09-25), not a single-source
+    # guess. O was also independently observed misread into this exact
+    # position 7+ times across two real live-pipeline test runs the same
+    # night, landing on several different true letters (D five times,
+    # also U and B) -- no single safe swap, hence a vote down-weight
+    # rather than a blind correction like I<->J.
+    #
+    # Deliberately scoped to positions 4+ ONLY, never the state code
+    # (positions 0-1): Odisha's real, valid state code is "OD" -- it
+    # itself starts with 'O'. Checking state-code positions too would
+    # wrongly discount every genuine Odisha plate.
+    #
+    # Deliberately a down-weight, never a hard rejection: a real,
+    # visually-confirmed exception exists in this project's own test
+    # data (HR26EO6477, dashcam_trimmed.mp4 ~0:08, personally verified
+    # against the actual footage) -- the law is real, but real-world
+    # plates aren't always 100% compliant with it, so an earlier version
+    # of this fix that hard-rejected any series-letter O/I was reverted
+    # for regressing that exact case. Down-weighting is safe by
+    # construction: it can only let an ALREADY-PRESENT alternative
+    # reading win the vote for that position; if every reading in a
+    # cluster agrees on O/I (as they would for a real plate genuinely
+    # printed that way), there is nothing to out-vote it with and it
+    # wins regardless, same as if this weight didn't exist at all.
+    RTO_EXCLUDED_SERIES_LETTERS = {'O', 'I'}
+    INVALID_SERIES_LETTER_VOTE_WEIGHT = 0.05
+
     @classmethod
     def _reconstruct(cls, readings):
         """Per-character voting requires aligned positions, which only
@@ -74,6 +110,7 @@ class PlateConfirmationTracker:
             weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
             length_weights[len(plate)] = length_weights.get(len(plate), 0.0) + weight
         dominant_length = max(length_weights, key=length_weights.get)
+        expected = _expected_classes(dominant_length)
 
         chars = []
         for i in range(dominant_length):
@@ -82,7 +119,11 @@ class PlateConfirmationTracker:
                 if len(plate) != dominant_length:
                     continue
                 weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
-                votes[plate[i]] = votes.get(plate[i], 0.0) + weight
+                c = plate[i]
+                if (expected and i >= 4 and expected[i] == 'L'
+                        and c in cls.RTO_EXCLUDED_SERIES_LETTERS):
+                    weight *= cls.INVALID_SERIES_LETTER_VOTE_WEIGHT
+                votes[c] = votes.get(c, 0.0) + weight
             chars.append(max(votes, key=votes.get))
         return "".join(chars)
 
