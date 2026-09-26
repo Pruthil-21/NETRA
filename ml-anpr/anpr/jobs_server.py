@@ -1,0 +1,689 @@
+"""HTTP endpoint for Pruthil's Manual Plate Lookup feature (handoff,
+2026-09-12): accepts a job (an uploaded video/image, or a short-lived
+archive-clip URL), runs it through the existing detection pipeline,
+POSTs the result to backend-watchlist exactly like every other
+detection, then PATCHes the job's callback_url with the outcome so
+their UI can deep-link straight to it.
+
+Uses stdlib http.server only, matching label_crops_web.py's existing
+pattern in this repo rather than adding a new web framework dependency
+for one route.
+"""
+import json
+import os
+import queue
+import tempfile
+import threading
+import time
+import traceback
+import uuid
+from datetime import datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import cv2
+import requests
+
+import anpr.detection as detection
+from .config import DETECTION_API_URL, INTERNAL_KEY
+from .detection import detect_plate_from_frame
+from .pipeline.events import DetectionEvent
+from .plate_format import INDIAN_PLATE_PATTERN
+from .tracking import VehicleTracker
+
+# The plate-presence gate is unsafe to bypass unconditionally here after
+# all -- measured directly: with it off, this endpoint took 223s of real
+# compute for one 16-second clip, dominated by exactly the OCR passes
+# the gate exists to skip. But it's also unsafe to leave ON
+# unconditionally: confirmed directly on a real two-vehicle test photo,
+# the gate marked a car "No plate (fast skip)" even though its plate was
+# clearly visible and OCR read it correctly once actually given the
+# chance -- catastrophic for a single photo, which gets exactly one look
+# at each vehicle.
+#
+# Video/archive_clip don't have that excuse: the same vehicle gets many
+# sampled frames, so one frame's gate false-negative just means slightly
+# fewer of that vehicle's reads feed the reconstruction, not a missed
+# plate outright -- this project's own real A/B test on live video found
+# the gate's actual cost there was indistinguishable from ordinary
+# run-to-run OCR noise (confirmed by testing a 10x stricter threshold:
+# identical result), while its speedup (30.6%) was real. So: gate ON for
+# video/archive_clip, OFF for upload_image -- decided per job via
+# thread-local state (not a shared module attribute) since multiple jobs
+# can run concurrently on separate threads and must not stomp on each
+# other's setting.
+_real_probably_has_no_plate = detection._probably_has_no_plate
+_gate_state = threading.local()
+
+
+def _gated_probably_has_no_plate(crop):
+    if getattr(_gate_state, "bypass", False):
+        return False
+    return _real_probably_has_no_plate(crop)
+
+
+detection._probably_has_no_plate = _gated_probably_has_no_plate
+
+# yolov8n (the shared production model) missed a real motorcycle
+# entirely across 40+ consecutive frames of a real test clip -- verified
+# directly: yolov8s (already sitting in the repo, unused) picked up the
+# same motorcycle at the same frames yolov8n produced zero boxes for any
+# class, and read every car in the clip at meaningfully higher
+# confidence too. Not swapped in globally -- that's a live-pipeline
+# speed/behavior change that needs its own real A/B test, out of scope
+# here. Does cost real time (part of why the gate above matters more
+# now, not less) -- accepted anyway for job processing specifically,
+# since a wrong "no vehicle here" from the smaller model is a result the
+# officer can never get back, unlike a few extra seconds. Scoped to this
+# process only, via the same live-module-attribute swap used for the
+# gate above.
+try:
+    from ultralytics import YOLO as _YOLO
+    detection.yolo_model = _YOLO("yolov8s.pt").to(detection.device)
+except Exception as e:  # noqa: BLE001
+    print(f"[WARN] Could not load yolov8s.pt for job processing, falling back to the shared model ({e})")
+
+REQUEST_TIMEOUT_SEC = 10
+
+# Bound #1: concurrent manual-lookup jobs. Each one loads real frames
+# through YOLO+OCR on this same process's GPU/CPU -- unbounded concurrent
+# jobs is the same real failure mode already measured on the live
+# multi-camera pipeline (queue saturation, throughput collapse) applied
+# to this endpoint instead. Review finding (Pruthil): the earlier
+# semaphore-inside-a-fresh-thread approach bounded active PROCESSING but
+# still spawned one full OS thread per request, unbounded -- a burst of
+# requests still created unlimited waiting threads, just parked on the
+# semaphore instead of doing work. Fixed worker pool + a bounded queue
+# instead: exactly NUM_WORKERS threads ever exist, and a request that
+# can't even get a queue slot is rejected outright (503) rather than
+# accepted and left to wait indefinitely.
+NUM_WORKERS = 3
+JOB_QUEUE_MAXSIZE = 20  # backlog allowed to wait for a free worker before rejecting new jobs
+_job_queue = queue.Queue(maxsize=JOB_QUEUE_MAXSIZE)
+
+# Bound #1b (review finding, Pruthil): accepted jobs only ever lived in
+# this in-memory queue -- a restart mid-job (or even mid-queue, before a
+# worker picked it up) silently lost it with no trace. Every job's
+# state is persisted to disk the moment it's accepted, updated as it
+# moves through processing, and re-enqueued on startup if it was never
+# finished. One small JSON file per job rather than sqlite/a real
+# database -- this endpoint's whole job list fits trivially on disk and
+# the access pattern (one writer at a time per job_id, one reader at
+# startup) doesn't need real concurrent-transaction support.
+# ponytail: unbounded directory growth over very long uptimes (state
+# files for completed/failed jobs are kept, not pruned) -- add a
+# time-based sweep if this ever runs for weeks unattended.
+JOBS_STATE_DIR = os.path.join(os.path.dirname(__file__), "_jobs_state")
+
+
+def _job_state_path(job_id):
+    # job_id is caller-supplied -- sanitize before using it as a
+    # filename component so a crafted job_id can't escape JOBS_STATE_DIR.
+    safe_id = "".join(c for c in str(job_id) if c.isalnum() or c in "-_")
+    return os.path.join(JOBS_STATE_DIR, f"{safe_id}.json")
+
+
+def _save_job_state(job_id, job, status, result=None):
+    os.makedirs(JOBS_STATE_DIR, exist_ok=True)
+    path = _job_state_path(job_id)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump({"job": job, "status": status, "result": result}, f)
+    os.replace(tmp_path, path)  # atomic on POSIX -- never leaves a half-written state file
+
+
+def _load_job_state(job_id):
+    path = _job_state_path(job_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _delete_job_state(job_id):
+    path = _job_state_path(job_id)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def _recover_pending_jobs():
+    """Startup recovery: a job left in 'accepted' or 'processing' state
+    means the process died before finishing it (or before a worker even
+    picked it up) -- re-enqueue it here so a restart doesn't silently
+    lose an accepted job. Safe even if the original attempt actually
+    finished on backend-watchlist's side already: POST /detections is
+    idempotent on event_id (see _post_detection_with_retry) and the
+    callback is retried/no-op-safe too, so reprocessing just re-sends
+    the same real result."""
+    if not os.path.isdir(JOBS_STATE_DIR):
+        return
+    for name in os.listdir(JOBS_STATE_DIR):
+        if not name.endswith(".json"):
+            continue
+        job_id = name[:-len(".json")]
+        record = _load_job_state(job_id)
+        if record and record.get("status") in ("accepted", "processing"):
+            print(f"[RECOVERY] re-enqueuing job {job_id!r} left in {record['status']!r} state")
+            _job_queue.put(record["job"])
+
+# Bound #2: download size. Nothing capped how large a file_url/clip_url
+# response could be -- a wrong or malicious URL could exhaust this
+# machine's disk one job at a time. Checked against both a declared
+# Content-Length (fails fast) and actual bytes received (a header can
+# lie or be absent), whichever trips first.
+MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+
+# Idempotent event_id: derived from (job_id, plate_number) instead of a
+# fresh random UUID per POST, so re-processing the SAME job (a retry
+# after a timeout, a duplicate dispatch) reproduces the SAME event_id
+# for the SAME plate every time. backend-watchlist dedups on event_id
+# server-side (see events.py's own docstring) -- a stable id is what
+# actually makes that dedup protect us here; a random one per attempt
+# would create a genuine duplicate detection row on every retry instead
+# of a safe no-op resend.
+_JOB_EVENT_NAMESPACE = uuid.UUID("6f6b1f4a-3f0d-4b1a-9c1e-9a7b2f8e5c3d")
+
+
+def _job_event_id(job_id, plate_number):
+    return str(uuid.uuid5(_JOB_EVENT_NAMESPACE, f"{job_id}:{plate_number}"))
+
+
+def _box_area_fraction(box, frame_shape):
+    """Normalized 0-1 fraction of the frame the vehicle box covers --
+    what Pruthil's callback contract calls box_area, used on his side to
+    rank multiple plates in one result nearest-to-farthest."""
+    if box is None:
+        return None
+    x1, y1, x2, y2 = box
+    frame_h, frame_w = frame_shape[:2]
+    if frame_h <= 0 or frame_w <= 0:
+        return None
+    return round((max(0, x2 - x1) * max(0, y2 - y1)) / (frame_w * frame_h), 4)
+
+
+def _parse_iso8601(ts):
+    """datetime.fromisoformat() on Python 3.9 (this venv) doesn't accept
+    a trailing 'Z' -- recording_start_time arrives in that form (e.g.
+    Pruthil's own example detected_at, "2026-09-12T10:02:15Z")."""
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+
+def _format_iso8601(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _run_video(path, process_every_n_frames=5, window_size=50):
+    """Same detect_plate_from_frame + VehicleTracker loop as
+    streaming.process_video_file(), but returns confirmed plates
+    instead of printing/sending them, and decides each vehicle's final
+    plate only after seeing its WHOLE trajectory, not the moment its
+    first 2 reads happen to agree.
+
+    Why: PlateConfirmationTracker (tracking.py) fires the instant a
+    cluster crosses confirm_threshold (2 by default) -- exactly right
+    for a live stream, which has to decide before a vehicle leaves frame
+    for good. But confirmed here is FINAL: once a cluster's
+    representative is added to self.confirmed, any later cluster
+    similar to it is suppressed, even if the vehicle has since driven
+    closer and started producing a clean, correct read. Verified
+    directly on a real test clip: a distant, blurry two-read agreement
+    ("GLLT7D") locked in before the same vehicle's true plate
+    ("GJ27DB0906") ever got a chance, even though that plate went on to
+    read identically, at ~1.0 confidence, across 30+ later frames.
+
+    A manual-lookup job doesn't have the live stream's excuse -- the
+    whole clip is already downloaded before this function is even
+    called, so there's no reason to decide early. Fix: set
+    confirm_threshold above window_size so the tracker's own live-fire
+    path can mathematically never trigger (len(cluster["readings"]) is
+    capped at window_size), run the identical detect_plate_from_frame +
+    tracker.update() loop for its box-association/clustering machinery,
+    but hold a reference to every track's dict as it appears (VehicleTracker
+    prunes a track from its own list after MAX_MISSED_FRAMES, which
+    would otherwise lose its accumulated PlateConfirmationTracker state
+    the moment a vehicle leaves frame -- these references keep it alive).
+    Once the whole video's been read, reconstruct each track's dominant
+    cluster (the one with the most accumulated readings -- a real,
+    repeating plate reliably outgrows a one-off garbage misread) exactly
+    the way PlateConfirmationTracker.add() would have, just once, with
+    the benefit of every reading the vehicle ever produced instead of
+    just the first two.
+
+    Each returned dict also carries box_area (from the track's last-seen
+    box) and elapsed_video_seconds (last-seen frame / fps -- time within
+    the clip itself, not a wall-clock value). elapsed_video_seconds is
+    NOT yet turned into an absolute detected_at: doing that needs a
+    real-world anchor point (when the recording/clip actually started)
+    that nothing in the job payload currently provides -- see
+    jobs_server.py module docstring. Sending time.time() instead would
+    be exactly the "now(), not the real capture moment" mistake
+    Pruthil's handoff explicitly warned against, so this is deliberately
+    left for the caller to fill in once that's resolved, not guessed
+    here.
+    """
+    cap = cv2.VideoCapture(path)
+    if not cap.isOpened():
+        return []
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    tracker = VehicleTracker(window_size=window_size, confirm_threshold=window_size + 1)
+    frame_count = 0
+    seen_track_ids = set()
+    all_tracks = []
+    frame_shape = None
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame_count += 1
+        if frame_count % process_every_n_frames != 0:
+            continue
+        frame_shape = frame.shape
+        results = detect_plate_from_frame(frame, frame, tracker=tracker)
+        tracker.update(results, raw_frame=frame)
+        for t in tracker.tracks:
+            tid = id(t)
+            if tid not in seen_track_ids:
+                seen_track_ids.add(tid)
+                all_tracks.append(t)
+            t["_last_seen_frame"] = frame_count
+    cap.release()
+    if frame_shape is None:
+        return []
+
+    confirmed_results = []
+    seen_plates = set()
+    for t in all_tracks:
+        pct = t["tracker"]
+        if not pct.clusters:
+            continue
+        best_cluster = max(pct.clusters, key=lambda c: len(c["readings"]))
+        representative = pct._reconstruct(best_cluster["readings"])
+        best_conf = max(c for _, c, _ in best_cluster["readings"])
+        # Strict INDIAN_PLATE_PATTERN only -- the fallback tier (6-12
+        # chars, starts with 2 letters, has some digit and some letter)
+        # exists for the live pipeline's different tradeoff (catch a
+        # genuinely-real plate an OCR glitch broke out of strict shape,
+        # worth a human glancing at during continuous monitoring) but is
+        # real garbage often enough that it doesn't belong in a job
+        # result an officer is meant to trust directly: confirmed on a
+        # real 16-plate job result, 2 of 16 were fallback-tier noise
+        # ("JENR2SS" 45% conf, "RDAC2T2" 59% conf) sitting next to 14
+        # genuine plates with no visual distinction between them.
+        if not INDIAN_PLATE_PATTERN.match(representative):
+            continue
+        if best_conf < 0.25 or representative in seen_plates:
+            continue
+        seen_plates.add(representative)
+        confirmed_results.append({
+            "plate_number": representative,
+            "confidence": float(round(best_conf, 2)),
+            "note": "ok - pattern match",
+            "box_area": _box_area_fraction(t.get("box"), frame_shape),
+            "elapsed_video_seconds": round(t.get("_last_seen_frame", frame_count) / fps, 2),
+        })
+    return confirmed_results
+
+
+def _download_to_temp(url, default_suffix, headers=None):
+    """Both file_url (upload_video/upload_image -- a job_id/file path on
+    their backend, needs our internal key to fetch) and clip_url
+    (archive_clip -- a plain playback URL, no auth) point at bytes that
+    only exist on their end, never a local path on this machine (the
+    original file_path design assumed a shared filesystem, which broke
+    the first real cross-machine test). Downloaded to a temp file either
+    way so both go through the exact same cv2 path as a real local
+    upload would, rather than depending on cv2/FFmpeg's own (less
+    reliable) direct-HTTP-read support."""
+    resp = requests.get(url, headers=headers, timeout=30, stream=True)
+    resp.raise_for_status()
+    declared_length = resp.headers.get("Content-Length")
+    if declared_length is not None and int(declared_length) > MAX_DOWNLOAD_BYTES:
+        raise ValueError(f"Declared size {int(declared_length)} bytes exceeds "
+                          f"the {MAX_DOWNLOAD_BYTES} byte limit")
+    suffix = os.path.splitext(url.split("?")[0])[1] or default_suffix
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    written = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                written += len(chunk)
+                if written > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"Download exceeded the {MAX_DOWNLOAD_BYTES} byte "
+                                      f"limit (Content-Length was absent or wrong)")
+                f.write(chunk)
+    except Exception:
+        if os.path.exists(path):
+            os.remove(path)
+        raise
+    return path
+
+
+CALLBACK_MAX_RETRIES = 3
+CALLBACK_BACKOFF_BASE_SEC = 1
+
+
+def _patch_callback(callback_url, payload):
+    """Review finding (Pruthil): a single failed/timed-out PATCH here
+    used to just log a warning and give up -- the job had genuinely
+    completed (or failed) but the caller's UI would never find out.
+    Retries transient failures (no response / connection error / 5xx)
+    with exponential backoff; a 4xx is a definitive rejection (e.g. a
+    dead callback_url) that retrying identically won't fix, so that
+    stops immediately instead of wasting attempts."""
+    for attempt in range(CALLBACK_MAX_RETRIES + 1):
+        try:
+            response = requests.patch(callback_url, json=payload,
+                                       headers={"X-Internal-Key": INTERNAL_KEY},
+                                       timeout=REQUEST_TIMEOUT_SEC)
+        except requests.exceptions.RequestException as e:
+            print(f"[WARN] Could not reach callback_url {callback_url} "
+                  f"(attempt {attempt + 1}/{CALLBACK_MAX_RETRIES + 1}): {e}")
+        else:
+            if response.status_code < 400:
+                return
+            if response.status_code < 500:
+                print(f"[WARN] callback_url {callback_url} rejected PATCH "
+                      f"({response.status_code}): {response.text[:200]}")
+                return
+            print(f"[WARN] callback_url {callback_url} returned {response.status_code} "
+                  f"(attempt {attempt + 1}/{CALLBACK_MAX_RETRIES + 1}), retrying...")
+        if attempt < CALLBACK_MAX_RETRIES:
+            time.sleep(CALLBACK_BACKOFF_BASE_SEC * (2 ** attempt))
+    print(f"[WARN] Giving up on callback_url {callback_url} after "
+          f"{CALLBACK_MAX_RETRIES + 1} attempts")
+
+
+DETECTION_POST_MAX_RETRIES = 3
+DETECTION_POST_BACKOFF_BASE_SEC = 1
+
+
+def _post_detection_with_retry(payload):
+    """POSTs one confirmed plate to backend-watchlist, retrying transient
+    failures (timeout / connection error / 5xx) with the SAME payload --
+    same event_id every attempt (see _job_event_id). Per the real,
+    documented contract (contract/API_CONTRACT.md): a repeat POST for an
+    event_id already on record is a no-op 201 that returns the ORIGINAL
+    detection, never a 409 and never a duplicate row. So every retry --
+    including one triggered because the first attempt's response never
+    arrived (timed out client-side, but may have actually landed) -- is
+    always safe to just resend as-is, and any 201 response (fresh or
+    idempotent-original) means success."""
+    last_exc = None
+    response = None
+    for attempt in range(DETECTION_POST_MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                DETECTION_API_URL, json=payload,
+                headers={"X-Internal-Key": INTERNAL_KEY}, timeout=REQUEST_TIMEOUT_SEC,
+            )
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            print(f"[WARN] POST /detections failed for plate {payload['plate_number']!r} "
+                  f"(attempt {attempt + 1}/{DETECTION_POST_MAX_RETRIES + 1}): {e}")
+        else:
+            last_exc = None
+            if response.status_code == 201 or response.status_code < 500:
+                # 201: success (fresh or idempotent-retry, contract makes
+                # no distinction). Any other <500: a definitive rejection
+                # retrying identically won't fix.
+                return response
+            print(f"[WARN] POST /detections returned {response.status_code} for plate "
+                  f"{payload['plate_number']!r} (attempt {attempt + 1}/{DETECTION_POST_MAX_RETRIES + 1}), retrying...")
+        if attempt < DETECTION_POST_MAX_RETRIES:
+            time.sleep(DETECTION_POST_BACKOFF_BASE_SEC * (2 ** attempt))
+    if last_exc is not None:
+        raise last_exc
+    return response
+
+
+def _process_job_inner(job):
+    """Runs the actual video/image/inference work for one job and
+    returns the callback payload -- never sends it itself and never
+    raises (every real failure path returns a {"status": "failed", ...}
+    dict instead). Kept as a pure function so the caller (the fixed
+    worker pool in _worker_loop) can persist the result before
+    delivering it, satisfying both restart-recovery (item 2) and
+    duplicate-dispatch (item 4: a retried dispatch of an already-done
+    job_id redelivers this same stored result instead of rerunning
+    inference)."""
+    job_id = job.get("job_id")
+    camera_id_int = job.get("camera_id")
+    input_type = job.get("input_type")
+    # Recording start time now arrives in every dispatch (Pruthil,
+    # 2026-09-12) -- present for a timestamped upload_video/archive_clip,
+    # null for an un-timestamped upload_video or any photo. Only ever
+    # combined with elapsed_video_seconds (set by _run_video) below when
+    # both are actually available; never guessed otherwise.
+    recording_start_time = job.get("recording_start_time")
+    recording_start_dt = _parse_iso8601(recording_start_time) if recording_start_time else None
+    # See the gate wiring at module load: bypassed for a single photo
+    # (one look at each vehicle, a false skip there is unrecoverable),
+    # active for video/archive_clip (many sampled frames per vehicle,
+    # real speed win, real A/B evidence the accuracy cost is
+    # negligible). Thread-local, not a shared flag -- concurrent jobs of
+    # different input_types must not affect each other's gate setting.
+    _gate_state.bypass = (input_type == "upload_image")
+    tmp_path = None
+    try:
+        # Plate-lookup jobs give us backend-registry's real numeric
+        # camera_id directly -- unlike the live pipeline (which only
+        # knows a "direct-camNN" stream name and needs CAMERA_ID_MAP to
+        # resolve it), there's no string to resolve here, and this id
+        # isn't guaranteed to even be one of our own 30 mapped cameras
+        # (confirmed by Pruthil: routing it through CAMERA_ID_MAP first
+        # broke on a real camera_id, 109858, outside that map entirely).
+        # Passed straight through everywhere a numeric camera_id is
+        # needed.
+        if input_type == "upload_image":
+            tmp_path = _download_to_temp(job["file_url"], ".jpg", headers={"X-Internal-Key": INTERNAL_KEY})
+            # NOT detect_plate() -- that wrapper picks whichever vehicle
+            # box has the LARGEST area, plate or not, which is correct
+            # for its actual purpose (single-vehicle ground-truth test
+            # images, see its own docstring) but wrong here: a real
+            # manual-lookup photo can have multiple vehicles, and a real
+            # bug this way threw away a plate ml-anpr read successfully
+            # ("GJ27DB0906", pattern-matched) because a different,
+            # bigger vehicle with no visible plate happened to occupy
+            # more pixels in the same frame. Same "only keep boxes that
+            # actually read a plate" filter _run_video already uses
+            # below, applied to a single frame instead of a stream.
+            img = cv2.imread(tmp_path)
+            if img is None:
+                raise ValueError(f"Could not read image at {tmp_path}")
+            # Strict INDIAN_PLATE_PATTERN only -- see _run_video's own
+            # comment on why the fallback tier ("ok - fallback,
+            # unverified pattern") doesn't belong in a job result an
+            # officer is meant to trust directly.
+            confirmed = [r for r in detect_plate_from_frame(img, img)
+                         if r.get("plate_number") and INDIAN_PLATE_PATTERN.match(r["plate_number"])]
+            for r in confirmed:
+                r["box_area"] = _box_area_fraction(r.get("box"), img.shape)
+        elif input_type == "upload_video":
+            tmp_path = _download_to_temp(job["file_url"], ".mp4", headers={"X-Internal-Key": INTERNAL_KEY})
+            confirmed = _run_video(tmp_path)
+        elif input_type == "archive_clip":
+            tmp_path = _download_to_temp(job["clip_url"], ".mp4")
+            confirmed = _run_video(tmp_path)
+        else:
+            raise ValueError(f"Unknown input_type: {input_type}")
+
+        if not confirmed:
+            return {"status": "failed", "error_message": "No plate found"}
+
+        # Every confirmed plate gets its own POST /detections -- same as
+        # the live video pipeline (streaming.py posts once per confirmed
+        # vehicle track, never just "the best one"). A photo or clip can
+        # genuinely have more than one real, distinct plate in frame
+        # (confirmed directly: a real two-vehicle test image where BOTH
+        # plates were clearly visible and both read correctly), and
+        # discarding all but one would silently drop real detections
+        # from the shared table, not just from this job's own summary.
+        posted = []
+        for r in confirmed:
+            # detected_at: required per-result for a timestamped
+            # video/clip (the real in-footage moment), omitted for an
+            # un-timestamped upload_video or any photo -- per Pruthil's
+            # contract (2026-09-12). Never time.time(): that's exactly
+            # the "now(), not the real capture moment" mistake the
+            # contract explicitly warns against, so this only gets
+            # computed when both a real anchor (recording_start_time)
+            # and a real offset (elapsed_video_seconds, from
+            # _run_video) actually exist -- otherwise left unset, not
+            # guessed. Computed BEFORE building the event (not just for
+            # the callback afterward) so it actually reaches the
+            # detection database via to_backend_payload(), not only the
+            # job's own summary -- a real gap found in review: this used
+            # to land in the callback only.
+            detected_at = None
+            if recording_start_dt is not None and r.get("elapsed_video_seconds") is not None:
+                detected_at_dt = recording_start_dt + timedelta(seconds=r["elapsed_video_seconds"])
+                detected_at = _format_iso8601(detected_at_dt)
+
+            event = DetectionEvent(
+                camera_id=str(camera_id_int),
+                plate_number=r["plate_number"],
+                confidence=r.get("confidence"),
+                detection_type=r.get("note", ""),
+                # Deterministic, not a fresh random UUID -- see
+                # _job_event_id's own docstring. Makes a retried job
+                # (same job_id, same plates) a safe no-op resend on
+                # backend-watchlist's side instead of a duplicate row.
+                event_id=_job_event_id(job_id, r["plate_number"]),
+                detected_at=detected_at,
+            )
+            try:
+                response = _post_detection_with_retry(event.to_backend_payload(camera_id_int))
+            except requests.exceptions.RequestException as e:
+                print(f"[WARN] Giving up on plate {r['plate_number']!r} after retries: {e}")
+                continue
+            if response.status_code != 201:
+                # Already logged inside _post_detection_with_retry.
+                continue
+            result = {
+                "detection_id": response.json()["detection"]["id"],
+                "plate_number": r["plate_number"],
+                "confidence": r.get("confidence"),
+            }
+            if r.get("box_area") is not None:
+                result["box_area"] = r["box_area"]
+            if detected_at is not None:
+                result["detected_at"] = detected_at
+            posted.append(result)
+
+        if not posted:
+            return {
+                "status": "failed",
+                "error_message": "Plate(s) read but backend-watchlist rejected every POST /detections call",
+            }
+
+        # New multi-result contract (Pruthil, 2026-09-12): every plate
+        # actually posted above goes in the results list -- the old
+        # single detection_id/plate_number shape isn't validated
+        # server-side anymore and was silently accepted as "completed, 0
+        # plates found," which looked like a missed detection on the
+        # frontend even though the model read it correctly.
+        return {"status": "completed", "results": posted}
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return {"status": "failed", "error_message": str(e)}
+    finally:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+class JobsHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass  # quiet, matches label_crops_web.py
+
+    def do_POST(self):
+        if self.path != "/jobs/run":
+            self.send_response(404)
+            self.end_headers()
+            return
+        if self.headers.get("X-Internal-Key") != INTERNAL_KEY:
+            self.send_response(401)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            job = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self.send_response(400)
+            self.end_headers()
+            return
+
+        job_id = job.get("job_id")
+
+        # Duplicate dispatch of an already-finished job (their retry
+        # after a timeout, a re-sent webhook, whatever) -- POST
+        # /detections already happened and is itself idempotent (see
+        # _post_detection_with_retry), so redeliver the stored result
+        # instead of rerunning the whole video/OCR pipeline for nothing.
+        existing = _load_job_state(job_id) if job_id else None
+        if existing is not None and existing.get("status") in ("completed", "failed"):
+            self._respond(202, {"status": "accepted", "job_id": job_id})
+            threading.Thread(target=_patch_callback,
+                              args=(job.get("callback_url"), existing["result"]),
+                              daemon=True).start()
+            return
+
+        if job_id:
+            _save_job_state(job_id, job, "accepted")
+        try:
+            _job_queue.put_nowait(job)
+        except queue.Full:
+            if job_id:
+                _delete_job_state(job_id)
+            self._respond(503, {"status": "rejected", "error": "job queue full, retry later"},
+                          retry_after=5)
+            return
+
+        self._respond(202, {"status": "accepted", "job_id": job_id})
+
+    def _respond(self, code, body, retry_after=None):
+        self.send_response(code)
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(body).encode())
+
+
+def _worker_loop():
+    """Exactly NUM_WORKERS of these run for the process's whole
+    lifetime (see serve()) -- the fixed pool itself is the concurrency
+    bound now, replacing the old semaphore-plus-unbounded-threads
+    approach."""
+    while True:
+        job = _job_queue.get()
+        try:
+            job_id = job.get("job_id")
+            if job_id:
+                _save_job_state(job_id, job, "processing")
+            result = _process_job_inner(job)
+            if job_id:
+                _save_job_state(job_id, job, result.get("status", "failed"), result=result)
+            _patch_callback(job.get("callback_url"), result)
+        except Exception:  # noqa: BLE001
+            # NUM_WORKERS is fixed -- a worker thread that dies here
+            # permanently shrinks the pool until the next restart, so
+            # nothing outside _process_job_inner's own try/except (state
+            # persistence, the callback call itself) is allowed to kill
+            # this loop.
+            traceback.print_exc()
+        finally:
+            _job_queue.task_done()
+
+
+def serve(port=8002):
+    _recover_pending_jobs()
+    for _ in range(NUM_WORKERS):
+        threading.Thread(target=_worker_loop, daemon=True).start()
+    print(f"Listening for jobs on http://localhost:{port}/jobs/run")
+    ThreadingHTTPServer(("0.0.0.0", port), JobsHandler).serve_forever()
+
+
+if __name__ == "__main__":
+    serve()

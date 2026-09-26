@@ -3,8 +3,23 @@ tracking so that confirmation runs independently per physical vehicle."""
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .plate_format import INDIAN_PLATE_PATTERN, _plate_similarity
+
+from .plate_format import (
+    INDIAN_PLATE_PATTERN, _correct_plate_positions, _correct_state_code,
+    _expected_classes, _plate_similarity,
+)
+from .enhancement import is_blurry
 from . import vlm_fallback
+
+# ICPR 2026 LRLPR competition (arXiv 2604.22506): 3 of the top 5 teams
+# used some form of per-frame quality-aware weighting in their
+# multi-frame fusion (learned quality score, sharpness/noise proxies),
+# not just raw OCR confidence. This is the cheapest version of that --
+# reusing the blur gate detection.py already computes elsewhere in this
+# pipeline, applied here as a vote-weight instead of a hard skip. A
+# blurry frame's read still counts (multi-frame voting already handles
+# noisy individual reads), just weighted down relative to a sharp one.
+BLUR_VOTE_WEIGHT = 0.5
 
 
 class PlateConfirmationTracker:
@@ -48,6 +63,39 @@ class PlateConfirmationTracker:
     # structural matches.
     PATTERN_MATCH_VOTE_WEIGHT = 2.5
 
+    # Central Motor Vehicles Rules 1989, s.50: the SERIES-letter portion
+    # of a registration mark (position 4 onward -- never the state code)
+    # must skip 'I' and 'O' entirely ("continuing until all the
+    # alphabets, excluding 'I' and 'O' are exhausted"), specifically to
+    # avoid confusion with the digits 1 and 0. Confirmed against the
+    # primary rule text and cross-checked against Wikipedia's "Vehicle
+    # registration plates of India" (2026-09-25), not a single-source
+    # guess. O was also independently observed misread into this exact
+    # position 7+ times across two real live-pipeline test runs the same
+    # night, landing on several different true letters (D five times,
+    # also U and B) -- no single safe swap, hence a vote down-weight
+    # rather than a blind correction like I<->J.
+    #
+    # Deliberately scoped to positions 4+ ONLY, never the state code
+    # (positions 0-1): Odisha's real, valid state code is "OD" -- it
+    # itself starts with 'O'. Checking state-code positions too would
+    # wrongly discount every genuine Odisha plate.
+    #
+    # Deliberately a down-weight, never a hard rejection: a real,
+    # visually-confirmed exception exists in this project's own test
+    # data (HR26EO6477, dashcam_trimmed.mp4 ~0:08, personally verified
+    # against the actual footage) -- the law is real, but real-world
+    # plates aren't always 100% compliant with it, so an earlier version
+    # of this fix that hard-rejected any series-letter O/I was reverted
+    # for regressing that exact case. Down-weighting is safe by
+    # construction: it can only let an ALREADY-PRESENT alternative
+    # reading win the vote for that position; if every reading in a
+    # cluster agrees on O/I (as they would for a real plate genuinely
+    # printed that way), there is nothing to out-vote it with and it
+    # wins regardless, same as if this weight didn't exist at all.
+    RTO_EXCLUDED_SERIES_LETTERS = {'O', 'I'}
+    INVALID_SERIES_LETTER_VOTE_WEIGHT = 0.05
+
     @classmethod
     def _reconstruct(cls, readings):
         """Per-character voting requires aligned positions, which only
@@ -62,6 +110,7 @@ class PlateConfirmationTracker:
             weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
             length_weights[len(plate)] = length_weights.get(len(plate), 0.0) + weight
         dominant_length = max(length_weights, key=length_weights.get)
+        expected = _expected_classes(dominant_length)
 
         chars = []
         for i in range(dominant_length):
@@ -70,15 +119,20 @@ class PlateConfirmationTracker:
                 if len(plate) != dominant_length:
                     continue
                 weight = conf * (cls.PATTERN_MATCH_VOTE_WEIGHT if note == "ok - pattern match" else 1.0)
-                votes[plate[i]] = votes.get(plate[i], 0.0) + weight
+                c = plate[i]
+                if (expected and i >= 4 and expected[i] == 'L'
+                        and c in cls.RTO_EXCLUDED_SERIES_LETTERS):
+                    weight *= cls.INVALID_SERIES_LETTER_VOTE_WEIGHT
+                votes[c] = votes.get(c, 0.0) + weight
             chars.append(max(votes, key=votes.get))
         return "".join(chars)
 
     def add(self, plate, confidence, note):
         """Feed one OCR-filtered reading in (any confidence). Returns a
         confirmed-event dict the first time a cluster crosses
-        confirm_threshold AND its peak confidence clears the floor for its
-        reconstructed note type, else None."""
+        confirm_threshold, its reconstructed representative is (or can be
+        corrected into) a real, valid-state-code Indian plate, AND its
+        peak confidence clears the 0.25 floor, else None."""
         cluster = self._find_cluster(plate)
         if cluster is None:
             cluster = {"readings": [], "representative": plate}
@@ -101,18 +155,49 @@ class PlateConfirmationTracker:
         if any(_plate_similarity(cluster["representative"], c) >= self.SIMILARITY_THRESHOLD for c in self.confirmed):
             return None
 
+        # Hard structural gate, not just a confidence-tier signal: a
+        # reconstructed representative that isn't (and can't be corrected
+        # into, via the same two functions detect_plate_from_frame already
+        # applies per-reading) a real, valid-state-code Indian plate is
+        # never confirmed -- no more "ok - fallback, unverified pattern"
+        # tier at this stage. Real evidence this was costing accuracy, not
+        # just noise: on the same 3-minute real Townhall test used
+        # throughout this project, baseline's own confirmed list had 5/37
+        # structurally impossible entries (BI85BS3017, BIBI3RRE,
+        # BLIBI3KHE, HGJ230P8070, PCH5944) that were never real matches
+        # anyway -- dropping them lifts accuracy from 56.8% to 65.6% for
+        # free, no model change. jobs_server.py's one-shot job path
+        # already enforces exactly this strict-pattern gate (see its own
+        # comment there, citing a real 16-plate job where 2 were
+        # fallback-tier noise sitting next to 14 genuine reads) -- this
+        # brings the live streaming path in line with it, plus the same
+        # state-code recovery detect_plate_from_frame already does
+        # per-reading (e.g. a GJ->GI misread surviving the character vote).
+        # A track that fails this gate is NOT lost -- it simply stays
+        # unconfirmed, which is exactly the condition that lets
+        # vlm_fallback.py's last-resort rescue fire for it instead of a
+        # garbage string getting confirmed in its place.
+        representative = cluster["representative"]
+        if not INDIAN_PLATE_PATTERN.match(representative):
+            corrected = _correct_plate_positions(representative)
+            if corrected is None:
+                return None
+            representative = corrected
+
+        fixed = _correct_state_code(representative)
+        if fixed is None:
+            return None
+        representative = fixed
+
         best_conf = max(c for _, c, _ in cluster["readings"])
-        reconstructed_note = "ok - pattern match" if INDIAN_PLATE_PATTERN.match(cluster["representative"]) \
-            else "ok - fallback, unverified pattern"
-        min_conf = 0.25 if reconstructed_note == "ok - pattern match" else 0.4
-        if best_conf < min_conf:
+        if best_conf < 0.25:
             return None
 
-        self.confirmed.add(cluster["representative"])
+        self.confirmed.add(representative)
         return {
-            "plate_number": cluster["representative"],
+            "plate_number": representative,
             "confidence": float(round(best_conf, 2)),
-            "note": reconstructed_note,
+            "note": "ok - pattern match",
         }
 
 
@@ -193,6 +278,7 @@ class VehicleTracker:
     # expensive VLM call. Two real matches is the same bar
     # PlateConfirmationTracker's own default confirm_threshold uses.
     VLM_FALLBACK_MIN_MATCHES = 2
+
 
     def __init__(self, window_size=10, confirm_threshold=2):
         self.window_size = window_size
@@ -341,8 +427,10 @@ class VehicleTracker:
             best_track["match_count"] += 1
             matched.add(id(best_track))
 
+            crop = None
             if raw_frame is not None:
                 x1, y1, x2, y2 = box
+                crop = raw_frame[y1:y2, x1:x2]
                 area = max(0, x2 - x1) * max(0, y2 - y1)
                 # Largest-area crop over the track's life, not
                 # highest-OCR-confidence -- picking by OCR confidence would
@@ -350,14 +438,17 @@ class VehicleTracker:
                 # fallback (zero OCR candidates ever has no confidence
                 # signal at all to rank by).
                 if area > best_track["best_crop_area"]:
-                    best_track["best_crop"] = raw_frame[y1:y2, x1:x2].copy()
+                    best_track["best_crop"] = crop.copy()
                     best_track["best_crop_area"] = area
 
             plate = det.get("plate_number")
             if not plate:
                 continue
             self.total_plate_candidates += 1
-            confirmed = best_track["tracker"].add(plate, det["confidence"], det["note"])
+            confidence = det["confidence"]
+            if crop is not None and crop.size > 0 and is_blurry(crop):
+                confidence *= BLUR_VOTE_WEIGHT
+            confirmed = best_track["tracker"].add(plate, confidence, det["note"])
             if confirmed and not self._recently_confirmed(confirmed["plate_number"]):
                 confirmed_events.append(confirmed)
                 self._mark_confirmed(confirmed["plate_number"], confirmed["note"])
